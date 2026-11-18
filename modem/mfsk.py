@@ -1,4 +1,4 @@
-"""The L0 waveform: 32 tones, one tone at a time (MFSK).
+"""The tone waveform: 32 tones, one tone at a time (MFSK), used by every speed level.
 
 Tone signalling does not depend on the phase of the radio wave, which is
 the first thing fading and multipath destroy. The receiver only asks
@@ -7,14 +7,12 @@ the first thing fading and multipath destroy. The receiver only asks
 
 import numpy as np  # numerical arrays
 
-from .params import BASE_BIN, BIN_HZ, BITS_PER_SYMBOL, FS, M_TONES, SYMBOL_SAMPLES, SYMBOL_SECONDS, TONE_STEP_BINS  # waveform numbers
+from .params import BITS_PER_SYMBOL, FS, M_TONES  # waveform numbers shared by all levels
 
-TONE_BINS = BASE_BIN + TONE_STEP_BINS * np.arange(M_TONES)  # FFT bin of each of the 32 tones
-NOISE_BINS = TONE_BINS + 1  # the quiet bins between tones, used to measure the noise
 _TONE_BITS = np.array([[(m >> (BITS_PER_SYMBOL - 1 - j)) & 1 for j in range(BITS_PER_SYMBOL)] for m in range(M_TONES)])  # the 5 bits each tone stands for
 _WEIGHTS = 1 << np.arange(BITS_PER_SYMBOL - 1, -1, -1)  # place values 16, 8, 4, 2, 1
 PAD = 8  # zero-padding factor for fine frequency measurement (8x finer than one bin)
-FINE_SPAN = 4  # fine search reaches 4 fine steps each side (plus or minus 1.25 Hz)
+FINE_SPAN = 4  # fine search reaches 4 fine steps each side (plus or minus half a bin)
 
 
 def bits_to_symbols(bits):  # coded bits -> tone numbers
@@ -25,17 +23,17 @@ def bits_to_symbols(bits):  # coded bits -> tone numbers
     return padded.reshape(-1, BITS_PER_SYMBOL) @ _WEIGHTS  # each row of 5 bits becomes a number 0..31
 
 
-def symbols_to_audio(symbols):  # tone numbers -> sound
-    """Return the audio for a run of tones, 0.4 seconds each."""
-    n = np.arange(SYMBOL_SAMPLES)  # sample counter within one tone
-    freqs = TONE_BINS[np.asarray(symbols)] * BIN_HZ  # frequency of every tone to send, in Hz
+def symbols_to_audio(symbols, level):  # tone numbers -> sound
+    """Return the audio for a run of tones at the given speed level."""
+    n = np.arange(level.samples)  # sample counter within one tone
+    freqs = level.tone_bins[np.asarray(symbols)] * level.bin_hz  # frequency of every tone to send, in Hz
     return np.cos(2 * np.pi * freqs[:, None] * n[None, :] / FS).reshape(-1)  # one cosine burst per tone, joined end to end
 
 
-def _mixed_blocks(x, start, nsym, offset_hz, drift_hz_s):  # cut out tones and correct their frequency
+def _mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s):  # cut out tones and correct their frequency
     """Return `nsym` tone-length blocks from `x`, shifted down by the frequency error."""
     first = int(round(start))  # first sample of the first tone
-    need = nsym * SYMBOL_SAMPLES  # samples required for all the tones
+    need = nsym * level.samples  # samples required for all the tones
     seg = x[max(first, 0):first + need]  # the part of the recording that holds them
     if first < 0:  # the frame starts before the recording does
         seg = np.concatenate([np.zeros(-first), seg])  # fill the missing start with silence
@@ -43,15 +41,23 @@ def _mixed_blocks(x, start, nsym, offset_hz, drift_hz_s):  # cut out tones and c
         seg = np.concatenate([seg, np.zeros(need - len(seg))])  # fill the missing end with silence
     t = np.arange(need) / FS  # time of every sample, counted from the first tone
     mixer = np.exp(-2j * np.pi * (offset_hz * t + 0.5 * drift_hz_s * t * t))  # spinning correction that cancels offset and drift
-    return (seg * mixer).reshape(nsym, SYMBOL_SAMPLES)  # corrected audio, one row per tone
+    return (seg * mixer).reshape(nsym, level.samples)  # corrected audio, one row per tone
 
 
-def symbol_energies(x, start, nsym, offset_hz=0.0, drift_hz_s=0.0):  # measure every tone slot
-    """Return (tone energies, noise energies), each with one row per symbol and 32 columns."""
-    spec = np.fft.fft(_mixed_blocks(x, start, nsym, offset_hz, drift_hz_s), axis=1)  # spectrum of each tone-length block
-    tone_e = np.abs(spec[:, TONE_BINS]) ** 2  # energy in each of the 32 tone positions
-    noise_e = np.abs(spec[:, NOISE_BINS]) ** 2  # energy in the quiet bins between them
-    return tone_e, noise_e  # both measurements
+def symbol_energies(x, start, nsym, level, offset_hz=0.0, drift_hz_s=0.0):  # measure every tone slot
+    """Return the energy in each of the 32 tone positions, one row per symbol."""
+    spec = np.fft.fft(_mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s), axis=1)  # spectrum of each tone-length block
+    return np.abs(spec[:, level.tone_bins]) ** 2  # energy in each of the 32 tone positions
+
+
+def noise_level(tone_e):  # how strong the background noise is
+    """Return the average noise energy per tone position.
+
+    In every symbol 31 of the 32 positions hold only noise, so the middle
+    value (median) of all the energies is set by the noise, not the signal.
+    """
+    floor = 1e-12 * float(tone_e.max()) + 1e-300  # a tiny floor tied to the strongest energy, so the result is never zero
+    return max(float(np.median(tone_e)) / np.log(2), floor)  # median of noise energy is ln(2) times its average
 
 
 def energies_to_llrs(tone_e, noise_level):  # tone energies -> soft bits
@@ -64,7 +70,7 @@ def energies_to_llrs(tone_e, noise_level):  # tone energies -> soft bits
     return llrs.reshape(-1)  # flatten to one long run of soft bits
 
 
-def pilot_frequency_fit(x, start, positions, tones, offset_hz):  # track drift using the known pilot tones
+def pilot_frequency_fit(x, start, positions, tones, level, offset_hz):  # track drift using the known pilot tones
     """Return (extra offset at the first symbol in Hz, drift in Hz per second) measured from the pilots.
 
     The pilots are handled in stretches of about eight. Each stretch is
@@ -80,9 +86,9 @@ def pilot_frequency_fit(x, start, positions, tones, offset_hz):  # track drift u
     for idx in np.array_split(np.arange(len(positions)), groups):  # one stretch at a time, in order
         avg = np.zeros(2 * FINE_SPAN + 1)  # running sum of fine spectra for this stretch
         for pos, tone in zip(positions[idx], tones[idx]):  # look at every pilot in the stretch
-            block = _mixed_blocks(x, start + pos * SYMBOL_SAMPLES, 1, offset_hz + track, 0.0)[0]  # that pilot's audio, corrected by the best estimate so far
-            spec = np.abs(np.fft.fft(block, PAD * SYMBOL_SAMPLES)) ** 2  # fine-grained power spectrum
-            centre = TONE_BINS[tone] * PAD  # where the pilot should be on the fine grid
+            block = _mixed_blocks(x, start + pos * level.samples, 1, level, offset_hz + track, 0.0)[0]  # that pilot's audio, corrected by the best estimate so far
+            spec = np.abs(np.fft.fft(block, PAD * level.samples)) ** 2  # fine-grained power spectrum
+            centre = level.tone_bins[tone] * PAD  # where the pilot should be on the fine grid
             avg += spec[centre - FINE_SPAN:centre + FINE_SPAN + 1]  # add the few fine steps either side
         peak = int(np.argmax(avg))  # fine step with the most energy
         frac = 0.0  # fraction-of-a-step correction
@@ -91,9 +97,9 @@ def pilot_frequency_fit(x, start, positions, tones, offset_hz):  # track drift u
             bend = a - 2 * b + c  # how sharply they curve
             if bend != 0:  # a flat line has no top
                 frac = 0.5 * (a - c) / bend  # top of the parabola through the three points
-        track += (peak + frac - FINE_SPAN) * BIN_HZ / PAD  # move the estimate to where this stretch found the signal
+        track += (peak + frac - FINE_SPAN) * level.bin_hz / PAD  # move the estimate to where this stretch found the signal
         errors.append(track)  # record it
-        times.append(positions[idx].mean() * SYMBOL_SECONDS)  # and when this stretch happened
+        times.append(positions[idx].mean() * level.seconds)  # and when this stretch happened
     if groups >= 2:  # with two or more stretches we can see a trend
         slope, intercept = np.polyfit(times, errors, 1)  # straight line through the measurements
         return float(intercept), float(slope)  # error at the start, and how fast it changes

@@ -44,9 +44,10 @@ The demo sends one message through the simulated channel, decodes it, and writes
 
 ## Where things stand
 
-- **Milestone 1 is done (18 November 2026):** the channel simulator and the first modem slice work end to end in simulation. The slowest level (L0) sends a 50-character message in 74 seconds and decoded every test frame at -21 dB SNR (2.5 kHz) in noise, and at -10 to -14 dB under fading. Details and the chart are in `modem/README.md` and `results/`.
-- The numbers the prototype uses are test values. The spec keeps them as **TBD** until they are agreed.
-- Next: agree the L0 numbers and put them in the spec, add the faster levels, then the link layer (beacon, answer, negotiation, acknowledgments).
+- **Milestone 1 is done (18 November 2026):** the channel simulator and the first modem slice work end to end in simulation.
+- **Milestone 2 is done (18 November 2026):** five speed levels (L0 to L4), automatic level choice, the 60- and 90-second airtime limits, and message splitting. In noise alone, a 200-character message goes as one 16-second frame at -7 dB or better, one 59-second frame down to -12 dB, one 88-second frame down to -14 dB, and four 77-second parts below that; the slowest level decoded every test frame at -21 dB. Fading costs about 9 dB or more. Details and charts are in `modem/README.md` and `results/`.
+- The signature chirp pair is agreed and in the spec. The other numbers the prototype uses are test values; the spec keeps them as **TBD** until they are agreed.
+- Next: text compression, the LDPC code, fading-aware level limits, then the link layer (beacon, answer, negotiation, acknowledgments).
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
