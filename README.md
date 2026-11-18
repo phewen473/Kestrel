@@ -20,6 +20,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 |---|---|
 | `docs/spec/kestrel-spec.md` | The technical description (draft) |
 | `docs/spec/CHANGELOG.md` | What changed in each version of the spec |
+| `LICENSE`, `docs/LICENSE-CC-BY-4.0.txt`, `NOTICE` | License texts and the attribution notice |
 
 Software (channel simulator, modem and operator program) will be added here as it is built.
 
@@ -28,6 +29,22 @@ Software (channel simulator, modem and operator program) will be added here as i
 - Design decisions are being drafted; numbers marked **TBD** in the spec are placeholders.
 - Next: complete the written spec, then build an HF channel simulator, then a modem prototype.
 - No on-air testing will happen until the spec describing that version of the signal is published here.
+
+## Development
+
+Kestrel is being built for Linux, Windows and Raspberry Pi alike.
+
+- **Design and testing:** Python (NumPy, SciPy, matplotlib) for the HF channel simulator and modem prototypes. Python stays as the test bench for everything that follows.
+- **Modem core:** a portable C++ library built with CMake, with a plain C interface.
+- **Operator program:** Qt, so one program runs on all platforms.
+- **Radio and audio:** Hamlib for rig control, PortAudio for sound.
+
+## License and attribution
+
+- **Software:** Apache License 2.0 (`LICENSE`).
+- **Specification and documents (`docs/`):** Creative Commons Attribution 4.0 International (`docs/LICENSE-CC-BY-4.0.txt`).
+
+Both licenses require credit to the original. Anyone redistributing or modifying Kestrel must keep the `NOTICE` file, credit the original Kestrel project at https://github.com/phewen473/Kestrel, and state clearly what they changed.
 
 ## Contact
 

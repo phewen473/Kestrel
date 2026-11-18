@@ -1,0 +1,15 @@
+Kestrel (KES) adaptive HF digital mode
+Copyright 2026 phewen473 and Kestrel contributors
+https://github.com/phewen473/Kestrel
+
+Kestrel was originally conceived and designed by phewen473.
+
+Any redistribution of Kestrel, in original or modified form, and any work
+derived from it, must retain this NOTICE and must credit the original
+Kestrel project at the address above. Modified versions must state clearly
+that they have been changed from the original.
+
+Software in this repository is licensed under the Apache License, Version 2.0
+(see LICENSE). The specification and other documents under docs/ are licensed
+under the Creative Commons Attribution 4.0 International License
+(see docs/LICENSE-CC-BY-4.0.txt).
