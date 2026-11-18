@@ -72,6 +72,7 @@ class Panel:  # the control panel window
         self.stop = threading.Event()  # set when the operator presses Stop
         self.worker = None  # the thread running the station, when there is one
         self.outbox = []  # messages queued for the partner
+        self.station = None  # the station that is running now, when there is one, so a message can be handed straight to it
         self.entries = []  # the frequency entries behind the drop-down list
         root.title("Kestrel")  # window title
         root.columnconfigure(1, weight=1)  # the middle column stretches with the window
@@ -201,9 +202,14 @@ class Panel:  # the control panel window
     def queue_message(self):  # add the typed message to the outbox
         text = self.message.get().strip()  # what was typed
         if text:  # something was
-            self.outbox.append(text)  # queue it
             self.message.delete(0, "end")  # clear the box
-            self.say(f"queued for the partner: {text}")  # confirm
+            station = self.station  # the station running at this moment, if any
+            if station is not None:  # one is running
+                station.queue(text)  # hand it the message now; it goes in the contact in progress or the next one
+                self.say(f"queued with the running station: {text}")  # confirm
+            else:  # nothing is running
+                self.outbox.append(text)  # keep it for the next Listen or Beacon
+                self.say(f"queued for the next Listen or Beacon: {text}")  # confirm
 
     def save_settings(self):  # remember the current settings
         self.settings = {"call": self.call.get().strip(), "grid": self.grid.get().strip(), "frequency": self.frequency.current(), "audio_in": self.audio_in.get(),  # (continued)
@@ -260,13 +266,17 @@ class Panel:  # the control panel window
             station.beacon() if mode == "beacon" else station.listen()  # call, or wait to be called
             for text in job["messages"]:  # the queued messages
                 station.queue(text)  # into the station's outbox
+            self.station = station  # from here on, newly queued messages go straight to this station
             run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=self.stop.is_set)  # the live loop
-            self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting")  # the outcome for sent traffic
+            self.station = None  # the run is over; later messages wait for the next one
+            self.outbox = list(station.outbox) + self.outbox  # anything it did not get to send is kept for the next run
+            self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)")  # the outcome for sent traffic
             for text in station.inbox:  # everything received
                 self.say(f"received: {text}")  # show it
         except Exception as problem:  # report any failure instead of dying silently
             self.say(f"stopped by a problem: {problem}")  # what went wrong
         finally:  # always tidy up
+            self.station = None  # no station is running any more, whatever happened
             if ptt is not None:  # a transmit switch was opened
                 ptt.close()  # make sure the transmitter is off
             if rig is not None:  # rig control was opened
