@@ -99,7 +99,7 @@ Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; th
 - **The chirp pair works.** One sweep up and one down lets the receiver separate timing from frequency error. It measured a 15 Hz offset to within half a hertz at -15 dB.
 - **In deep noise the chirp was the weak link at first.** A noise peak could outrank the real chirp. The receiver now keeps the best three candidates and lets the header check choose.
 - **Speed costs what theory says.** Each level's limit moved by almost exactly the ratio of tone lengths, so the level table can be planned on paper.
-- **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification still says the header is sent at the most robust level; this needs a decision.
+- **A header at L0 would cost every frame about 10 seconds.** That is why the header is sent at the frame's own level and the receiver discovers the level. This was agreed and has been in the specification since v0.7.
 - **Fading costs about 9 dB or more** at the every-frame point, and heavy fading leaves a few percent of frames failing until the signal is much stronger. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
 - **The SNR reading runs about 2 dB low in heavy fading**, because fast fading smears each tone's energy. The level choice above uses noise-only limits; the link layer will need fading-aware limits.
 

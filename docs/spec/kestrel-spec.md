@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.6 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.7 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -42,10 +42,12 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 Every frame has three parts, in order:
 
 1. **Chirp pair:** a linear frequency sweep up from 500 Hz to 2500 Hz lasting 1 second, followed at once by a linear sweep down from 2500 Hz to 500 Hz lasting 1 second (audio frequencies; 2 seconds in all). Each sweep fades in and out over 20 ms. The pair is used to find the frame and to measure its timing and frequency offset. Two sweeps are used because a single sweep cannot tell a timing error from a frequency error: a frequency error moves the two detection peaks in opposite directions, while a timing error moves them together.
-2. **Header:** a short block sent at the most robust level, whatever the level of the rest of the frame. It states the frame type, speed level, size class and the addresses needed to route it. Exact fields: **TBD**.
+2. **Header:** a short block sent at the same speed level as the body. It states the frame type, the speed level, the size class and, for a split message, the part number and the number of parts. It carries its own check value and is sent twice in a row, so it is more robust than the body that follows it. The addresses needed to route the frame, and the exact fields: **TBD**.
 3. **Body:** the payload at the negotiated speed level, with known pilot symbols spread through it so the receiver can keep tracking timing, frequency and fading to the end.
 
-Because the header states the level and size, the receiver always knows how long the frame is and how to decode it. No global time slots are needed.
+The receiver is not told the level in advance. After the chirp pair it tries to read the header at each speed level in turn, and accepts the level at which the header's check value matches and the header's level field names that same level. Sending the header at the frame's own level keeps fast frames short: a header at the slowest level would add about 10 seconds to every frame.
+
+Because the header states the level and size, the receiver then knows how long the frame is and how to decode it. No global time slots are needed.
 
 ### 5.2 Speed levels
 

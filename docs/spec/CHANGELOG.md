@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.7 (draft) - 18 November 2026
+
+- The header is now sent at the frame's own speed level, not at the most robust level. The receiver finds the level by trying the header at each one and accepting the level whose check value matches and whose level field agrees. Chosen after simulator tests: every test frame was received at the right level, and fast frames avoid about 10 seconds of header.
+- The header also carries the part number and number of parts of a split message.
+
 ## 0.6 (draft) - 18 November 2026
 
 - Signature chirp fixed as a pair: 500 to 2500 Hz up in 1 second, then 2500 to 500 Hz down in 1 second, each with 20 ms fades. Chosen after simulator tests showed the pair separates timing error from frequency error.
