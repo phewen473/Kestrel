@@ -71,15 +71,16 @@ Two things were found and fixed:
 - **The sound card cut off the last fifth of a second of every transmission.** Frames still decoded, because the error correction covered the loss, but the receiver read the missing tones as fading. Each transmission is now followed by half a second of silence.
 - **The static-crash blanker silenced strong signals.** It judged "loud" against the whole recording, so a strong frame in a mostly quiet recording looked like one long crash. It now judges each tenth of a second against its own surroundings.
 
-Four lessons from testing, now built in:
+Five lessons from testing; the first four are now built in:
 
 - **Name sound devices, never number them.** Windows renumbers its sound devices whenever one is plugged in or removed (a Bluetooth headset connecting is enough), and a station given numbers then plays into the wrong device. The tools accept part of a device's name, and the control panel stores names.
 - **A station leaves a full second between its own transmissions,** and starts each with a third of a second of silence, so the radio and sound card are settled before the chirp.
 - **Ask the radio for a wide receive filter.** In the first two-radio test the tuned radio heard nothing: rig control had left it on its narrow data filter (600 Hz), which removed the signal. Tuning now asks for a 3000 Hz filter, which Kestrel's 500 to 2500 Hz chirp needs.
 - **A busy computer can lose received audio.** With the control panel and the decoder sharing one computer, the sound card occasionally threw away a little audio that was not collected in time, and one acknowledgment failed its check. The sound card is now opened with generous buffering, and if it still loses audio the station says so in its log.
+- **Check where the radio centres its data-mode filter.** One radio centred its data filter on 0 Hz of audio instead of 1500 Hz, so even a 3000 Hz filter passed only the lower half of the signal. Slow frames just got through and fast ones read as heavy fading. On that radio the cure was its data shift menu setting, put back to 1500 Hz. If a strong, steady signal reports a high fading index, look at the receive filter first.
 
 ## Not done yet
 
-- **A test with a real radio.** Audio levels, the radio's filters and transmitter keying have not been tried.
+- **Messages between real radios, and a real distance.** Two radios in one room have locked at L4 and closed properly (18 November 2026), but no text was sent, and nothing has been tried over a path with real noise and fading.
 - **Hearing while transmitting.** The station ignores its input while it transmits, and for the moment after.
 - **Timing on a busy computer.** The station allows 10 seconds beyond a reply's own length before deciding it was lost.

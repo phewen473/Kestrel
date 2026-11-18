@@ -62,8 +62,9 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 8 is done (18 November 2026):** the reply window (spec v0.14). When several stations answer one beacon and collide, the next beacon opens four reply slots and each station picks one at random; the caller works the strongest and beacons again for the rest. In simulation, groups of two to five answering stations were all worked.
 - **Milestone 9 is done (18 November 2026):** Kestrel on real audio. A continuous receiver, sound-card input and output, transmitter keying, and rig control (frequency, mode, transmit) through Hamlib's rigctld, the rig-control engine WSJT-X uses. Two live stations on one PC, joined by virtual audio cables, completed a whole contact in real time. Not yet tried with a real radio. See `live/README.md`.
 - **Preselected frequencies (spec v0.15):** one meeting frequency each on 40, 30 and 20 metres (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband), all inside the 97.221(b) segments. A small control panel (`tools/kestrel_panel.py`) offers them in a drop-down list, and operators can add frequencies of their own.
-- Next: a first test with a real radio, then store-and-forward.
-- No on-air testing will happen until the spec describing that version of the signal is published here.
+- **First contact between two real radios (18 November 2026):** two HF transceivers in the same room, one on a dummy load, on 10144.0 kHz. Beacon, answer, lock at the fastest level (L4) in both directions, and a proper close with identification from each side, in 100 seconds. Signal readings were +27 to +33 dB with no fading. No message text was sent in that first contact. Two radio settings mattered: the receive filter must be about 3000 Hz wide, and it must be centred near 1500 Hz of audio (on some radios the data mode centres it elsewhere).
+- Next: messages between the two radios, a contact over a real distance, then store-and-forward.
+- On-air tests use only a version of the signal whose spec is already published here.
 
 ## Development
 
@@ -124,6 +125,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- First two-radio contact; control panel shows the station's state; rig control asks for a 3000 Hz receive filter; Windows setup files; panel profiles for a second radio.
 - Spec v0.15: preselected frequencies for 40, 30 and 20 metres.
 - Milestone 9: live sound-card tools, continuous receiver, rig control through rigctld.
 - Milestone 8 and spec v0.14: reply window for several answering stations.
@@ -140,7 +142,7 @@ Last commits (all 2026-11-18):
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): first test with a real radio, then store-and-forward; nets and L5 after that. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): messages between the two radios and a contact over a real distance, then store-and-forward; nets and L5 after that. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
