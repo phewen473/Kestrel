@@ -156,3 +156,15 @@ def test_operator_can_keep_frequencies_of_their_own(tmp_path):  # the list behin
         except ValueError:  # refused
             raised = True  # as it should be
         assert raised  # nothing bad is ever saved
+
+
+def test_status_from_log_lines():  # the panel's status display reads the station's state from log lines
+    from live import status_for  # the function under test
+    assert status_for("   73.0s KO4WSC: locked with W1AW; told to send at L4, asking for L3")[0] == "LOCKED with W1AW  -  sending at L4, receiving at L3"  # the beaconing side's lock line
+    assert status_for("  151.0s KO4WSC: locked with W1AW; told to send at L4")[0] == "LOCKED with W1AW  -  sending at L4"  # the answering side's lock line
+    assert status_for("  104.3s KO4WSC: heard W1AW at +26 dB; answering, asking for L4")[0] == "ANSWERING W1AW"  # a beacon being answered
+    assert status_for("  170.1s KO4WSC: contact closed by partner")[0] == "CONTACT CLOSED"  # the end of a contact
+    assert status_for("    0.0s  KO4WSC on the air as answerer")[0].startswith("LISTENING")  # waiting for a beacon
+    assert status_for("    0.0s  sending beacon at L0, 28.4 s")[0].startswith("CALLING")  # calling
+    assert status_for("  126.7s  finished")[0] == "STOPPED"  # the run has ended
+    assert status_for("   91.2s  heard acknowledgment at L4, +14.4 dB") is None  # an ordinary line changes nothing

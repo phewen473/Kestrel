@@ -64,7 +64,7 @@ python tools/kestrel_panel.py --profile second                         (a second
 python tools/live_frequencies.py                                       (show the frequency list; --add and --remove your own)
 ```
 
-`kestrel_panel.py` opens a window with a frequency drop-down list (Kestrel's meeting frequencies plus your own), drop-down lists for the sound devices and keying method, a message box, and buttons for Monitor, Listen, Beacon and Stop. "Add..." puts a frequency of your own on the list. Your settings and frequencies are kept in `local/`, which Git ignores.
+`kestrel_panel.py` shows the station's state in large letters above its log (LISTENING, CALLING, ANSWERING, LOCKED with the partner's callsign and the two speed levels, CONTACT CLOSED). It opens a window with a frequency drop-down list (Kestrel's meeting frequencies plus your own), drop-down lists for the sound devices and keying method, a message box, and buttons for Monitor, Listen, Beacon and Stop. "Add..." puts a frequency of your own on the list. Your settings and frequencies are kept in `local/`, which Git ignores.
 
 `live_send.py` and `live_station.py` take `--ptt none|rig|cat|rts|dtr`, `--rig host:port`, `--band 40|30|20` (Kestrel's preselected frequency for that band), `--freq` (kHz), `--mode`, `--port`, `--baud` and `--gain`. Only transmit where your licence allows, with the published specification matching the program.
 

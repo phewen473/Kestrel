@@ -5,6 +5,7 @@ simulator is driven here by the clock on the wall, a sound-card input
 and a sound-card output. Nothing in the link rules knows the difference.
 """
 
+import re  # finds callsigns and levels in log lines
 import time  # the real clock
 
 from link.params import TURNAROUND_S  # pause between hearing a frame and replying
@@ -14,6 +15,41 @@ from .listener import Listener  # the continuous receiver
 
 KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
+
+
+def status_for(line):  # the station's state, as far as one log line shows it
+    """Return (words, colour) for a status display if `line` marks a change of state, else None.
+
+    The control panel shows the latest of these above its log, so the
+    operator can see at a glance whether the station is listening, calling,
+    locked with a partner or finished.
+    """
+    found = re.search(r"locked with (\S+); told to send at L(\d)(?:, asking for L(\d))?", line)  # the lock was made
+    if found:  # yes
+        receive = f", receiving at L{found.group(3)}" if found.group(3) else ""  # the level asked of the partner, when the line gives it
+        return f"LOCKED with {found.group(1)}  -  sending at L{found.group(2)}{receive}", "dark green"  # locked, and at what speeds
+    if "reacquired" in line:  # the partner was found again after a gap
+        return "LOCKED again after a gap", "dark green"  # locked once more
+    if "reacquiring" in line:  # the partner has gone quiet
+        return "PARTNER LOST  -  probing at the slowest level", "dark orange"  # trying to find it again
+    if "stopped by a problem" in line:  # something went wrong
+        return "STOPPED BY A PROBLEM  -  see the log", "red"  # send the operator to the log
+    if "contact closed" in line:  # the contact ended properly
+        return "CONTACT CLOSED", "black"  # finished with this partner
+    if "lock given up" in line or "lock lost" in line:  # the partner went away and did not come back
+        return "LOCK LOST  -  partner not heard", "red"  # the contact ended badly
+    if "no answer to the beacon" in line:  # nobody answered any of the beacons
+        return "NO ANSWER to the beacons", "black"  # nobody there
+    found = re.search(r"heard (\S+) at .* dB; answering", line)  # a beacon was heard and is being answered
+    if found:  # yes
+        return f"ANSWERING {found.group(1)}", "dark blue"  # say who
+    if "on the air as beaconer" in line or "sending beacon" in line:  # this station is calling
+        return "CALLING  -  beaconing for a partner", "dark blue"  # calling
+    if "on the air as answerer" in line or "listening again" in line:  # this station is waiting for a beacon
+        return "LISTENING for a beacon", "dark blue"  # listening
+    if line.strip() in ("stopped", "finished") or line.rstrip().endswith("s  finished"):  # the run has ended
+        return "STOPPED", "black"  # not running
+    return None  # this line changes nothing
 
 
 def describe(result):  # one line about a received frame

@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the reposi
 sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run as a script
 
 from link import Station  # the link rules  # noqa: E402
-from live import Listener, describe, run_station  # the continuous receiver, a one-line frame description, the live loop  # noqa: E402
+from live import Listener, describe, run_station, status_for  # the continuous receiver, a one-line frame description, the live loop, the state shown by a log line  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies  # the frequency list  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
@@ -98,9 +98,11 @@ class Panel:  # the control panel window
         for text, mode in (("Monitor (receive only)", "monitor"), ("Listen (answer beacons)", "listen"), ("Beacon (call)", "beacon")):  # the three ways to run
             ttk.Button(actions, text=text, command=lambda m=mode: self.start(m)).pack(side="left", padx=4)  # one button each
         ttk.Button(actions, text="Stop", command=self.stop_station).pack(side="left", padx=12)  # the Stop button
+        self.status = tk.Label(root, text="NOT RUNNING", font=("Segoe UI", 14, "bold"), fg="black", anchor="w")  # the station's state in large letters
+        self.status.grid(row=11, column=0, columnspan=3, sticky="ew", padx=6, pady=2)  # place it above the log
         self.log = tk.Text(root, height=20, width=120, font=("Consolas", 9), state="disabled")  # the running log
-        self.log.grid(row=11, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)  # place it
-        root.rowconfigure(11, weight=1)  # the log stretches with the window
+        self.log.grid(row=12, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)  # place it
+        root.rowconfigure(12, weight=1)  # the log stretches with the window
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
         root.after(100, self.show_lines)  # start passing log lines to the window
@@ -127,7 +129,13 @@ class Panel:  # the control panel window
     def show_lines(self):  # move waiting log lines into the window
         while not self.lines.empty():  # every waiting line
             self.log.configure(state="normal")  # allow writing
-            self.log.insert("end", self.lines.get() + "\n")  # add the line
+            line = self.lines.get()  # the next waiting line
+            state = status_for(line)  # does it mark a change of state?
+            if state is not None:  # yes
+                self.status.configure(text=state[0], fg=state[1])  # show the new state in its colour
+            elif "monitoring" in line.lower():  # the receive-only monitor has started
+                self.status.configure(text="MONITORING  -  receive only", fg="dark blue")  # say so
+            self.log.insert("end", line + "\n")  # add the line
             self.log.see("end")  # keep the newest line in view
             self.log.configure(state="disabled")  # back to read-only
         self.root.after(100, self.show_lines)  # look again in a tenth of a second
