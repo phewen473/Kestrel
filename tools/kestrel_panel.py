@@ -137,6 +137,11 @@ class Panel:  # the control panel window
             elif "monitoring" in line.lower():  # the receive-only monitor has started
                 self.status.configure(text="MONITORING  -  receive only", fg="dark blue")  # say so
             self.log.insert("end", line + "\n")  # add the line
+            try:  # also keep the line in a file, so a run can be studied afterwards
+                with open(os.path.splitext(SETTINGS_FILE)[0] + ".log", "a", encoding="utf-8") as handle:  # the log file sits beside this panel's settings file
+                    handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {line}\n")  # the line, with the date and time of day
+            except OSError:  # the file could not be written
+                pass  # the window still shows the line, which is what matters
             self.log.see("end")  # keep the newest line in view
             self.log.configure(state="disabled")  # back to read-only
         self.root.after(100, self.show_lines)  # look again in a tenth of a second
