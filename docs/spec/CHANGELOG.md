@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.5 (draft) - 18 November 2026
+
+- Airtime limits: 60 seconds per transmission by default, extended automatically to 90 seconds in poor conditions; both are operator settings.
+- Messages that do not fit within the limit are split into parts, each sent and acknowledged as its own frame.
+
 ## 0.4 (draft) - 18 November 2026
 
 - Beacons carry a mail-check flag. Holders deliver or pass on mail only in reply to a beacon with that flag; they never push mail unprompted.

@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.4 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.5 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -62,7 +62,7 @@ The number of levels and their exact waveforms are **TBD**. Working estimates fo
 | L1 | about 2 min | about −19 dB | |
 | L0 | about 4 min | about −22 dB | beacons, calls, headers |
 
-A 100-character frame takes about half these times and a 50-character frame about a quarter, plus the fixed chirp and header.
+A 100-character frame takes about half these times and a 50-character frame about a quarter, plus the fixed chirp and header. Frames longer than the airtime limits in Section 6.8 are not sent; at the slow levels a long message is split into shorter parts instead.
 
 ### 5.3 Error correction and interleaving
 
@@ -125,6 +125,17 @@ Each band has default starting assumptions for noise, fading and multipath (for 
 
 Beacons, calls and messages to no particular station are sent at a robust fixed level, since there is no partner to negotiate with.
 
+### 6.8 Airtime limits and message splitting
+
+No single transmission should hold the frequency for long. The link applies these rules automatically, using the channel measurements it already has:
+
+1. **Fastest level first.** The link uses the fastest speed level the measured conditions support.
+2. **Default limit: 60 seconds per transmission.** The link does not choose a level that would make a message frame run longer than this.
+3. **Poor-conditions limit: 90 seconds.** When the measured conditions are too poor for the message to fit in 60 seconds, the link allows up to 90 seconds without operator action.
+4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. Each part carries the message ID, its part number and the number of parts; the message is delivered, and its receipt issued, when all parts have arrived. Part fields: **TBD**.
+
+Both limits are operator settings; 60 and 90 seconds are the defaults.
+
 ## 7. Nets (optional)
 
 - **Net control:** a beaconing station may open a net instead of a one-to-one link. Stations that answer are admitted as members.
@@ -162,6 +173,7 @@ Each station applies the same checks to every message it receives: deliver it if
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
 - Message lifetime; how long receipts stay listed.
+- Message splitting: part fields, and how parts are held and forwarded by holding partners.
 - Beacon size: short hashed message IDs, caps on the held-mail and receipt lists, and which entries go first when a list is full.
 - Storage limits: how much mail a holder will carry in total and per originating station.
 - Confirm with ARRL that reply-on-mail-check delivery by unattended holders fits 97.221, and which band segments apply.
