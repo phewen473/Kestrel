@@ -20,14 +20,33 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 |---|---|
 | `docs/spec/kestrel-spec.md` | The technical description (draft) |
 | `docs/spec/CHANGELOG.md` | What changed in each version of the spec |
+| `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
+| `modem/` | Modem prototype (Python reference): chirp, L0 waveform, header, error correction, receiver |
+| `tests/` | Automated tests |
+| `tools/` | Scripts to run by hand: a one-frame demo and the SNR sweep |
+| `results/` | Measured results: decode rate against SNR, and a picture of the signal |
 | `LICENSE`, `docs/LICENSE-CC-BY-4.0.txt`, `NOTICE` | License texts and the attribution notice |
 
-Software (channel simulator, modem and operator program) will be added here as it is built.
+Each folder has its own README.
+
+## Try it
+
+Works the same on Linux, Windows and Raspberry Pi OS (Python 3.10 or newer).
+
+```
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt        (Windows: .venv\Scripts\pip install -r requirements.txt)
+.venv/bin/python -m pytest -q                    (runs the tests; takes a few seconds)
+.venv/bin/python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
+```
+
+The demo sends one message through the simulated channel, decodes it, and writes a sound file and a waterfall picture into `results/`.
 
 ## Where things stand
 
-- Design decisions are being drafted; numbers marked **TBD** in the spec are placeholders.
-- Next: complete the written spec, then build an HF channel simulator, then a modem prototype.
+- **Milestone 1 is done (18 November 2026):** the channel simulator and the first modem slice work end to end in simulation. The slowest level (L0) sends a 50-character message in 74 seconds and decoded every test frame at -21 dB SNR (2.5 kHz) in noise, and at -10 to -14 dB under fading. Details and the chart are in `modem/README.md` and `results/`.
+- The numbers the prototype uses are test values. The spec keeps them as **TBD** until they are agreed.
+- Next: agree the L0 numbers and put them in the spec, add the faster levels, then the link layer (beacon, answer, negotiation, acknowledgments).
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development

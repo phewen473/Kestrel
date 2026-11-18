@@ -1,0 +1,12 @@
+# Files Git should not track.
+# (Git only allows comments on their own lines in this file.)
+
+# Local Python environment
+.venv/
+# Python's compiled-file cache
+__pycache__/
+*.pyc
+# pytest's own cache
+.pytest_cache/
+# Demo sound file (recreate with tools/demo.py)
+results/demo.wav

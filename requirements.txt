@@ -1,0 +1,5 @@
+# Python packages the Kestrel prototype needs (install with: pip install -r requirements.txt)
+numpy>=1.26  # arrays and FFTs
+scipy>=1.11  # signal-processing helpers and WAV files
+matplotlib>=3.8  # charts and waterfall pictures
+pytest>=8.0  # test runner

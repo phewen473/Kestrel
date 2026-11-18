@@ -1,0 +1,94 @@
+"""HF channel simulator: makes a clean signal sound like it crossed a real HF path.
+
+It can add:
+  * noise at a chosen signal-to-noise ratio (SNR, quoted in 2.5 kHz like WSJT-X),
+  * fading and multipath (the Watterson two-path model used in ITU-R F.1487),
+  * a frequency offset and a steady frequency drift,
+  * static crashes (short, very loud bursts).
+Every random choice comes from a seeded generator, so any test can be repeated exactly.
+"""
+
+import numpy as np  # numerical arrays
+from scipy.fft import next_fast_len  # finds a nearby length the FFT handles quickly
+from scipy.signal import hilbert  # builds the complex (analytic) form of a real signal
+
+FS = 12000  # audio sample rate, in samples per second
+REF_BANDWIDTH_HZ = 2500.0  # bandwidth that SNR figures are quoted in
+
+CONDITIONS = {  # named channel conditions: (Doppler spread in Hz, delay between paths in ms)
+    "awgn": None,  # noise only: no fading at all
+    "good": (0.1, 0.5),  # ITU-R F.1487 mid-latitude quiet
+    "moderate": (0.5, 1.0),  # ITU-R F.1487 mid-latitude moderate
+    "poor": (1.0, 2.0),  # ITU-R F.1487 mid-latitude disturbed
+}  # end of the table
+
+
+def _analytic(x):  # real signal -> complex signal
+    """Return the complex (analytic) form of `x`, which lets us fade and shift it cleanly."""
+    return hilbert(x, N=next_fast_len(len(x)))[:len(x)]  # pad to a fast length, convert, trim back
+
+
+def _fading_tap(n, spread_hz, rng, fs):  # one path's slowly wandering gain
+    """Return `n` complex gain values that wander at the given Doppler spread, with average power 1."""
+    if spread_hz <= 0:  # no spread means a fixed path
+        return np.full(n, np.exp(2j * np.pi * rng.random()))  # constant gain with a random phase
+    nfast = next_fast_len(n)  # a length the FFT handles quickly
+    freqs = np.fft.fftfreq(nfast, 1 / fs)  # frequency of every FFT bin
+    sigma = spread_hz / 2  # the standard defines spread as twice the Gaussian width
+    shape = np.exp(-freqs ** 2 / (4 * sigma ** 2))  # Gaussian-shaped filter (square root of the wanted spectrum)
+    white = rng.standard_normal(nfast) + 1j * rng.standard_normal(nfast)  # random starting spectrum
+    tap = np.fft.ifft(white * shape)[:n]  # filter it and return to the time domain
+    return tap * nfast / np.sqrt(2 * np.sum(shape ** 2))  # scale so the long-run average power is exactly 1
+
+
+def watterson(a, spread_hz, delay_ms, rng, fs=FS):  # two-path fading
+    """Pass complex signal `a` through two independently fading paths, the second one delayed."""
+    delay = int(round(delay_ms * fs / 1000))  # the delay in samples
+    late = np.concatenate([np.zeros(delay, dtype=complex), a[:len(a) - delay]])  # the delayed copy
+    first = _fading_tap(len(a), spread_hz, rng, fs)  # wandering gain of the first path
+    second = _fading_tap(len(a), spread_hz, rng, fs)  # wandering gain of the second path
+    return (first * a + second * late) / np.sqrt(2)  # sum the paths, keeping the average power unchanged
+
+
+def add_noise(x, snr_db, signal_power, rng, fs=FS):  # background noise
+    """Add white noise so the SNR in 2.5 kHz is `snr_db`, given the signal's average power."""
+    noise_in_ref = signal_power / 10 ** (snr_db / 10)  # noise power allowed inside 2.5 kHz
+    sigma = np.sqrt(noise_in_ref * (fs / 2) / REF_BANDWIDTH_HZ)  # matching noise level across the whole audio band
+    return x + sigma * rng.standard_normal(len(x))  # add the noise
+
+
+def add_crashes(x, rate_per_s, signal_power, rng, mean_ms=5.0, level_db=30.0, fs=FS):  # static crashes
+    """Add short loud bursts: `rate_per_s` per second on average, each `level_db` above the signal."""
+    y = x.copy()  # work on a copy
+    count = rng.poisson(rate_per_s * len(x) / fs)  # how many crashes land in this recording
+    amp = np.sqrt(signal_power) * 10 ** (level_db / 20)  # how loud each crash is
+    for _ in range(count):  # place the crashes one by one
+        begin = int(rng.integers(0, len(x)))  # where this crash starts
+        length = max(1, int(rng.exponential(mean_ms) * fs / 1000))  # how long it lasts
+        end = min(begin + length, len(x))  # do not run past the end of the recording
+        y[begin:end] += amp * rng.standard_normal(end - begin)  # add the burst
+    return y  # the signal with crashes
+
+
+def run_channel(x, snr_db, rng, condition="awgn", offset_hz=0.0, drift_hz_s=0.0, crash_rate=0.0, lead_s=1.0, tail_s=1.0, fs=FS):  # the whole channel in one call
+    """Return `x` as a receiver would hear it.
+
+    snr_db: SNR in 2.5 kHz (None for no noise); condition: a key of CONDITIONS;
+    offset_hz / drift_hz_s: frequency error and how fast it changes;
+    crash_rate: static crashes per second; lead_s / tail_s: silence added before and after.
+    """
+    power = float(np.mean(np.square(x)))  # average power of the clean signal, measured before padding
+    y = np.concatenate([np.zeros(int(lead_s * fs)), x, np.zeros(int(tail_s * fs))])  # add silence before and after
+    fading = CONDITIONS[condition]  # look up the named condition
+    if fading is not None or offset_hz != 0.0 or drift_hz_s != 0.0:  # fading or a frequency shift is wanted
+        a = _analytic(y)  # switch to the complex form
+        if fading is not None:  # fading is wanted
+            a = watterson(a, fading[0], fading[1], rng, fs)  # apply the two-path model
+        t = np.arange(len(a)) / fs  # time of every sample
+        a = a * np.exp(2j * np.pi * (offset_hz * t + 0.5 * drift_hz_s * t * t))  # apply offset and drift
+        y = a.real  # back to an ordinary real signal
+    if snr_db is not None:  # noise is wanted
+        y = add_noise(y, snr_db, power, rng, fs)  # add it
+    if crash_rate > 0:  # static crashes are wanted
+        y = add_crashes(y, crash_rate, power, rng, fs=fs)  # add them
+    return y  # what the receiver hears
