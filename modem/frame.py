@@ -22,7 +22,10 @@ from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the h
 from . import ldpc  # error correction for the body
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
-from .mfsk import bits_to_symbols, energies_to_llrs, noise_level, pilot_frequency_fit, symbol_energies, symbols_to_audio  # tone waveform
+from .mfsk import (  # tone waveform
+    band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, pilot_frequency_fit,  # (continued)
+    signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
+)  # end of the import list
 from .params import (  # frame format numbers
     BITS_PER_SYMBOL, BODY_CRC_BITS, CHAR_BITS, CHIRP_SAMPLES, FRAME_TYPE_MESSAGE, FS, HEADER_CRC_BITS,  # (continued)
     HEADER_FIELD_BITS, HEADER_REPEAT, LENGTH_BITS, M_TONES, MAX_PARTS, PILOT_EVERY, PILOT_START, PILOT_STEP,  # (continued)
@@ -75,6 +78,16 @@ def _header_bits(level, size_class, part, parts, compressed):  # the self-descri
     return np.concatenate([fields, crc8(fields)])  # fields followed by their check value
 
 
+def _body_symbols(data_bits, layout):  # body bits -> the tones of the body
+    """Return the tone number of every body symbol for the given body bits (check value included)."""
+    coded = ldpc.encode(data_bits)  # add error correction
+    coded = np.concatenate([coded, np.zeros(layout["padded"] - layout["coded"], dtype=np.uint8)])  # round up to whole tones
+    body_syms = np.zeros(layout["total"], dtype=np.int64)  # room for every body tone
+    body_syms[layout["data_pos"]] = bits_to_symbols(interleave(coded))  # shuffled data bits become the data tones
+    body_syms[layout["pilot_pos"]] = layout["pilot_tones"]  # known tones go in the pilot positions
+    return body_syms  # pilots and data tones, in sending order
+
+
 def build_frame(text, level=0, part=0, parts=1):  # the transmitter
     """Return the audio (floats between -1 and 1) of a frame carrying `text`.
 
@@ -90,11 +103,7 @@ def build_frame(text, level=0, part=0, parts=1):  # the transmitter
     header_syms = np.tile(header_syms, HEADER_REPEAT)  # send the header twice
     data_bits = text_to_bits(text, size_class, compressed)  # character count + text bits + padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
-    coded = ldpc.encode(data_bits)  # add error correction
-    coded = np.concatenate([coded, np.zeros(layout["padded"] - layout["coded"], dtype=np.uint8)])  # round up to whole tones
-    body_syms = np.zeros(layout["total"], dtype=np.int64)  # room for every body tone
-    body_syms[layout["data_pos"]] = bits_to_symbols(interleave(coded))  # shuffled data bits become the data tones
-    body_syms[layout["pilot_pos"]] = layout["pilot_tones"]  # known tones go in the pilot positions
+    body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
     return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # chirps, then all the tones
 
 
@@ -109,6 +118,7 @@ class RxResult:  # the receiver's report
     offset_hz: float = 0.0  # measured frequency offset at the start of the body
     drift_hz_s: float = 0.0  # measured frequency drift, in Hz per second
     snr_db: float = float("nan")  # measured signal-to-noise ratio in 2.5 kHz
+    fade_index: float = float("nan")  # how much the signal faded during the frame: 0 = steady, about 1 = deep, frequent fades
     chirp_quality: float = 0.0  # strength of the chirp detection
     level: int = -1  # speed level read from the header
     size_class: int = -1  # size class read from the header
@@ -152,11 +162,10 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     extra, drift = pilot_frequency_fit(x, body_start, layout["pilot_pos"], layout["pilot_tones"], spec, offset)  # fine frequency and drift from the pilots
     result.offset_hz = offset + extra  # best estimate of the offset at the start of the body
     result.drift_hz_s = drift  # best estimate of the drift
-    tone_e = symbol_energies(x, body_start, layout["total"], spec, result.offset_hz, drift)  # measure every body tone
+    band = band_energies(x, body_start, layout["total"], spec, result.offset_hz, drift)  # measure every bin of the tone band, for every body tone
+    tone_e = tone_energies(band, spec)  # the 32 tone positions
     noise = noise_level(tone_e)  # average noise energy per tone position
-    pilot_e = tone_e[layout["pilot_pos"], layout["pilot_tones"]].mean()  # average energy of the known pilot tones
-    ratio = max(pilot_e - noise, 1e-12 * noise) / noise  # signal energy compared with noise energy
-    result.snr_db = 10 * np.log10(ratio / (spec.seconds * REF_BANDWIDTH_HZ))  # convert to SNR in 2.5 kHz
+    _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
     llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]], noise))[:layout["coded"]]  # soft bits back in original order, padding dropped
     if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
         llrs = llrs + prior_llrs  # combine the two copies
@@ -171,7 +180,14 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
         result.reason = "body could not be read"  # say why we stopped
         return result  # give up on this copy
     result.ok = True  # success
+    _measure(result, band, _body_symbols(data, layout), noise, spec)  # better reading: now every tone of the body is known, not just the pilots
     return result  # the finished report
+
+
+def _measure(result, band, tones, noise, spec):  # fill in the channel measurements
+    """Put the SNR and fading index into `result`, from body symbols whose tones are known."""
+    ratio, result.fade_index = signal_report(known_tone_energies(band, tones, spec), noise)  # signal against noise, and how much it faded
+    result.snr_db = 10 * np.log10(max(ratio, 1e-12) / (spec.seconds * REF_BANDWIDTH_HZ))  # convert to SNR in 2.5 kHz
 
 
 def _score(result):  # how believable a failed attempt is

@@ -31,6 +31,14 @@ python tools/level_sweep.py --trials 40
 
 Does the same in noise only for each speed level, L0 to L4. It writes `results/levels_snr_sweep.csv` and `results/levels_snr_sweep.png`. The lowest SNR at which every frame decodes is what `modem/levels.py` records for each level. It takes a few minutes.
 
+## fading_sweep.py - measure every speed level with fading
+
+```
+python tools/fading_sweep.py --trials 40
+```
+
+Sends random messages at every level through noise only and through light, moderate and heavy fading, across a range of SNR values. For each point it records how many frames decoded, how far the receiver's own SNR reading was from the truth, and the receiver's fading index. It writes `results/levels_fading_sweep.csv` and `results/levels_fading_sweep.png`. The lowest SNR at which nine frames in ten decode in the worst of the three fading conditions is what `modem/levels.py` records as each level's fading limit. It takes about twenty minutes on two processor cores.
+
 ## make_spec_tables.py - write the specification's tables
 
 ```

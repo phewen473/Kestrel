@@ -58,6 +58,15 @@ For a 200-character message that works out as:
 | -14 dB or better | one L1 frame, 87 s (uses the 90-second allowance) | one L1 frame, 67 s (uses the allowance) |
 | weaker | four L0 frames, 76 s each | three L0 frames, 76 s each |
 
+When the signal is fading, pass `fading=True`. Each level then needs a stronger signal, and the same 200 characters (uncompressed) go as:
+
+| SNR (fading) | What is sent |
+|---|---|
+| -1 dB or better | one L4 frame, 16 s |
+| -2 dB | one L3 frame, 30 s |
+| -7 dB or better | one L2 frame, 59 s |
+| weaker | four L0 frames, 76 s each (L0 works to about -10 dB in fading) |
+
 `join_parts` puts a split message back together once every part has arrived.
 
 ## The numbers
@@ -80,7 +89,7 @@ All of these are now written into the specification (sections 4 and 5).
 | File | Contents |
 |---|---|
 | `params.py` | The shared prototype numbers |
-| `levels.py` | The speed levels and the SNR each one needs |
+| `levels.py` | The speed levels and the SNR each one needs, for steady and for fading signals |
 | `frame.py` | `build_frame` (transmitter) and `receive` (receiver) |
 | `plan.py` | Level choice, airtime limits, splitting and reassembly |
 | `chirp.py` | Makes and detects the signature chirp pair |
@@ -113,8 +122,31 @@ Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; th
 - **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification adopted this in v0.7.
 - **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones, and in heavy fading the every-frame point moved from -4 dB to -8 dB.
 - **Fading costs about 8 to 12 dB** at the every-frame point. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
-- **The SNR reading runs about 2 dB low in heavy fading**, because fast fading smears each tone's energy. The level choice above uses noise-only limits; the link layer will need fading-aware limits.
+- **Slow fading is the hard case for fast levels.** A fast frame is over in seconds, so a slow fade can swallow most of it and the interleaver has nothing to spread across. That is why the fastest levels need the biggest allowance for fading.
+
+## What the receiver measures (`mfsk.py`: `signal_report`)
+
+Every decoded frame comes back with two channel readings, which the link will send to the other station in its acknowledgment:
+
+| Reading | Meaning |
+|---|---|
+| `snr_db` | Signal-to-noise ratio in 2.5 kHz. After a frame decodes, the receiver knows every tone that was sent, so it measures all of them, including the bin on each side of each tone where fast fading smears the energy. |
+| `fade_index` | How much the signal faded during the frame: about 0 for a steady signal, about 1 for deep, frequent fades. Above 0.15 counts as fading. |
+
+Measured in `tools/fading_sweep.py`: the SNR reading is within about 1 dB of the truth in a level's working range (it reads up to 3 dB low on the fastest level in heavy fading with a strong signal, which errs on the safe side). The fading index stayed at zero for every noise-only frame, and flagged every frame in moderate and heavy fading. In light fading a very short frame can sit inside one slow fade and look steady, so about one in six of those is not flagged; the link layer will need to look at several frames, not one.
+
+## Limits for a fading signal
+
+| Level | Steady signal | Light fading | Moderate fading | Heavy fading | Limit used when fading |
+|---|---|---|---|---|---|
+| L0 | -20 dB | -16 dB | -14 dB | -12 dB | -12 dB |
+| L1 | -16 dB | -8 dB | -12 dB | -14 dB | -8 dB |
+| L2 | -15 dB | -9 dB | -11 dB | -11 dB | -9 dB |
+| L3 | -12 dB | -4 dB | -6 dB | -8 dB | -4 dB |
+| L4 | -9 dB | -3 dB | -3 dB | -5 dB | -3 dB |
+
+The steady column is where every test frame decoded. The fading columns are where nine frames in ten decoded (40 frames per point, 2 dB steps); the last column is the worst of the three. Retry combining is meant to cover the tenth frame.
 
 ## Not built yet
 
-A fifth, faster level (L5, which needs a different waveform), fading-aware level limits, addresses and message IDs, the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.
+A fifth, faster level (L5, which needs a different waveform), addresses and message IDs, the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.

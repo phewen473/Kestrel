@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.8 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.9 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -80,17 +80,22 @@ Every level uses the same signalling: 32 tones, one tone at a time, each tone ca
 
 Exact values: with N samples per tone, one bin is 12000 / N Hz. The tone spacing is 2 bins for L0 to L2 and 1 bin for L3 and L4. The lowest tone is at bin floor(1500 x N / 12000 + 0.5) minus 16 times the spacing in bins.
 
-Airtime of a whole frame, and the weakest signal at which every test frame decoded in simulation (noise only, SNR in 2.5 kHz):
+Airtime of a whole frame, and the weakest signal each level needs in simulation (SNR in 2.5 kHz):
 
-| Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR |
-|---|---|---|---|---|---|
-| L0 | 76 s | 136 s | 195 s | 255 s | -20 dB |
-| L1 | 27 s | 47 s | 67 s | 87 s | -16 dB |
-| L2 | 19 s | 32 s | 46 s | 59 s | -15 dB |
-| L3 | 10 s | 17 s | 24 s | 30 s | -12 dB |
-| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB |
+| Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR, steady signal | Weakest SNR, fading signal |
+|---|---|---|---|---|---|---|
+| L0 | 76 s | 136 s | 195 s | 255 s | -20 dB | -12 dB |
+| L1 | 27 s | 47 s | 67 s | 87 s | -16 dB | -8 dB |
+| L2 | 19 s | 32 s | 46 s | 59 s | -15 dB | -9 dB |
+| L3 | 10 s | 17 s | 24 s | 30 s | -12 dB | -4 dB |
+| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB | -3 dB |
 
-L1 and L2 are sized so that a full 200-character frame fits the 90-second and 60-second limits of Section 6.8. Frames longer than those limits are not sent; at the slow levels a long message is split into shorter parts instead. Fading raises the signal needed: at L0 in simulation, by about 8 dB in light and moderate fading and about 12 dB in heavy fading.
+- **Steady signal:** noise only; every test frame decoded at this SNR.
+- **Fading signal:** nine test frames in ten decoded at this SNR in the worst of three simulated HF paths (light, moderate and heavy fading, ITU-R F.1487). The remaining frames are recovered by combining retries (Section 5.6).
+
+A station chooses the fastest level whose limit, for the kind of signal it is measuring (Section 5.7), is at least 2 dB below the measured SNR. These limits guide the choice; they do not change the signal, and they will be revised after on-air tests.
+
+L1 and L2 are sized so that a full 200-character frame fits the 90-second and 60-second limits of Section 6.8. Frames longer than those limits are not sent; at the slow levels a long message is split into shorter parts instead.
 
 A faster level (L5) is planned. It needs a different waveform, because tones this short would be too wide: **TBD**.
 
@@ -138,7 +143,16 @@ When a frame fails its check, the receiver keeps the soft values of the body. Th
 - The chirp pair gives the starting frequency offset and timing.
 - The pilots keep the frequency estimate current through the body.
 - Stations keep accurate clocks (NTP or GPS); this narrows the timing search but is not used to define time slots.
-- Each received frame yields a measurement of signal-to-noise ratio and frequency offset. Measurements of Doppler spread (fading speed) and delay spread (multipath) are planned. These are reported back to the sender in every acknowledgment.
+
+Each received frame yields three measurements, which are reported back to the sender in every acknowledgment:
+
+- **Frequency offset**, from the chirp pair and the pilots.
+- **Signal-to-noise ratio (SNR)** in 2.5 kHz. Once a frame has decoded, the receiver knows every tone that was sent. The signal energy is the average, over all body tones, of the energy at the sent tone plus the bin on each side of it, less the noise in those three bins. The side bins are included because fast fading moves part of a tone's energy into them. The noise is taken from the tone positions that were not sent.
+- **Fading index.** The spread (variance) of those per-tone energies, less the spread that noise alone would cause, divided by the square of the average signal energy. It is close to 0 for a steady signal and close to 1 for a signal that fades deeply and often during the frame. A frame with an index above 0.15 counts as a fading signal when choosing a level (Section 5.2).
+
+When a frame fails its check, the same measurements are made from the pilot tones alone.
+
+Measurements of Doppler spread (fading speed) and delay spread (multipath) are planned.
 
 ## 6. Link
 
@@ -167,7 +181,7 @@ A single bad frame never drops the lock. Timeouts and thresholds: **TBD**.
 
 ### 6.5 Acknowledgment and speed changes
 
-- Every frame is acknowledged (ACK) or rejected (NAK). Each ACK or NAK carries the receiver's latest channel measurements.
+- Every frame is acknowledged (ACK) or rejected (NAK). Each ACK or NAK carries the receiver's latest channel measurements: SNR, fading index and frequency offset (Section 5.7).
 - After several clean frames in a row the link steps up one level. Count: **TBD**.
 - When measurements show conditions slipping, the link steps down before frames start failing. After a failed frame it steps down and resends, with HARQ combining.
 - A short keep-alive holds the lock between messages.
@@ -222,7 +236,7 @@ Each station applies the same checks to every message it receives: deliver it if
 ## 9. Open items
 
 - Speed level L5 (a faster waveform) and any further levels.
-- Level limits in fading, and measurement of Doppler spread and delay spread.
+- Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
 - Addresses and message identifiers in the header; frame types other than a message (beacon, answer, acknowledgment).
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.

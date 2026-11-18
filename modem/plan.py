@@ -9,24 +9,35 @@ The rules (specification section 6.8):
 """
 
 from .frame import build_frame, frame_seconds  # transmitter and airtime calculator
-from .levels import LEVELS, MIN_SNR_DB  # the speed levels and the SNR each one needs
+from .levels import FADE_INDEX_LIMIT, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB  # the speed levels and the SNR each one needs, steady and fading
 from .params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, MAX_PARTS, SIZE_CLASSES  # limits and sizes
 from .text import fits, pick_size_class  # which size class a text needs, and whether a text fits one
 
 
-def pick_level(snr_db, margin_db=2.0):  # rule 1
-    """Return the number of the fastest level that works at `snr_db`, keeping `margin_db` in hand."""
-    usable = [spec.number for spec in LEVELS if snr_db >= MIN_SNR_DB[spec.number] + margin_db]  # every level the signal is strong enough for
+def is_fading(fade_index):  # steady signal or fading signal?
+    """Return True when a receiver's fading index says the signal is fading (or the index is missing)."""
+    return not fade_index <= FADE_INDEX_LIMIT  # written this way so a missing reading (not-a-number) counts as fading, the safe choice
+
+
+def pick_level(snr_db, margin_db=2.0, fading=False):  # rule 1
+    """Return the number of the fastest level that works at `snr_db`, keeping `margin_db` in hand.
+
+    Set `fading` when the signal is fading: each level then needs a
+    stronger signal, because fades wipe out parts of the frame.
+    """
+    limits = MIN_SNR_FADING_DB if fading else MIN_SNR_DB  # which table of limits applies
+    usable = [spec.number for spec in LEVELS if snr_db >= limits[spec.number] + margin_db]  # every level the signal is strong enough for
     return max(usable) if usable else 0  # the fastest of them; the slowest level when none qualifies
 
 
-def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_S, margin_db=2.0):  # rules 1 to 4
+def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_S, margin_db=2.0, fading=False):  # rules 1 to 4
     """Return a list of transmissions for `text`, one dict per frame.
 
     Each dict has: text (what this frame carries), level, part, parts,
     seconds (airtime) and extended (True when the frame needs the 90-second allowance).
+    Set `fading` when the signal is fading (see pick_level).
     """
-    level = pick_level(snr_db, margin_db)  # rule 1: fastest level the conditions support
+    level = pick_level(snr_db, margin_db, fading)  # rule 1: fastest level the conditions support
     whole = frame_seconds(pick_size_class(text), level)  # airtime if the message is sent whole
     if whole <= poor_cap_s:  # rules 2 and 3: it fits in 60 seconds, or in 90 when conditions are poor
         return [{"text": text, "level": level, "part": 0, "parts": 1, "seconds": whole, "extended": whole > cap_s}]  # send it as one frame

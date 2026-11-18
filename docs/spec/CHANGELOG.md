@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.9 (draft) - 18 November 2026
+
+- The transmitted signal is unchanged from 0.8.
+- Channel measurement defined: every received frame yields an SNR, a fading index (0 for a steady signal, about 1 for deep, frequent fades) and a frequency offset, reported back in every acknowledgment.
+- The level table gains a second limit for fading signals, measured in simulation over light, moderate and heavy fading. A frame with a fading index above 0.15 counts as fading.
+- The rule for choosing a level is stated: the fastest level whose limit is at least 2 dB below the measured SNR.
+
 ## 0.8 (draft) - 18 November 2026
 
 - Speed levels L0 to L4 are now defined exactly: tone length, tone frequencies, airtime of each frame size, and the weakest signal each level decoded in simulation.

@@ -2,7 +2,9 @@
 
 import numpy as np  # numerical arrays
 
-from modem import LEVELS, MIN_SNR_DB, build_frame, build_plan, frame_seconds, join_parts, pick_level, plan_message, receive  # transmitter, receiver, levels and planner
+from modem import (  # transmitter, receiver, levels and planner
+    LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, pick_level, plan_message, receive,  # (continued)
+)  # end of the import list
 from modem.params import FS  # audio sample rate
 from sim import run_channel  # channel simulator
 from sim.channel import add_crashes  # static-crash generator
@@ -130,3 +132,27 @@ def test_compression_reduces_the_number_of_parts():  # splitting packs more text
     plan = plan_message(english, MIN_SNR_DB[0] + 2.0)  # conditions only good enough for L0
     assert len(plan) == 3  # three parts instead of the four that plain 50-character pieces would need
     assert "".join(item["text"] for item in plan) == english  # nothing lost in the cutting
+
+
+def test_receiver_tells_a_steady_signal_from_a_fading_one():  # the channel measurements the link will report back
+    text = "Kestrel channel report test message, sixty characters long.."  # a message for the 100-character frame
+    rng = np.random.default_rng(801)  # repeatable random source
+    steady = receive(run_channel(build_frame(text, 1), -8.0, rng, offset_hz=6.0))  # noise only
+    rng = np.random.default_rng(802)  # repeatable random source
+    faded = receive(run_channel(build_frame(text, 1), -4.0, rng, "moderate", offset_hz=6.0))  # moderate fading
+    assert steady.ok and faded.ok  # both decode
+    assert abs(steady.snr_db - (-8.0)) < 1.0  # the SNR reading is close to the truth without fading...
+    assert abs(faded.snr_db - (-4.0)) < 2.0  # ...and still close with it
+    assert not is_fading(steady.fade_index)  # the steady signal is reported as steady
+    assert is_fading(faded.fade_index)  # the fading signal is reported as fading
+    assert is_fading(float("nan"))  # a missing reading is treated as fading, the safe choice
+
+
+def test_fading_makes_the_level_choice_more_careful():  # fading-aware limits
+    for snr_db in (-14.0, -10.0, -6.0, -2.0, 2.0):  # across the working range
+        assert pick_level(snr_db, fading=True) <= pick_level(snr_db)  # fading never picks a faster level than a steady signal would
+    assert pick_level(MIN_SNR_FADING_DB[4] + 2.0, fading=True) == 4  # the fastest level is still reached when the signal is strong enough
+    assert pick_level(MIN_SNR_DB[4] + 2.0, fading=True) < 4  # but not at the noise-only limit
+    steady = plan_message(LONG, -8.0)  # a 200-character message on a steady signal
+    faded = plan_message(LONG, -8.0, fading=True)  # the same message and SNR on a fading signal
+    assert sum(item["seconds"] for item in faded) > sum(item["seconds"] for item in steady)  # fading costs airtime

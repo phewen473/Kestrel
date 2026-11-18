@@ -49,7 +49,8 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 2 is done (18 November 2026):** five speed levels (L0 to L4), automatic level choice, the 60- and 90-second airtime limits, and message splitting. In noise alone, a 200-character message goes as one 16-second frame at -7 dB or better, one 59-second frame down to -12 dB, one 88-second frame down to -14 dB, and four 77-second parts below that; the slowest level decoded every test frame at -21 dB. Fading costs about 9 dB or more. Details and charts are in `modem/README.md` and `results/`.
 - **Milestone 3 is done (18 November 2026):** the LDPC error-correcting code, text compression, a 150-character frame size, and the exact level table written into the spec (v0.8). The receiver now decodes about a decibel deeper, and heavy fading costs 4 dB less than before. A 200-character English message goes as one 13-second frame at -7 dB or better, one 45-second frame down to -13 dB, one 67-second frame down to -14 dB, and three 76-second parts below that.
 - The waveform of levels L0 to L4, the header, the error correction and the compression are now fully described in the spec. Items still open are marked **TBD** there.
-- Next: fading-aware level limits, addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments).
+- **Milestone 4 is done (18 November 2026):** the receiver now measures fading as well as signal strength, and the level choice has a second, more careful set of limits for fading signals (spec v0.9). On a fading path a 200-character message goes as one 16-second frame at -1 dB or better, one 30-second frame at -2 dB, one 59-second frame down to -7 dB, and four 76-second parts below that.
+- Next: addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments).
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
@@ -79,7 +80,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.8) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.9) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -101,15 +102,16 @@ Nothing to compile yet. Create the environment once:
 ## How to run or deploy
 - Tests: `.venv\Scripts\python -m pytest -q` (a few seconds).
 - One-frame demo: `.venv\Scripts\python tools\demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate` (writes a WAV and a waterfall picture into `results\`).
-- Sweeps: `tools\snr_sweep.py` (L0 decode rate against SNR) and `tools\level_sweep.py` (all levels); results go to `results\`.
+- Sweeps: `tools\snr_sweep.py` (L0 decode rate against SNR) and `tools\level_sweep.py` (all levels), `tools\fading_sweep.py` (all levels with fading); results go to `results\`.
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.8 (draft), 18 November 2026. Milestones 1, 2 and 3 of the prototype done.
+- Spec version 0.9 (draft), 18 November 2026. Milestones 1 to 4 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Milestone 4 and spec v0.9: fading measurement and fading-aware level limits.
 - Milestone 3 and spec v0.8: LDPC code, text compression, 150-character frame, level table in the spec.
 - Spec v0.7: header sent at the frame's own level.
 - Milestone 2: speed levels L0-L4, airtime limits and message splitting.
@@ -118,7 +120,7 @@ Last commits (all 2026-11-18):
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): fading-aware level limits, addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
@@ -129,7 +131,7 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
 - `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `ldpc.py`, `compress.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
 - `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`).
-- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `make_spec_tables.py`.
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `make_spec_tables.py`.
 - `results/` - sweep CSVs and charts.
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 

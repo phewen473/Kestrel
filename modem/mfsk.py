@@ -44,10 +44,54 @@ def _mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s):  # cut out tone
     return (seg * mixer).reshape(nsym, level.samples)  # corrected audio, one row per tone
 
 
+def band_energies(x, start, nsym, level, offset_hz=0.0, drift_hz_s=0.0):  # measure the whole tone band, bin by bin
+    """Return the energy in every FFT bin from one bin below the lowest tone to one bin above the highest, one row per symbol.
+
+    Column 1 is the lowest tone; tone m sits in column 1 + m * level.step.
+    The bins beside each tone are kept because fast fading smears part of
+    a tone's energy into them.
+    """
+    spec = np.fft.fft(_mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s), axis=1)  # spectrum of each tone-length block
+    return np.abs(spec[:, level.tone_bins[0] - 1:level.tone_bins[-1] + 2]) ** 2  # keep only the band the tones occupy, plus one bin each side
+
+
+def tone_energies(band, level):  # pick the 32 tone positions out of the band
+    """Return the energy in each of the 32 tone positions, one row per symbol, from the output of band_energies."""
+    return band[:, 1::level.step][:, :M_TONES]  # every step-th column, starting at the lowest tone
+
+
 def symbol_energies(x, start, nsym, level, offset_hz=0.0, drift_hz_s=0.0):  # measure every tone slot
     """Return the energy in each of the 32 tone positions, one row per symbol."""
-    spec = np.fft.fft(_mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s), axis=1)  # spectrum of each tone-length block
-    return np.abs(spec[:, level.tone_bins]) ** 2  # energy in each of the 32 tone positions
+    return tone_energies(band_energies(x, start, nsym, level, offset_hz, drift_hz_s), level)  # measure the band, keep the tone positions
+
+
+def known_tone_energies(band, tones, level):  # energy of tones we know were sent
+    """Return, for each symbol, the energy at the tone that was sent plus the bin on each side of it.
+
+    `tones` holds the tone number sent in each row of `band`. Adding the
+    two neighbouring bins collects the energy that fast fading or a small
+    frequency error moved off the tone itself.
+    """
+    first = np.asarray(tones) * level.step  # column of the bin just below each sent tone
+    rows = np.arange(len(first))  # one row per symbol
+    return band[rows, first] + band[rows, first + 1] + band[rows, first + 2]  # the bin below, the tone, the bin above
+
+
+def signal_report(known_e, noise):  # turn known-tone energies into SNR and a fading figure
+    """Return (signal-to-noise ratio per tone, fading index) from the energies of known tones.
+
+    `known_e` comes from known_tone_energies and `noise` from noise_level.
+    The fading index is 0 for a steady signal and about 1 for a signal
+    that fades deeply and often during the frame. It is the spread of the
+    tone energies, beyond what the noise alone would cause, compared with
+    their average.
+    """
+    signal = float(np.mean(known_e)) - 3 * noise  # average signal energy: three bins were added, so three bins of noise come off
+    if signal <= 0.05 * noise:  # no measurable signal
+        return 0.0, float("nan")  # report nothing useful
+    noise_spread = 2 * signal * noise + 3 * noise * noise  # how much the energies would vary from noise alone
+    extra = float(np.var(known_e)) - noise_spread  # variation left over, which is fading
+    return signal / noise, max(extra, 0.0) / (signal * signal)  # the ratio, and the fading index (never negative)
 
 
 def noise_level(tone_e):  # how strong the background noise is
