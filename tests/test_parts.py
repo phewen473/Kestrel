@@ -59,7 +59,7 @@ def test_compression_is_used_only_when_it_saves_a_size_class():  # compress only
 
 def test_ldpc_codeword_satisfies_every_check():  # the encoder and the check table must agree
     rng = np.random.default_rng(3)  # repeatable random source
-    for k in (374, 724, 1074, 1424):  # the four body sizes
+    for k in (402, 752, 1102, 1452):  # the four body sizes
         data = rng.integers(0, 2, k)  # random data bits
         word = ldpc.encode(data)  # encode them
         assert len(word) == 2 * k and np.array_equal(word[:k], data)  # data first, then as many parity bits
@@ -74,10 +74,10 @@ def test_ldpc_codeword_satisfies_every_check():  # the encoder and the check tab
 
 def test_ldpc_corrects_noisy_input():  # the decoder must fix a noisy codeword
     rng = np.random.default_rng(4)  # repeatable random source
-    data = rng.integers(0, 2, 724)  # random data bits
-    soft = (1.0 - 2.0 * ldpc.encode(data)) + 0.7 * rng.standard_normal(1448)  # codeword as +1/-1 with strong noise added
-    assert (soft < 0).astype(int)[:724].tolist() != data.tolist()  # the noise really did flip some data bits
-    decoded, converged = ldpc.decode(soft, 724)  # decode
+    data = rng.integers(0, 2, 752)  # random data bits
+    soft = (1.0 - 2.0 * ldpc.encode(data)) + 0.7 * rng.standard_normal(1504)  # codeword as +1/-1 with strong noise added
+    assert (soft < 0).astype(int)[:752].tolist() != data.tolist()  # the noise really did flip some data bits
+    decoded, converged = ldpc.decode(soft, 752)  # decode
     assert converged and np.array_equal(decoded, data)  # every check satisfied and the data recovered
 
 
@@ -114,3 +114,25 @@ def test_chirp_measures_timing_and_frequency_in_noise():  # the chirp pair must 
     assert abs(found["start"] - 6000) < 4  # timing within a third of a millisecond (0.5 s lead = sample 6000)
     assert abs(found["offset_hz"] - 15.0) < 0.5  # frequency within half a hertz
     assert found["quality"] > 10  # clearly stronger than the background
+
+
+def test_callsign_coding_roundtrip_and_limits():  # addresses <-> 48 bits
+    from modem.address import bits_to_call, call_to_bits, is_group  # the address helpers
+    for call in ("KO4WSC", "W1AW", "VP8/G4ABC", "KO4WSC/MM", "ALL", "SC-NET", "A"):  # ordinary, compound and group addresses
+        bits = call_to_bits(call)  # encode
+        assert len(bits) == 48 and bits_to_call(bits) == call  # 48 bits, and it comes back unchanged
+    assert bits_to_call(call_to_bits(" ko4wsc ")) == "KO4WSC"  # spaces around it and lower case are tidied
+    assert is_group("ALL") and is_group("SC-NET") and not is_group("KO4WSC")  # names without a digit are groups
+    for bad in ("", "TOOLONGCALL", "KO4 WSC", "KO4WSC!"):  # empty, too long, a space inside, a character outside the alphabet
+        with pytest.raises(ValueError):  # each must be refused
+            call_to_bits(bad)  # try to encode it
+    with pytest.raises(ValueError):  # 48 one-bits are a number too big to be an address
+        bits_to_call(np.ones(48, dtype=np.uint8))  # try to decode them
+
+
+def test_addressed_frames_hold_less_text():  # the longer address block takes room from the text
+    from modem.text import capacity_bits, choose_packing  # the packing helpers
+    assert [capacity_bits(c, 0) for c in range(4)] == [350, 700, 1050, 1400]  # link frames
+    assert [capacity_bits(c, 1) for c in range(4)] == [258, 608, 958, 1308]  # fully addressed frames: 92 bits fewer
+    with pytest.raises(ValueError):  # 200 characters that do not compress...
+        choose_packing("~" * 200, 1)  # ...do not fit one addressed frame

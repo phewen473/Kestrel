@@ -11,8 +11,8 @@ chirp pair (2 s) | header (24 tones) | body (data tones, with a known pilot tone
 | Part | What it does |
 |---|---|
 | Chirp pair | A 1-second rising sweep, then a 1-second falling sweep, 500 to 2500 Hz. Finds the frame and measures timing and frequency offset. |
-| Header | Frame type, speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
-| Body | Character count, the text (plain 7-bit ASCII, or compressed), and a 16-bit check value, protected by the LDPC error-correcting code and shuffled across the frame. |
+| Header | Frame type (link frame or fully addressed frame), speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
+| Body | An address block (who the frame is for and which message it is), the character count, the text (plain 7-bit ASCII, or compressed), and a 16-bit check value, protected by the LDPC error-correcting code and shuffled across the frame. |
 | Pilots | Known tones the receiver uses to follow frequency drift and to measure SNR. |
 
 The header and body are sent at the frame's own speed level. The receiver is not told the level: it tries the header at each level. A level whose header check matches and whose level field agrees is a candidate, and it is accepted when the body read at that level passes its check too. (About one frame in a thousand, noise makes a wrong level's header pass; the body check catches it.)
@@ -23,17 +23,37 @@ Every level sends the same 32 tones. A faster level sends each tone for a shorte
 
 | Level | Tone length | Width on the air | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR (noise only) |
 |---|---|---|---|---|---|---|---|
-| L0 | 0.4 s | about 160 Hz | 76 s | 136 s | 195 s | 255 s | -20 dB |
-| L1 | 0.135 s | about 470 Hz | 27 s | 47 s | 67 s | 87 s | -16 dB |
-| L2 | 0.09 s | about 700 Hz | 19 s | 32 s | 46 s | 59 s | -15 dB |
-| L3 | 0.045 s | about 710 Hz | 10 s | 17 s | 24 s | 30 s | -12 dB |
+| L0 | 0.4 s | about 160 Hz | 80 s | 140 s | 200 s | 260 s | -20 dB |
+| L1 | 0.135 s | about 470 Hz | 28 s | 49 s | 69 s | 89 s | -16 dB |
+| L2 | 0.09 s | about 700 Hz | 20 s | 33 s | 47 s | 60 s | -14 dB |
+| L3 | 0.045 s | about 710 Hz | 11 s | 18 s | 24 s | 31 s | -12 dB |
 | L4 | 0.0225 s | about 1420 Hz | 6 s | 10 s | 13 s | 16 s | -9 dB |
 
 "Weakest SNR" is the lowest value (in 2.5 kHz) at which all 40 test frames decoded in `tools/level_sweep.py`. L1 and L2 were sized so that a full 200-character message fits the 90-second and 60-second limits. The exact tone frequencies are in the specification, section 5.2.
 
+## Addresses and message numbers (`address.py`)
+
+Every frame's body starts with an address block. There are two kinds of frame:
+
+| Kind | Used for | Address block |
+|---|---|---|
+| Link frame | Messages between two stations that hold a lock | 28 bits: a 12-bit link number for the pair, and a 16-bit message number |
+| Fully addressed frame | Traffic outside a lock, and mail being held, relayed or delivered | 120 bits: destination callsign, origin callsign, message number, relay count, remaining lifetime |
+
+- A callsign is up to 9 characters (letters, digits, `/` and `-`) packed into 48 bits, so `KO4WSC/MM` or `VP8/G4ABC` fit.
+- An address with no digit is a group name. `ALL` means everyone.
+- The origin callsign plus the message number is the message ID. Every part of a split message carries the same one, and `join_parts` refuses to join parts of different messages.
+- The link number is worked out from the two callsigns (`link_id`), so nothing extra has to be agreed.
+- Both kinds of frame are the same length. The longer address block of a fully addressed frame takes room from the text: it holds 36, 86, 136 or 186 plain characters where a link frame holds 50, 100, 150 or 200. A longer message is compressed if that makes it fit, and split otherwise.
+
+```
+build_frame("QSL 73", level=3, link=link_id("KO4WSC", "W1AW"), msg_id=17)          # link frame
+build_frame("QSL 73", level=0, dest="W1AW", origin="KO4WSC", msg_id=17)           # fully addressed frame
+```
+
 ## Frame sizes and text compression (`text.py`, `compress.py`)
 
-A frame's body holds 350, 700, 1050 or 1400 text bits: 50, 100, 150 or 200 characters of plain text. The sender uses the smallest size that holds the message.
+A link frame's body holds 350, 700, 1050 or 1400 text bits: 50, 100, 150 or 200 characters of plain text. The sender uses the smallest size that holds the message.
 
 Text can also be sent compressed, with a fixed table that gives common characters short codes (space 3 bits, "e" and "t" 4 bits) and rare ones long codes (up to 13 bits). The rule is simple: **compress only when it lets the message fit a smaller frame.** A 200-character English sentence that compresses to 978 bits goes in the 150-character frame instead of the 200-character one, saving about a quarter of the airtime. Traffic that is mostly capitals and digits saves about a seventh, which is often not enough to drop a size, so it goes plain.
 
@@ -53,19 +73,22 @@ For a 200-character message that works out as:
 | SNR (noise only) | Text that does not compress | Plain English (fits the 150-character frame) |
 |---|---|---|
 | -7 dB or better | one L4 frame, 16 s | one L4 frame, 13 s |
-| -10 dB or better | one L3 frame, 30 s | one L3 frame, 24 s |
-| -13 dB or better | one L2 frame, 59 s | one L2 frame, 45 s |
-| -14 dB or better | one L1 frame, 87 s (uses the 90-second allowance) | one L1 frame, 67 s (uses the allowance) |
-| weaker | four L0 frames, 76 s each | three L0 frames, 76 s each |
+| -10 dB or better | one L3 frame, 31 s | one L3 frame, 24 s |
+| -12 dB or better | one L2 frame, 60 s | one L2 frame, 47 s |
+| -14 dB or better | one L1 frame, 89 s (uses the 90-second allowance) | one L1 frame, 69 s (uses the allowance) |
+| weaker | four L0 frames, 80 s each | three L0 frames, 80 s each |
+
+Pass `addressed=True` for fully addressed frames; `build_plan(plan, dest=..., origin=..., msg_id=...)` then puts the same addressing on every part.
 
 When the signal is fading, pass `fading=True`. Each level then needs a stronger signal, and the same 200 characters (uncompressed) go as:
 
 | SNR (fading) | What is sent |
 |---|---|
-| -1 dB or better | one L4 frame, 16 s |
-| -2 dB | one L3 frame, 30 s |
-| -7 dB or better | one L2 frame, 59 s |
-| weaker | four L0 frames, 76 s each (L0 works to about -10 dB in fading) |
+| +1 dB or better | one L4 frame, 16 s |
+| -2 dB or better | one L3 frame, 31 s |
+| -7 dB or better | one L2 frame, 60 s |
+| -8 dB | one L1 frame, 89 s (uses the 90-second allowance) |
+| weaker | four L0 frames, 80 s each (L0 works to about -10 dB in fading) |
 
 `join_parts` puts a split message back together once every part has arrived.
 
@@ -83,6 +106,7 @@ All of these are now written into the specification (sections 4 and 5).
 | Interleaver | Golden-ratio step formula over the whole frame |
 | Checks | CRC-8 on the header, CRC-16 on the body |
 | Header fields | type (3 bits), level (3), size class (2), part number (3), part count (3), compressed (1), spare (1) |
+| Address block | link frame: link number (12 bits), message number (16); fully addressed frame: destination (48), origin (48), message number (16), relays (3), lifetime (5) |
 
 ## Files
 
@@ -94,6 +118,7 @@ All of these are now written into the specification (sections 4 and 5).
 | `plan.py` | Level choice, airtime limits, splitting and reassembly |
 | `chirp.py` | Makes and detects the signature chirp pair |
 | `mfsk.py` | The 32-tone waveform, soft-bit calculation and pilot drift tracking |
+| `address.py` | Callsign coding (48 bits each) and the link number |
 | `ldpc.py` | The LDPC code that protects the body: builds the check tables, encodes, decodes |
 | `compress.py` | Text compression: the fixed code table, compress and decompress |
 | `fec.py` | The header's convolutional encoder and Viterbi decoder |
@@ -108,11 +133,13 @@ From `tools/snr_sweep.py`: 40 random 40-character messages per point, each with 
 | Channel | Every frame decoded at | About half decoded at |
 |---|---|---|
 | Noise only | -21 dB | between -22 and -23 dB |
-| Light fading (0.1 Hz, 0.5 ms) | -12 dB | -19 dB |
-| Moderate fading (0.5 Hz, 1 ms) | -12 dB (95 % at -16 dB) | -19 dB |
-| Heavy fading (1 Hz, 2 ms) | -8 dB (95 % from -12 dB) | -18 dB |
+| Light fading (0.1 Hz, 0.5 ms) | -6 dB (92 % or better from -14 dB) | -19 dB |
+| Moderate fading (0.5 Hz, 1 ms) | -10 dB (92 % or better from -16 dB) | -19 dB |
+| Heavy fading (1 Hz, 2 ms) | -6 dB (90 % or better from -12 dB) | -18 dB |
 
-Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; the blanker rescues a frame from heavy static crashes; two copies that each fail at -23.3 dB decode when combined; a split message is reassembled; and a compressed message goes through end to end.
+With 40 frames per point, one stray failure moves the "every frame" figure by several decibels, so the nine-in-ten figures further down are the steadier guide.
+
+Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; the blanker rescues a frame from heavy static crashes; two copies that each fail at -23.3 dB decode when combined; link frames and fully addressed frames deliver their addressing; a split message is reassembled; and a compressed message goes through end to end.
 
 ## What we learned
 
@@ -120,8 +147,8 @@ Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; th
 - **In deep noise the chirp was the weak link at first.** A noise peak could outrank the real chirp. The receiver now keeps the best three candidates and lets the header check choose.
 - **Speed costs what theory says.** Each level's limit moved by almost exactly the ratio of tone lengths, so the level table can be planned on paper.
 - **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification adopted this in v0.7.
-- **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones, and in heavy fading the every-frame point moved from -4 dB to -8 dB.
-- **Fading costs about 8 to 12 dB** at the every-frame point. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
+- **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones.
+- **Fading costs about 4 to 8 dB** at the nine-in-ten point on the slowest level, and more on the fast levels. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
 - **Slow fading is the hard case for fast levels.** A fast frame is over in seconds, so a slow fade can swallow most of it and the interleaver has nothing to spread across. That is why the fastest levels need the biggest allowance for fading.
 
 ## What the receiver measures (`mfsk.py`: `signal_report`)
@@ -133,20 +160,20 @@ Every decoded frame comes back with two channel readings, which the link will se
 | `snr_db` | Signal-to-noise ratio in 2.5 kHz. After a frame decodes, the receiver knows every tone that was sent, so it measures all of them, including the bin on each side of each tone where fast fading smears the energy. |
 | `fade_index` | How much the signal faded during the frame: about 0 for a steady signal, about 1 for deep, frequent fades. Above 0.15 counts as fading. |
 
-Measured in `tools/fading_sweep.py`: the SNR reading is within about 1 dB of the truth in a level's working range (it reads up to 3 dB low on the fastest level in heavy fading with a strong signal, which errs on the safe side). The fading index stayed at zero for every noise-only frame, and flagged every frame in moderate and heavy fading. In light fading a very short frame can sit inside one slow fade and look steady, so about one in six of those is not flagged; the link layer will need to look at several frames, not one.
+Measured in `tools/fading_sweep.py`: the SNR reading is within about 1 dB of the truth in a level's working range (it reads up to 3 dB low on the fastest level in heavy fading with a strong signal, which errs on the safe side). The fading index stayed at zero for every noise-only frame, and flagged every frame in moderate and heavy fading. In light fading a very short frame can sit inside one slow fade and look steady, so on the two fastest levels roughly one frame in eight is not flagged; the link layer will need to look at several frames, not one.
 
 ## Limits for a fading signal
 
 | Level | Steady signal | Light fading | Moderate fading | Heavy fading | Limit used when fading |
 |---|---|---|---|---|---|
-| L0 | -20 dB | -16 dB | -14 dB | -12 dB | -12 dB |
-| L1 | -16 dB | -8 dB | -12 dB | -14 dB | -8 dB |
-| L2 | -15 dB | -9 dB | -11 dB | -11 dB | -9 dB |
-| L3 | -12 dB | -4 dB | -6 dB | -8 dB | -4 dB |
-| L4 | -9 dB | -3 dB | -3 dB | -5 dB | -3 dB |
+| L0 | -20 dB | -16 dB | -16 dB | -12 dB | -12 dB |
+| L1 | -16 dB | -10 dB | -12 dB | -14 dB | -10 dB |
+| L2 | -14 dB | -9 dB | -11 dB | -11 dB | -9 dB |
+| L3 | -12 dB | -4 dB | -8 dB | -8 dB | -4 dB |
+| L4 | -9 dB | -1 dB | -3 dB | -5 dB | -1 dB |
 
 The steady column is where every test frame decoded. The fading columns are where nine frames in ten decoded (40 frames per point, 2 dB steps); the last column is the worst of the three. Retry combining is meant to cover the tenth frame.
 
 ## Not built yet
 
-A fifth, faster level (L5, which needs a different waveform), addresses and message IDs, the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.
+A fifth, faster level (L5, which needs a different waveform), the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.

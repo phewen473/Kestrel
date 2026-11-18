@@ -49,6 +49,6 @@ LEVELS = (  # the levels built so far: (number, samples per tone, tone spacing i
     Level(4, 270, 1),  # L4: 0.0225 s tones, 44 Hz apart, about 1420 Hz wide
 )  # end of the table
 
-MIN_SNR_DB = (-20.0, -16.0, -15.0, -12.0, -9.0)  # weakest SNR (2.5 kHz, noise only) at which every test frame decoded, per level
-MIN_SNR_FADING_DB = (-12.0, -8.0, -9.0, -4.0, -3.0)  # weakest SNR at which nine test frames in ten decoded in the worst of light, moderate and heavy fading, per level
+MIN_SNR_DB = (-20.0, -16.0, -14.0, -12.0, -9.0)  # weakest SNR (2.5 kHz, noise only) at which every test frame decoded, per level
+MIN_SNR_FADING_DB = (-12.0, -10.0, -9.0, -4.0, -1.0)  # weakest SNR at which nine test frames in ten decoded in the worst of light, moderate and heavy fading, per level
 FADE_INDEX_LIMIT = 0.15  # a received frame whose fading index is above this counts as "fading"

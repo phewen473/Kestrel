@@ -1,5 +1,15 @@
 # Kestrel specification changelog
 
+## 0.10 (draft) - 18 November 2026
+
+- Every message frame now starts its body with an address block, and there are two kinds of message frame. A link frame (frame type 0) carries a 12-bit link number and a 16-bit message number. A fully addressed frame (frame type 1) carries destination and origin callsigns (48 bits each), the message number, a hop count and the remaining lifetime.
+- Callsign coding defined: up to 9 characters (letters, digits, "/", "-") in 48 bits. An address with no digit is a group name; "ALL" is everyone.
+- The message ID is the origin callsign plus the message number.
+- The body grows by 28 bits to 402, 752, 1102 or 1452 bits, so frames are slightly longer (200 characters: 60 s at L2, 89 s at L1). New LDPC tables in `tables/`; new interleaver steps.
+- A fully addressed frame is the same length as a link frame of its size class and holds 13 fewer plain characters (36, 86, 136 or 186).
+- Station identification inside a lock noted as an item to define (97.119).
+- Level limits re-measured with the new frame sizes: L2 steady -14 dB (was -15); fading L1 -10 dB (was -8) and L4 -1 dB (was -3).
+
 ## 0.9 (draft) - 18 November 2026
 
 - The transmitted signal is unchanged from 0.8.

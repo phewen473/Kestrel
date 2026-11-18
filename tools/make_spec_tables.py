@@ -24,6 +24,9 @@ def main():  # the script itself
     """Write every table."""
     out_dir = os.path.join(ROOT, "docs", "spec", "tables")  # where the tables go
     os.makedirs(out_dir, exist_ok=True)  # create the folder if needed
+    for name in os.listdir(out_dir):  # clear out LDPC tables left from an earlier frame format
+        if name.startswith("ldpc_checks_k"):  # only the LDPC tables
+            os.remove(os.path.join(out_dir, name))  # delete it; the current ones are written below
     for size_class in range(len(SIZE_CLASSES)):  # one LDPC table per size class
         k = body_layout(size_class)["info"]  # number of data bits in that class's body
         rows = ldpc.info_checks(k)  # the three checks of every data bit

@@ -10,18 +10,22 @@ import numpy as np  # numerical arrays
 
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .compress import compress, compressed_bits, decompress  # text compression
-from .params import CHAR_BITS, LENGTH_BITS, MAX_CHARS, SIZE_CLASSES  # message format numbers
+from .params import ADDRESS_BITS, CHAR_BITS, FRAME_TYPE_LINK, LENGTH_BITS, MAX_CHARS, SIZE_CLASSES  # message format numbers
 
 
-def capacity_bits(size_class):  # how many text bits a size class holds
-    """Return the number of text bits a frame of this size class can carry."""
-    return CHAR_BITS * SIZE_CLASSES[size_class]  # 350, 700, 1050 or 1400
+def capacity_bits(size_class, frame_type=FRAME_TYPE_LINK):  # how many text bits a frame holds
+    """Return the number of text bits a frame of this size class and kind can carry.
+
+    A link frame holds 350, 700, 1050 or 1400 text bits. A fully
+    addressed frame holds 92 fewer, because its address block is 92 bits longer.
+    """
+    return CHAR_BITS * SIZE_CLASSES[size_class] - (ADDRESS_BITS[frame_type] - ADDRESS_BITS[FRAME_TYPE_LINK])  # text room, less the extra address bits
 
 
-def _class_for(nbits):  # smallest size class with room for nbits
+def _class_for(nbits, frame_type):  # smallest size class with room for nbits
     """Return the index of the smallest size class holding `nbits` text bits, or None if none does."""
     for index in range(len(SIZE_CLASSES)):  # try the classes from smallest to largest
-        if nbits <= capacity_bits(index):  # the bits fit in this class
+        if nbits <= capacity_bits(index, frame_type):  # the bits fit in this class
             return index  # so use it
     return None  # too big for any class
 
@@ -34,31 +38,33 @@ def _check(text):  # refuse text that cannot be sent
         raise ValueError("message contains a character outside 7-bit ASCII")  # refuse
 
 
-def choose_packing(text):  # decide the size class and whether to compress
-    """Return (size class, compressed?) for `text`."""
+def choose_packing(text, frame_type=FRAME_TYPE_LINK):  # decide the size class and whether to compress
+    """Return (size class, compressed?) for `text`, or raise ValueError when it does not fit one frame."""
     _check(text)  # make sure the text can be sent at all
-    plain = _class_for(CHAR_BITS * len(text))  # size class needed without compression
-    small = _class_for(compressed_bits(text))  # size class needed with compression
-    if small is not None and small < plain:  # compression drops the text into a smaller class
+    plain = _class_for(CHAR_BITS * len(text), frame_type)  # size class needed without compression (None if too big)
+    small = _class_for(compressed_bits(text), frame_type)  # size class needed with compression (None if too big)
+    if small is not None and (plain is None or small < plain):  # compression gets the text into a smaller frame, or into a frame at all
         return small, True  # so compress
+    if plain is None:  # too big either way (only possible in a fully addressed frame)
+        raise ValueError("message does not fit one frame; split it into parts")  # the planner splits such messages
     return plain, False  # otherwise send it plain
 
 
-def pick_size_class(text):  # the smallest frame that fits the text
+def pick_size_class(text, frame_type=FRAME_TYPE_LINK):  # the smallest frame that fits the text
     """Return the index of the size class `text` will be sent in."""
-    return choose_packing(text)[0]  # only the class is wanted
+    return choose_packing(text, frame_type)[0]  # only the class is wanted
 
 
-def fits(text, size_class):  # would this text fit in this size class?
+def fits(text, size_class, frame_type=FRAME_TYPE_LINK):  # would this text fit in this size class?
     """Return True when `text` fits `size_class`, plain or compressed."""
-    return min(CHAR_BITS * len(text), compressed_bits(text)) <= capacity_bits(size_class)  # the smaller of the two forms must fit
+    return min(CHAR_BITS * len(text), compressed_bits(text)) <= capacity_bits(size_class, frame_type)  # the smaller of the two forms must fit
 
 
-def text_to_bits(text, size_class, compressed):  # text -> body bits (without the check value)
+def text_to_bits(text, size_class, compressed, frame_type=FRAME_TYPE_LINK):  # text -> body bits (without the address block and check value)
     """Return the character count followed by the text bits, padded to the size class."""
     _check(text)  # make sure the text can be sent at all
     payload = compress(text) if compressed else np.concatenate([int_to_bits(ord(ch), CHAR_BITS) for ch in text] + [np.zeros(0, dtype=np.uint8)])  # the text as bits, in the chosen form
-    room = capacity_bits(size_class)  # how many text bits the frame holds
+    room = capacity_bits(size_class, frame_type)  # how many text bits the frame holds
     if len(payload) > room:  # the text must fit the chosen class
         raise ValueError("message does not fit the chosen size class")  # refuse if it does not
     return np.concatenate([int_to_bits(len(text), LENGTH_BITS), payload, np.zeros(room - len(payload), dtype=np.uint8)])  # count, text bits, zero padding

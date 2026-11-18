@@ -3,7 +3,7 @@
 import numpy as np  # numerical arrays
 
 from modem import (  # transmitter, receiver, levels and planner
-    LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, pick_level, plan_message, receive,  # (continued)
+    LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, link_id, pick_level, plan_message, receive,  # (continued)
 )  # end of the import list
 from modem.params import FS  # audio sample rate
 from sim import run_channel  # channel simulator
@@ -20,7 +20,7 @@ def _send(text, snr_db, seed, **channel):  # helper: transmit and receive once
 
 def test_frame_lengths_match_the_design():  # airtime of each size class
     assert abs(len(build_frame(SHORT)) / FS - frame_seconds(0)) < 1e-9  # the audio is exactly as long as predicted
-    assert [round(frame_seconds(c)) for c in range(4)] == [76, 136, 195, 255]  # L0: about 1, 2, 3 and 4 minutes
+    assert [round(frame_seconds(c)) for c in range(4)] == [80, 140, 200, 260]  # L0: about 1, 2, 3 and 4 minutes
     assert frame_seconds(3, 2) <= 60 and frame_seconds(3, 1) <= 90  # 200 characters fit the 60 s cap at L2 and the 90 s cap at L1
 
 
@@ -156,3 +156,32 @@ def test_fading_makes_the_level_choice_more_careful():  # fading-aware limits
     steady = plan_message(LONG, -8.0)  # a 200-character message on a steady signal
     faded = plan_message(LONG, -8.0, fading=True)  # the same message and SNR on a fading signal
     assert sum(item["seconds"] for item in faded) > sum(item["seconds"] for item in steady)  # fading costs airtime
+
+
+def test_link_frame_carries_link_and_message_numbers():  # frames between two locked stations
+    link = link_id("KO4WSC", "W1AW")  # the pair's short link number
+    rng = np.random.default_rng(901)  # repeatable random source
+    heard = run_channel(build_frame(SHORT, 3, link=link, msg_id=4242), -6.0, rng, offset_hz=-5.0)  # send through noise
+    result = receive(heard)  # decode
+    assert result.ok and result.text == SHORT  # the text arrives
+    assert (result.frame_type, result.link, result.msg_id) == (0, link, 4242)  # and so do the frame type, link number and message number
+    assert link_id("W1AW", "KO4WSC") != link  # the number depends on who beaconed and who answered
+
+
+def test_addressed_frame_carries_both_callsigns():  # frames with full addresses (unconnected traffic and held mail)
+    rng = np.random.default_rng(902)  # repeatable random source
+    audio = build_frame(SHORT, 2, dest="W1AW", origin="ko4wsc/p", msg_id=65535, hops=2, life_hours=47)  # lower case and an odd lifetime on purpose
+    result = receive(run_channel(audio, -8.0, rng, offset_hz=4.0))  # send through noise and decode
+    assert result.ok and result.text == SHORT  # the text arrives
+    assert (result.frame_type, result.dest, result.origin) == (1, "W1AW", "KO4WSC/P")  # addresses arrive in capitals
+    assert (result.msg_id, result.hops, result.life_hours) == (65535, 2, 48)  # the lifetime is rounded up to a whole two-hour step
+    assert len(audio) == len(build_frame(SHORT, 2))  # an addressed frame is no longer than a link frame of the same size
+
+
+def test_long_addressed_message_is_split_and_rejoined():  # 200 characters that do not compress, with full addresses
+    plan = plan_message(LONG, 10.0, addressed=True)  # a strong signal, so the fastest level
+    assert len(plan) == 2 and all(item["seconds"] <= 60 for item in plan)  # it needs two frames, each within the limit
+    heard = [receive(audio) for audio in build_plan(plan, dest="ALL", origin="KO4WSC", msg_id=9)]  # send and decode every part
+    assert join_parts(heard) == LONG  # the parts go back together
+    stray = receive(build_frame(plan[1]["text"], plan[1]["level"], 1, 2, dest="ALL", origin="KO4WSC", msg_id=10))  # the second part of a different message
+    assert join_parts([heard[0], stray]) is None  # parts of different messages are never joined

@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.9 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.10 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -15,7 +15,7 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 - **Emission:** data, sent as audio tones through a single-sideband transmitter.
 - **Bandwidth:** every Kestrel waveform stays within 2.8 kHz on HF.
 - **Content:** plain text. Kestrel never encrypts or obscures message meaning (97.113). Message signing to prove the sender may be added later; it does not hide content.
-- **Identification:** every beacon and connection frame carries the sending station's callsign.
+- **Identification:** every beacon, connection frame and fully addressed message frame carries the sending or originating station's callsign in plain form (Section 4.2). Frames exchanged inside a lock carry only a short link number, so a locked station also sends its callsign at least every 10 minutes and at the end of the contact (97.119); the frame used for this: **TBD**.
 - **Automatic operation:** unattended relays and mailboxes are subject to the message-forwarding and automatic-control rules (97.219, 97.221).
 
 ## 3. Layers
@@ -32,8 +32,9 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 
 - 7-bit ASCII (values 0-127), including control characters.
 - Maximum 200 characters per message.
-- Four frame sizes (size classes), holding 350, 700, 1050 or 1400 text bits. That is 50, 100, 150 or 200 characters of plain text at 7 bits each. The sender uses the smallest class that holds the text.
-- **Body contents**, in order: the character count (8 bits), the text bits padded with zeros to the class size, and a 16-bit check value over everything before it. The body therefore holds 374, 724, 1074 or 1424 bits.
+- Four frame sizes (size classes). The sender uses the smallest class that holds the text.
+- **Body contents**, in order: an address block (Section 4.2), the character count (8 bits), the text bits padded with zeros to fill the frame, and a 16-bit check value over everything before it. The body holds 402, 752, 1102 or 1452 bits, whichever kind of frame it is.
+- **Room for text.** A link frame (28-bit address block) holds 350, 700, 1050 or 1400 text bits: 50, 100, 150 or 200 characters of plain text at 7 bits each. A fully addressed frame (120-bit address block) holds 92 fewer: 258, 608, 958 or 1308 text bits, which is 36, 86, 136 or 186 plain characters. A longer message is sent compressed if that makes it fit, and otherwise split into parts (Section 6.8).
 - **Body check value:** CRC-16 with polynomial 0x1021, start value 0xFFFF, no bit reversal and no final inversion (CRC-16/CCITT-FALSE), most significant bit first.
 
 ### 4.1 Text compression
@@ -46,6 +47,32 @@ Text may be sent plain (7 bits per character, most significant bit first) or com
 - **Rule for the sender:** compress only when the compressed text fits a smaller size class than the plain text. Otherwise send plain.
 
 Typical savings are about a quarter for plain English and about a seventh for traffic that is mostly capitals and digits.
+
+### 4.2 Addresses and message numbers
+
+Every message frame starts its body with an address block. The frame type in the header (Section 5.4) says which of the two kinds it is.
+
+**Link frame (frame type 0): 28 bits.** Used between two stations that hold a lock.
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Link number | 12 | Identifies the pair of locked stations |
+| Message number | 16 | The originating station's number for this message |
+
+**Fully addressed frame (frame type 1): 120 bits.** Used for traffic outside a lock and for mail that is being held, relayed or delivered for another station.
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Destination | 48 | Callsign of the station the message is for, or a group name |
+| Origin | 48 | Callsign of the station that wrote the message |
+| Message number | 16 | The originating station's number for this message |
+| Hops | 3 | How many stations have relayed the message so far |
+| Lifetime | 5 | How long the message may still be kept, in units of 2 hours, rounded up (0 to 62 hours) |
+
+- **Address coding.** An address is 1 to 9 characters from this 39-character alphabet, numbered from 0: space, A to Z, 0 to 9, "/", "-". It is written in capitals, padded on the right with spaces to 9 characters, and read as a 9-digit number in base 40 with the first character as the most significant digit. That number is sent as 48 bits, most significant bit first. Digit value 39 is not used; spaces appear only as padding.
+- **Group names.** An address that contains no digit is a group or net name, not a station; every amateur callsign contains a digit. "ALL" addresses every station.
+- **Message number.** The originating station numbers its messages 0 to 65535 in turn and starts again at 0. The origin callsign and the message number together are the message ID. Every part of a split message carries the same message number.
+- **Link number.** The lowest 12 bits of the CRC-16 (Section 4) of the 96 address bits of the two stations: first the station that beaconed, then the station that answered. A station ignores link frames whose link number is not that of its own lock.
 
 ## 5. Modem
 
@@ -84,11 +111,13 @@ Airtime of a whole frame, and the weakest signal each level needs in simulation 
 
 | Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR, steady signal | Weakest SNR, fading signal |
 |---|---|---|---|---|---|---|
-| L0 | 76 s | 136 s | 195 s | 255 s | -20 dB | -12 dB |
-| L1 | 27 s | 47 s | 67 s | 87 s | -16 dB | -8 dB |
-| L2 | 19 s | 32 s | 46 s | 59 s | -15 dB | -9 dB |
-| L3 | 10 s | 17 s | 24 s | 30 s | -12 dB | -4 dB |
-| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB | -3 dB |
+| L0 | 80 s | 140 s | 200 s | 260 s | -20 dB | -12 dB |
+| L1 | 28 s | 49 s | 69 s | 89 s | -16 dB | -10 dB |
+| L2 | 20 s | 33 s | 47 s | 60 s | -14 dB | -9 dB |
+| L3 | 11 s | 18 s | 24 s | 31 s | -12 dB | -4 dB |
+| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB | -1 dB |
+
+The column headings are the size classes, named by the plain characters a link frame holds. Exact airtime is 2 seconds for the chirp pair plus the tone length times (24 header tones + 172, 322, 471 or 620 body tones).
 
 - **Steady signal:** noise only; every test frame decoded at this SNR.
 - **Fading signal:** nine test frames in ten decoded at this SNR in the worst of three simulated HF paths (light, moderate and heavy fading, ITU-R F.1487). The remaining frames are recovered by combining retries (Section 5.6).
@@ -101,13 +130,13 @@ A faster level (L5) is planned. It needs a different waveform, because tones thi
 
 ### 5.3 Error correction and interleaving
 
-**Body.** The body is protected by a rate-1/2 low-density parity-check (LDPC) code of the repeat-accumulate kind. For k body bits (k = 374, 724, 1074 or 1424) the codeword is the k body bits followed by k parity bits.
+**Body.** The body is protected by a rate-1/2 low-density parity-check (LDPC) code of the repeat-accumulate kind. For k body bits (k = 402, 752, 1102 or 1452) the codeword is the k body bits followed by k parity bits.
 
 - There are k parity checks. Every body bit takes part in exactly three checks. Parity bit i takes part in check i and in check i + 1 (the last parity bit only in the last check).
 - So parity bit 0 equals the XOR of the body bits in check 0, and parity bit i equals parity bit i - 1 XOR the body bits in check i.
 - The three checks of each body bit are listed, for every k, in `tables/ldpc_checks_k<k>.txt`. They come from three pseudo-random shuffles of 0..k-1 made with the xorshift32 generator (shifts 13, 17, 5; start values 0x4B455301, 0x4B455302, 0x4B455303) and a Fisher-Yates shuffle, then repaired so that no body bit uses the same or neighbouring checks twice and no two body bits share more than one check. The reference program `modem/ldpc.py` is the exact definition; the table files are its output.
 
-**Interleaver.** The codeword is padded with zeros to a whole number of tones (750, 1450, 2150 or 2850 bits) and shuffled: bit i of the padded codeword is sent in position (step x i) mod n, where n is the padded length and step is the whole number nearest to n x 0.6180339887 that shares no factor with n (searching outwards, above before below). The steps are 463, 897, 1329 and 1763. The shuffled bits are then grouped in fives to make the data tones.
+**Interleaver.** The codeword is padded with zeros to a whole number of tones (805, 1505, 2205 or 2905 bits) and shuffled: bit i of the padded codeword is sent in position (step x i) mod n, where n is the padded length and step is the whole number nearest to n x 0.6180339887 that shares no factor with n (searching outwards, above before below). The steps are 498, 929, 1363 and 1796. The shuffled bits are then grouped in fives to make the data tones.
 
 **Receiver side.** Impulse noise (static crashes) is detected and blanked before decoding. The decoder is not specified; the reference uses normalised min-sum belief propagation.
 
@@ -117,9 +146,9 @@ The header carries 16 field bits followed by an 8-bit check value:
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Frame type | 3 | 0 = message or part of a message |
+| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); other values reserved |
 | Speed level | 3 | 0 to 4 |
-| Size class | 2 | 0 to 3 (350, 700, 1050 or 1400 text bits) |
+| Size class | 2 | 0 to 3 (body of 402, 752, 1102 or 1452 bits) |
 | Part number | 3 | 0 for the first part |
 | Part count | 3 | number of parts minus one |
 | Compressed | 1 | 1 when the text is compressed |
@@ -128,7 +157,7 @@ The header carries 16 field bits followed by an 8-bit check value:
 - **Header check value:** CRC-8 with polynomial 0x07 and start value 0x00 over the 16 field bits, most significant bit first.
 - **Header coding:** the 24 bits are followed by 6 zero bits and encoded with the rate-1/2, constraint-length-7 convolutional code with generators 171 and 133 (octal), giving 60 bits, sent as 12 tones. For each input bit the 7-bit register is the six previous input bits (oldest in the highest position) followed by the new bit; the first output bit is the parity of the register ANDed with 171 octal, the second with 133 octal.
 - The 12 tones are sent twice in a row (24 tones).
-- Addresses and message identifiers are not yet in the header: **TBD**.
+- Addresses and the message number are carried at the start of the body (Section 4.2), where they have the body's stronger error correction.
 
 ### 5.5 Pilots
 
@@ -201,7 +230,7 @@ No single transmission should hold the frequency for long. The link applies thes
 1. **Fastest level first.** The link uses the fastest speed level the measured conditions support.
 2. **Default limit: 60 seconds per transmission.** The link does not choose a level that would make a message frame run longer than this.
 3. **Poor-conditions limit: 90 seconds.** When the measured conditions are too poor for the message to fit in 60 seconds, the link allows up to 90 seconds without operator action.
-4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. The header of each part carries its part number and the number of parts (Section 5.4), up to 8 parts; the message is delivered, and its receipt issued, when all parts have arrived. The message ID that ties the parts together: **TBD**.
+4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. The header of each part carries its part number and the number of parts (Section 5.4), up to 8 parts; the message is delivered, and its receipt issued, when all parts have arrived. Every part carries the same addressing and message number (Section 4.2), which ties the parts together.
 
 Both limits are operator settings; 60 and 90 seconds are the defaults.
 
@@ -219,15 +248,15 @@ Both limits are operator settings; 60 and 90 seconds are the defaults.
 
 Kestrel assumes no station is always on the air and no infrastructure exists. Stations come and go, and paths open and close with propagation. Messages move whenever two stations happen to hear each other.
 
-- **Message ID:** every message has a unique ID so it is never delivered twice, however many stations hold a copy.
+- **Message ID:** the origin callsign together with the message number (Section 4.2). It is unique, so a message is never delivered twice, however many stations hold a copy.
 - **Sender's outbox:** the sender keeps every message until a delivery receipt returns or the message expires. The sender is always the last-resort copy.
 - **Holding partners:** one or more stations may accept and store a copy of the same message. Each holding partner confirms to the sender that it holds the message, so the sender knows who is carrying it. Holders list the callsigns they hold mail for in their beacons.
 - **Automatic delivery, on request:** delivery needs no operator action, but it is always a reply. When a holder hears a beacon from the destination with the mail-check flag set, it answers in the reply window and delivers. When a holder hears a beacon with the mail-check flag from a station that can reach the destination (shown in that station's heard list), it passes the message on the same way. Holders never call a station unprompted to push mail. This keeps unattended holders replying to a station that asked, which is intended to fit the automatic-control rules (97.221), and saves airtime by sending mail only to stations that are listening.
 - **Accountability trail:** every stored copy records the originating callsign and the callsign of the station it was received from, so the forwarding path can always be traced (97.219).
 - **First to deliver wins:** a holder first offers the message ID. If the destination does not have it, the holder sends the message; if the destination already has it, it answers "already delivered" and the holder drops its copy without sending it again. The first holder to complete delivery wins.
-- **Hop limit:** each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating.
+- **Hop limit:** each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating. The count travels in the address block.
 - **Receipt to every holder:** when a message reaches its destination, the destination issues a delivery receipt carrying the message ID. The receipt travels back toward the sender like a small message, is passed to every known holding partner, and is listed in beacons for a time (recent-receipts list). Every holder that learns of the receipt drops its copy, and the sender marks the message delivered.
-- **Expiry:** every message carries a lifetime (48 hours planned, **TBD**). When it runs out, holders drop the message and the sender is told it was not delivered.
+- **Expiry:** every message carries its remaining lifetime in the address block (48 hours at the start planned, **TBD**; the field allows up to 62). When it runs out, holders drop the message and the sender is told it was not delivered.
 - **Nets as temporary post offices:** while a net is running, net control holds the net's mail and copies it to the backup net control. When the net closes, undelivered mail stays with its holders and continues to be carried.
 - **Duplicates:** a message whose ID has already been handled, whose hop limit is reached, or whose lifetime has run out is dropped.
 
@@ -237,7 +266,7 @@ Each station applies the same checks to every message it receives: deliver it if
 
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
-- Addresses and message identifiers in the header; frame types other than a message (beacon, answer, acknowledgment).
+- Frame types other than a message (beacon, answer, acknowledgment, identification).
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.

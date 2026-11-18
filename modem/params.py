@@ -1,7 +1,6 @@
-"""Prototype numbers for the Kestrel modem.
+"""The numbers that define the Kestrel signal and frame format.
 
-The chirp pair is agreed and in the specification. The other numbers are
-test values; the specification keeps them as TBD until they are agreed.
+They match the specification (sections 4 and 5).
 """
 
 FS = 12000  # audio sample rate, in samples per second
@@ -31,7 +30,16 @@ BODY_CRC_BITS = 16  # check bits at the end of the message body
 HEADER_FIELD_BITS = 16  # frame type (3) + level (3) + size class (2) + part number (3) + part count (3) + compressed (1) + spare (1)
 HEADER_CRC_BITS = 8  # check bits at the end of the header
 HEADER_REPEAT = 2  # the coded header is sent twice for extra robustness
-FRAME_TYPE_MESSAGE = 0  # header value meaning "this frame carries a message or a part of one"
+FRAME_TYPE_LINK = 0  # header value: a message between two locked stations, marked with their short link number
+FRAME_TYPE_ADDRESSED = 1  # header value: a message carrying full destination and origin addresses
+CALL_CHARS = 9  # longest callsign or group name, in characters
+CALL_BITS = 48  # bits used to send one address
+LINK_ID_BITS = 12  # bits of the short link number shared by two locked stations
+MSG_ID_BITS = 16  # bits of the message number chosen by the originating station
+HOP_BITS = 3  # bits of the relay counter (how many stations have passed the message on)
+LIFE_BITS = 5  # bits of the remaining lifetime, counted in units of two hours
+LIFE_UNIT_HOURS = 2  # hours per step of the lifetime field
+ADDRESS_BITS = {FRAME_TYPE_LINK: LINK_ID_BITS + MSG_ID_BITS, FRAME_TYPE_ADDRESSED: 2 * CALL_BITS + MSG_ID_BITS + HOP_BITS + LIFE_BITS}  # size of the address block at the start of the body: 28 or 120 bits
 MAX_PARTS = 8  # a message can be split into at most this many parts (3 bits)
 
 AIRTIME_CAP_S = 60.0  # default longest transmission, in seconds

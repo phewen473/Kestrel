@@ -14,6 +14,7 @@ from math import ceil  # round up
 
 import numpy as np  # numerical arrays
 
+from .address import bits_to_call, call_to_bits  # callsign <-> bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .blanker import blank_impulses  # static-crash blanker
 from .chirp import detect_chirp_pair, make_chirp_pair  # signature chirp
@@ -27,9 +28,9 @@ from .mfsk import (  # tone waveform
     signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
 )  # end of the import list
 from .params import (  # frame format numbers
-    BITS_PER_SYMBOL, BODY_CRC_BITS, CHAR_BITS, CHIRP_SAMPLES, FRAME_TYPE_MESSAGE, FS, HEADER_CRC_BITS,  # (continued)
-    HEADER_FIELD_BITS, HEADER_REPEAT, LENGTH_BITS, M_TONES, MAX_PARTS, PILOT_EVERY, PILOT_START, PILOT_STEP,  # (continued)
-    REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
+    ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CHIRP_SAMPLES, FRAME_TYPE_ADDRESSED, FRAME_TYPE_LINK, FS,  # (continued)
+    HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
+    MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
 )  # end of the import list
 from .text import bits_to_text, choose_packing, text_to_bits  # message <-> bits
 
@@ -39,8 +40,12 @@ HEADER_SYMBOLS = HEADER_SYMBOLS_ONCE * HEADER_REPEAT  # tones for both copies (2
 
 
 def body_layout(size_class):  # work out the shape of the body for a size class
-    """Return a dict describing the body: bit counts, tone counts and where the pilots sit."""
-    info = LENGTH_BITS + CHAR_BITS * SIZE_CLASSES[size_class] + BODY_CRC_BITS  # length field + characters + check
+    """Return a dict describing the body: bit counts, tone counts and where the pilots sit.
+
+    Both kinds of frame have the same body size. A fully addressed frame
+    has a longer address block and correspondingly less room for text.
+    """
+    info = ADDRESS_BITS[FRAME_TYPE_LINK] + LENGTH_BITS + CHAR_BITS * SIZE_CLASSES[size_class] + BODY_CRC_BITS  # address block + length field + text room + check
     coded = 2 * info  # bits after error-correction coding (the LDPC code doubles them)
     ndata = ceil(coded / BITS_PER_SYMBOL)  # data tones needed
     npilot = ceil(ndata / PILOT_EVERY)  # one pilot per 15 data tones
@@ -64,10 +69,10 @@ def frame_seconds(size_class, level=0):  # how long a frame lasts on the air
     return 2 * CHIRP_SAMPLES / FS + (HEADER_SYMBOLS + body_layout(size_class)["total"]) * LEVELS[level].seconds  # chirps + header + body
 
 
-def _header_bits(level, size_class, part, parts, compressed):  # the self-describing header
+def _header_bits(frame_type, level, size_class, part, parts, compressed):  # the self-describing header
     """Return the 24 header bits: the six fields and their check value."""
     fields = np.concatenate([  # the fields, in order
-        int_to_bits(FRAME_TYPE_MESSAGE, 3),  # frame type
+        int_to_bits(frame_type, 3),  # frame type
         int_to_bits(level, 3),  # speed level
         int_to_bits(size_class, 2),  # size class
         int_to_bits(part, 3),  # which part of the message this is (0 = first)
@@ -88,20 +93,49 @@ def _body_symbols(data_bits, layout):  # body bits -> the tones of the body
     return body_syms  # pilots and data tones, in sending order
 
 
-def build_frame(text, level=0, part=0, parts=1):  # the transmitter
+def _address_block(frame_type, link, msg_id, dest, origin, hops, life_hours):  # the addressing at the start of the body
+    """Return the address block bits: 28 for a link frame, 120 for a fully addressed frame."""
+    if not 0 <= msg_id < (1 << MSG_ID_BITS):  # the message number must fit its field
+        raise ValueError("message number out of range")  # refuse nonsense
+    if frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
+        if not 0 <= link < (1 << LINK_ID_BITS):  # the link number must fit its field
+            raise ValueError("link number out of range")  # refuse nonsense
+        return np.concatenate([int_to_bits(link, LINK_ID_BITS), int_to_bits(msg_id, MSG_ID_BITS)])  # link number, then message number
+    life = -(-int(life_hours) // LIFE_UNIT_HOURS)  # remaining lifetime in two-hour steps, rounded up
+    if not 0 <= hops < (1 << HOP_BITS) or not 0 <= life < (1 << LIFE_BITS):  # both counters must fit their fields
+        raise ValueError("hop count or lifetime out of range")  # refuse nonsense
+    return np.concatenate([  # the five fields, in order
+        call_to_bits(dest),  # who the message is for
+        call_to_bits(origin),  # who wrote it
+        int_to_bits(msg_id, MSG_ID_BITS),  # the origin's number for this message
+        int_to_bits(hops, HOP_BITS),  # how many stations have relayed it so far
+        int_to_bits(life, LIFE_BITS),  # how long it may still be kept, in two-hour steps
+    ])  # end of the address block
+
+
+def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, origin=None, hops=0, life_hours=48):  # the transmitter
     """Return the audio (floats between -1 and 1) of a frame carrying `text`.
 
     `part` and `parts` say which piece of a split message this frame is;
-    leave them alone for a message sent whole.
+    leave them alone for a message sent whole. `msg_id` is the origin's
+    number for the message. With no `dest`, the frame is a link frame and
+    carries the short `link` number of the two locked stations. With
+    `dest` and `origin` (callsigns or group names), it is a fully
+    addressed frame that also carries `hops` (relays so far) and
+    `life_hours` (how long it may still be kept); its longer address
+    block leaves room for 13 fewer plain characters.
     """
     if not 0 <= part < parts <= MAX_PARTS:  # the part numbers must make sense
         raise ValueError("bad part number")  # refuse nonsense
+    if (dest is None) != (origin is None):  # one address without the other
+        raise ValueError("give both dest and origin, or neither")  # refuse nonsense
+    frame_type = FRAME_TYPE_LINK if dest is None else FRAME_TYPE_ADDRESSED  # which kind of frame this is
     spec = LEVELS[level]  # the numbers for this speed level
-    size_class, compressed = choose_packing(text)  # smallest frame that fits the text, and whether to compress it
+    size_class, compressed = choose_packing(text, frame_type)  # smallest frame that fits the text, and whether to compress it
     layout = body_layout(size_class)  # shape of the body for that size
-    header_syms = bits_to_symbols(conv_encode(_header_bits(level, size_class, part, parts, compressed)))  # coded header as tones
+    header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, size_class, part, parts, compressed)))  # coded header as tones
     header_syms = np.tile(header_syms, HEADER_REPEAT)  # send the header twice
-    data_bits = text_to_bits(text, size_class, compressed)  # character count + text bits + padding
+    data_bits = np.concatenate([_address_block(frame_type, link, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
     return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # chirps, then all the tones
@@ -125,6 +159,13 @@ class RxResult:  # the receiver's report
     part: int = 0  # which part of a split message this frame is (0 = first)
     parts: int = 1  # how many parts the message has
     compressed: bool = False  # True when the text was sent compressed
+    frame_type: int = -1  # kind of frame read from the header (0 = link frame, 1 = fully addressed)
+    msg_id: int = -1  # the origin's number for the message
+    link: int = -1  # short link number (link frames only)
+    dest: str = ""  # destination callsign or group name (fully addressed frames only)
+    origin: str = ""  # originating callsign (fully addressed frames only)
+    hops: int = 0  # relays so far (fully addressed frames only)
+    life_hours: int = 0  # hours the message may still be kept (fully addressed frames only)
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
 
 
@@ -148,12 +189,12 @@ def _read_headers(x, header_start, offset):  # find out which level the frame us
 def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a frame once its header is known
     """Return the receiver's report for the frame that `header` describes."""
     result = RxResult(start=found["start"], chirp_quality=found["quality"], level=spec.number)  # start the report with what the chirp and header told us
-    frame_type = bits_to_int(header[0:3])  # first field: frame type
+    result.frame_type = bits_to_int(header[0:3])  # first field: frame type
     result.size_class = bits_to_int(header[6:8])  # third field: size class
     result.part = bits_to_int(header[8:11])  # fourth field: part number
     result.parts = bits_to_int(header[11:14]) + 1  # fifth field: part count
     result.compressed = bool(header[14])  # sixth field: is the text compressed?
-    if frame_type != FRAME_TYPE_MESSAGE or result.part >= result.parts:  # only sensible message frames are accepted
+    if result.frame_type not in ADDRESS_BITS or result.part >= result.parts:  # only sensible message frames are accepted
         result.reason = "unsupported frame"  # say why we stopped
         return result  # give up on this reading of the header
     offset = found["offset_hz"]  # frequency error measured from the chirp
@@ -174,14 +215,30 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the body check must match
         result.reason = "body check failed"  # say why we stopped
         return result  # the caller may retry and combine
+    block = ADDRESS_BITS[result.frame_type]  # length of the address block at the start of the body
     try:  # the check passed, so this should always work
-        result.text = bits_to_text(data[:-BODY_CRC_BITS], result.compressed)  # turn the bits back into text
+        _read_address_block(result, data[:block])  # who the frame is for, and which message it is
+        result.text = bits_to_text(data[block:-BODY_CRC_BITS], result.compressed)  # turn the rest back into text
     except ValueError:  # a damaged frame slipped past the check (very rare)
         result.reason = "body could not be read"  # say why we stopped
         return result  # give up on this copy
     result.ok = True  # success
     _measure(result, band, _body_symbols(data, layout), noise, spec)  # better reading: now every tone of the body is known, not just the pilots
     return result  # the finished report
+
+
+def _read_address_block(result, bits):  # unpack the addressing at the start of the body
+    """Put the address fields carried by `bits` into `result`; raise ValueError when an address is not valid."""
+    if result.frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
+        result.link = bits_to_int(bits[:LINK_ID_BITS])  # the short link number
+        result.msg_id = bits_to_int(bits[LINK_ID_BITS:])  # the message number
+        return  # nothing more in a link frame
+    result.dest = bits_to_call(bits[:CALL_BITS])  # who the message is for
+    result.origin = bits_to_call(bits[CALL_BITS:2 * CALL_BITS])  # who wrote it
+    rest = bits[2 * CALL_BITS:]  # the three counters that follow the addresses
+    result.msg_id = bits_to_int(rest[:MSG_ID_BITS])  # the message number
+    result.hops = bits_to_int(rest[MSG_ID_BITS:MSG_ID_BITS + HOP_BITS])  # relays so far
+    result.life_hours = bits_to_int(rest[MSG_ID_BITS + HOP_BITS:]) * LIFE_UNIT_HOURS  # remaining lifetime, back in hours
 
 
 def _measure(result, band, tones, noise, spec):  # fill in the channel measurements
