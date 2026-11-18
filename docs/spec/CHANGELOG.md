@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.14 (draft) - 18 November 2026
+
+- Reply window defined. Slots are 39 seconds. A plain beacon is followed by one reply slot; a beacon with the new wide-window flag (the beacon's former spare bit) is followed by four, and answering stations pick one at random.
+- The beaconing station widens the window after an unanswered beacon, and with a wide window locks with the strongest answer it decoded.
+- No other frame is changed from 0.13.
+
 ## 0.13 (draft) - 18 November 2026
 
 Changes that came out of simulating two stations through a whole contact.

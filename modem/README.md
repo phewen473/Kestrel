@@ -57,7 +57,7 @@ Four short frames set up and run a link. They look like message frames on the ai
 
 | Frame | What it says | L0 | L2 | L4 |
 |---|---|---|---|---|
-| Beacon | "Here I am": callsign, grid locator, speed levels, whether it takes answers, mail-check flag, whether it holds mail | 28 s | 8 s | 3.5 s |
+| Beacon | "Here I am": callsign, grid locator, speed levels, whether it takes answers, mail-check flag, whether it holds mail, and whether answers should spread over four reply slots | 28 s | 8 s | 3.5 s |
 | Answer | "I hear you": both callsigns, a report of how the beacon was received, the answerer's speed levels | 37 s | 10 s | 4 s |
 | Acknowledgment | "Got it", "send it again" or "already have the whole message", with a channel report. With no message named it confirms the lock, offers the turn, or asks "are you still there?" | 24 s | 7 s | 3.2 s |
 | Identification | The station's callsign, sent every 10 minutes in a lock and at the end of a contact | 26 s | 7.5 s | 3.4 s |

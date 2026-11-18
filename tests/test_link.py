@@ -1,6 +1,6 @@
 """Tests of the link layer: two simulated stations making, running and closing a contact."""
 
-from link import Path, Station, run_link, supported_level, wanted_level  # the link layer and its simulation
+from link import Path, Station, run_group, run_link, supported_level, wanted_level  # the link layer and its simulations
 from link.params import OFFER_PROBE  # the "are you still there?" code
 
 ENGLISH = "Good morning from South Carolina. Weather here is clear and 52 degrees with a light wind from the north. How do you copy this evening?"  # an ordinary message
@@ -66,6 +66,7 @@ def test_dead_path_ends_the_lock_and_reports_what_was_not_sent():  # the path ne
         return 2.0 if t < 75 else -45.0  # gone for good soon after the lock is made
     a, b, events = contact(Path(dies), Path(dies), [ODD, ODD, ODD], [])  # three messages, time for one at most
     assert a.state == "RELEASED"  # the sender gave up the lock rather than calling for ever
+    assert b.state == "RELEASED" and any("not heard" in line for line in b.log)  # and the receiver stopped waiting after five minutes of silence
     assert len(a.delivered) + len(a.outbox) == 3 and a.outbox  # every message is either delivered or still in the outbox
     assert b.inbox[:len(a.delivered)] == a.delivered and len(b.inbox) <= len(a.delivered) + 1  # the sender never claims a delivery that did not happen (one message may have arrived with its acknowledgment lost)
     assert any("not delivered" in line for line in a.log)  # and the operator is told
@@ -84,3 +85,27 @@ def test_answering_station_gives_way_when_both_are_sending():  # the tie-break a
     assert a.handle(a.hear(probe_from_b.audio), 30.0) is None and a.pending == "probe"  # the beaconing station ignores B's probe and keeps the turn
     reply = b.handle(b.hear(probe_from_a.audio), 30.0)  # the answering station hears A's probe
     assert reply is not None and reply.kind == "reply" and not b.my_turn and b.pending is None  # it gives way and answers
+
+
+def test_three_stations_answering_one_beacon_are_each_worked():  # the reply window
+    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller.beacon()  # it beacons
+    calls = ["W1AW", "K4ABC", "N0XYZ"]  # three stations that will all answer
+    others = []  # their Station objects
+    for call in calls:  # set each one up
+        station = Station(call, "FN31")  # a listening station
+        station.listen()  # it answers beacons
+        station.queue(f"Check-in from {call}.")  # with one message for the caller
+        others.append(station)  # keep it
+    paths_out = {call: Path(3.0 - i, offset_hz=3.0 * i) for i, call in enumerate(calls)}  # caller to each station
+    paths_in = {call: Path(2.0 - 2 * i, offset_hz=-4.0 * i) for i, call in enumerate(calls)}  # each station to the caller
+    events = run_group(caller, others, paths_out, paths_in, seed=1)  # run it
+    assert sorted(caller.inbox) == sorted(f"Check-in from {call}." for call in calls)  # every station's message arrived, once
+    assert all(s.state == "RELEASED" and len(s.delivered) == 1 for s in others)  # each contact was completed and closed
+    beacons = [e for e in events if e["kind"] == "beacon"]  # the caller's beacons
+    assert beacons[0]["note"] == "" and beacons[1]["note"] == "wide window"  # the first asks for one slot; after the pile-up the next asks for four
+    first_window = [e for e in events if e["kind"] == "answer" and e["t"] < beacons[1]["t"]]  # answers to the first beacon
+    assert len(first_window) == 3 and len({e["t"] for e in first_window}) == 1  # all three landed in the single slot, on top of each other
+    later = [e for e in events if e["kind"] == "answer" and e["t"] > beacons[1]["t"]]  # answers to the wide beacons
+    assert len({e["note"].split(",")[0] for e in later}) > 1  # which were spread over different slots
+    assert caller.worked == set(calls)  # the caller knows it has worked all three

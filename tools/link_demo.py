@@ -11,6 +11,7 @@ Scenarios:
     dropout     the path vanishes for a minute and a half, then returns
     fading      moderate fading on a middling path
     dead        the path dies for good part-way through
+    group       three stations answer one beacon; the caller works each in turn
 
 It prints every transmission and writes results/link_<scenario>.png.
 """
@@ -23,7 +24,7 @@ import sys  # lets us add the repository root to the import path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repository root (one level above tools/)
 sys.path.insert(0, ROOT)  # make "modem", "sim" and "link" importable when run as a script
 
-from link import Path, Station, describe, run_link  # the link layer and its two-station simulation  # noqa: E402
+from link import Path, Station, describe, run_group, run_link  # the link layer and its simulations  # noqa: E402
 
 ENGLISH = "Good morning from South Carolina. Weather here is clear and 52 degrees with a light wind from the north. The antenna work is finished and the new feed line is in. How do you copy this evening?"  # an ordinary message, about 190 characters
 
@@ -86,8 +87,8 @@ def draw(events, path, title, out_path):  # the picture
     top.plot(times, [max(path.snr_at(t), -25.0) for t in times], color="black")  # the path's SNR (floored at -25 dB so a dead path stays on the chart)
     top.set_ylabel("SNR in 2.5 kHz (dB)")  # y-axis title
     top.grid(True, alpha=0.3)  # light grid lines
-    callers = sorted({e["sender"] for e in events})  # the two callsigns
-    colours = dict(zip(callers, ("tab:blue", "tab:orange")))  # one colour each
+    callers = sorted({e["sender"] for e in events})  # the callsigns that transmitted
+    colours = dict(zip(callers, ("tab:blue", "tab:orange", "tab:green", "tab:purple")))  # one colour each
     for e in events:  # one bar per transmission
         shade = colours[e["sender"]]  # the sender's colour
         bottom.barh(e["level"], e["seconds"], left=e["t"], height=0.6, color=shade if e["heard"] else "white", edgecolor=shade, hatch=None if e["heard"] else "////")  # solid when heard, hatched when lost
@@ -99,18 +100,46 @@ def draw(events, path, title, out_path):  # the picture
     bottom.set_ylabel("Speed level of each transmission")  # y-axis title
     bottom.set_xlabel("Time (s)")  # x-axis title
     bottom.grid(True, axis="x", alpha=0.3)  # light vertical grid lines
-    bottom.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=3, frameon=False)  # legend below the chart, clear of the bars
+    bottom.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=5, frameon=False)  # legend below the chart, clear of the bars
     fig.suptitle(title)  # overall title
     fig.tight_layout()  # trim the margins
     fig.savefig(out_path, dpi=130)  # save the chart
 
 
+def group(seed):  # the "group" scenario
+    """One station beacons; three others each have a short message for it. Print the timeline and save the chart."""
+    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller.beacon()  # it beacons
+    calls = ["W1AW", "K4ABC", "N0XYZ"]  # the three answering stations
+    others = []  # their Station objects
+    for call in calls:  # set each one up
+        station = Station(call, "FN31")  # a listening station
+        station.listen()  # it answers beacons
+        station.queue(f"Check-in from {call}, all well here.")  # with one message for the caller
+        others.append(station)  # keep it
+    paths_out = {call: Path(3.0 - i, offset_hz=3.0 * i) for i, call in enumerate(calls)}  # caller to each station: +3, +2, +1 dB
+    paths_in = {call: Path(2.0 - 2 * i, offset_hz=-4.0 * i) for i, call in enumerate(calls)}  # each station to the caller: +2, 0, -2 dB
+    events = run_group(caller, others, paths_out, paths_in, seed=seed)  # run it
+    print("\n".join(describe(events)))  # every transmission
+    print()  # blank line
+    print("\n".join(caller.log))  # what the caller decided
+    print()  # blank line
+    print(f"{caller.call} received {len(caller.inbox)} of {len(calls)} messages; " + ", ".join(f"{s.call} {s.state}" for s in others))  # the outcome
+    out_path = os.path.join(ROOT, "results", "link_group.png")  # the chart file
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)  # create the folder if needed
+    draw(events, Path(2.0), "Kestrel link, scenario: group (three stations answer one beacon)", out_path)  # draw it (the SNR panel shows a nominal +2 dB)
+    print("wrote", out_path)  # say where it went
+
+
 def main():  # the script itself
     """Run one scenario, print the timeline and save the chart."""
     parser = argparse.ArgumentParser(description="Kestrel two-station link demonstration")  # describe the tool
-    parser.add_argument("--scenario", default="slip", choices=["steady", "asymmetric", "slip", "dropout", "fading", "dead"], help="which radio path to simulate")  # the scenario
+    parser.add_argument("--scenario", default="slip", choices=["steady", "asymmetric", "slip", "dropout", "fading", "dead", "group"], help="which radio path to simulate")  # the scenario
     parser.add_argument("--seed", type=int, default=1, help="random seed, for a repeatable run")  # repeatability
     args = parser.parse_args()  # read the options
+    if args.scenario == "group":  # one caller, three answering stations
+        group(args.seed)  # run that instead
+        return  # done
     path_ab, path_ba, from_a, from_b = build(args.scenario)  # the paths and the traffic
     a = Station("KO4WSC", "EM92")  # the station that calls
     b = Station("W1AW", "FN31")  # the station that answers

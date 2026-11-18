@@ -95,9 +95,9 @@ def bits_to_levels(bits):  # 8 bits -> tuple of speed levels
     return tuple(level for level in range(LEVEL_MASK_BITS) if mask & (1 << level))  # every level whose bit is set
 
 
-def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail=False):  # beacon fields -> 75 bits
+def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail=False, wide=False):  # beacon fields -> 75 bits
     """Return the body bits of a beacon: who is calling, where from, what it can do and what it wants."""
-    flags = [int(listening), int(mail_check), int(holds_mail), 0]  # will take answers / wants its mail / holds mail for others / spare
+    flags = [int(listening), int(mail_check), int(holds_mail), int(wide)]  # will take answers / wants its mail / holds mail for others / wide reply window (four slots instead of one)
     return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # callsign, locator, levels, flags
 
 
@@ -130,7 +130,7 @@ def unpack(frame_type, bits):  # body bits -> named fields
         rest = bits[CALL_BITS:]  # what follows the callsign
         flags = rest[GRID_BITS + LEVEL_MASK_BITS:]  # the four flag bits
         return {"origin": bits_to_call(bits[:CALL_BITS]), "grid": bits_to_grid(rest[:GRID_BITS]), "levels": bits_to_levels(rest[GRID_BITS:GRID_BITS + LEVEL_MASK_BITS]),  # (continued)
-                "listening": bool(flags[0]), "mail_check": bool(flags[1]), "holds_mail": bool(flags[2])}  # who, where, what it can do, what it wants
+                "listening": bool(flags[0]), "mail_check": bool(flags[1]), "holds_mail": bool(flags[2]), "wide": bool(flags[3])}  # who, where, what it can do, what it wants
     if frame_type == FRAME_TYPE_ANSWER:  # an answer to a beacon
         rest = bits[2 * CALL_BITS:]  # what follows the two callsigns
         return {"dest": bits_to_call(bits[:CALL_BITS]), "origin": bits_to_call(bits[CALL_BITS:2 * CALL_BITS]), "report": unpack_report(rest[:REPORT_BITS]),  # (continued)

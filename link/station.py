@@ -11,6 +11,7 @@ The life of a contact:
     identification with the end-of-contact flag, from each side
 """
 
+import zlib  # gives each station its own repeatable random numbers, from its callsign
 from dataclasses import dataclass  # simple record type for a transmission
 
 import numpy as np  # numerical arrays
@@ -27,7 +28,8 @@ from modem.text import pick_size_class  # which frame size a piece of text needs
 
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
 from .params import (  # timing and retry settings
-    BEACON_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY, OFFER_TURN,  # (continued)
+    BEACON_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
+    OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
     REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S,  # (continued)
 )  # end of the import list
 
@@ -42,6 +44,7 @@ class Transmission:  # one frame the station wants on the air
     kind: str  # what the frame is: beacon, answer, message, ack, offer, probe, reply, ident, final
     level: int  # the speed level it is sent at
     note: str = ""  # extra detail for the log
+    delay: float = 0.0  # seconds to wait before sending (an answer waiting for its reply slot)
 
     @property  # computed from the audio
     def seconds(self):  # airtime
@@ -54,6 +57,10 @@ class Station:  # the link rules for one station
 
     def __init__(self, call, grid, levels=None, close_when_done=True):  # set up a station
         self.call = clean_call(call)  # this station's callsign
+        self.rng = np.random.default_rng(zlib.crc32(self.call.encode()))  # this station's own random numbers (for choosing a reply slot)
+        self.wide = False  # beaconing: ask for a wide reply window (set after a beacon goes unanswered, or when several stations answered)
+        self.candidates = []  # beaconing: answers collected during a wide reply window
+        self.worked = set()  # callsigns of stations already worked, so their next beacon is not answered again without new traffic
         self.grid = grid  # its grid locator
         self.levels = tuple(levels) if levels is not None else tuple(spec.number for spec in LEVELS)  # the speed levels it can use
         self.close_when_done = close_when_done  # end the contact once neither side has anything left to send
@@ -231,7 +238,17 @@ class Station:  # the link rules for one station
         self.want = min(self.allowed)  # and ask for the reply at the slowest level
         return self._ack(now, 0, OFFER_PROBE, ACK_LINK, "probe", "probe", control_seconds(FRAME_TYPE_ACK, self.want))  # "are you still there?"
 
+    def new_contact(self):  # get ready for another contact after one has ended
+        """Return the station to IDLE, keeping its messages, its log and what it has learned about the reply window."""
+        self.state, self.pending, self.partner, self.link = "IDLE", None, "", -1  # no partner
+        self.history, self.last_result, self.clean_run, self.good_run = [], None, 0, 0  # no measurements
+        self.plan, self.part_index, self.misses, self.resends, self.probes, self.finals, self.beacons = [], 0, 0, 0, 0, 0, 0  # nothing under way, no counts
+        self.my_turn = self.peer_empty = self.sent_final = False  # no turn, no goodbyes
+        self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
+
     def _release(self, now, why):  # the contact is over
+        if self.partner:  # there was a partner
+            self.worked.add(self.partner)  # remember it has been worked
         self.state = "RELEASED"  # final state
         self.pending = None  # nothing more is expected
         self._say(now, why)  # say why
@@ -269,6 +286,10 @@ class Station:  # the link rules for one station
     def _on_beacon(self, result, now):  # a beacon was heard
         if self.role != "answerer" or self.state != "IDLE" or not result.fields["listening"]:  # not answering, already busy, or the caller takes no answers
             return None  # stay silent
+        if result.origin in self.worked and not self.outbox:  # already worked this station, and nothing new for it
+            return None  # leave the reply window to others
+        slot = int(self.rng.integers(0, WIDE_SLOTS)) if result.fields["wide"] else 0  # a wide window: pick one of four slots at random; otherwise the only slot
+        slots_left = (WIDE_SLOTS if result.fields["wide"] else 1) - slot  # slots from this station's own to the end of the window
         self.partner = result.origin  # the calling station
         self.link = link_id(self.partner, self.call)  # link number: the beaconing station first
         self.allowed = common_levels(self.levels, result.fields["levels"])  # the levels both can use
@@ -277,11 +298,20 @@ class Station:  # the link rules for one station
         self.last_ident = now  # the answer carries this station's callsign
         self._say(now, f"heard {self.partner} at {result.snr_db:+.0f} dB; answering, asking for L{self.want}")  # explain
         audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level)  # the answer frame
-        return self._send(now, audio, "answer", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, self.want), f"wants L{self.want}")  # wait for the lock to be confirmed
+        wait = slot * REPLY_SLOT_S + slots_left * REPLY_SLOT_S + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
+        tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}")  # wait for the lock to be confirmed
+        tx.delay = slot * REPLY_SLOT_S  # hold the answer back until its slot
+        return tx  # the answer, with its waiting time
 
     def _on_answer(self, result, now):  # an answer was heard
         if self.role != "beaconer" or self.pending != "answer" or result.dest != self.call:  # not expecting one, or it is for someone else
             return None  # stay silent
+        if self.wide:  # a wide window: other answers may still come
+            self.candidates.append(result)  # keep this one
+            return None  # and decide when the window closes
+        return self._lock_with(result, now)  # a single slot: lock at once
+
+    def _lock_with(self, result, now):  # make the lock with the station whose answer is `result`
         self.partner = result.origin  # the answering station
         self.link = link_id(self.call, self.partner)  # link number: the beaconing station first
         self.allowed = common_levels(self.levels, result.fields["levels"])  # the levels both can use
@@ -431,6 +461,8 @@ class Station:  # the link rules for one station
                     return None  # stay quiet
                 self.peer_empty = False  # time to check on the partner: offer the turn again
             return self._next(now)  # send whatever is due
+        if self.state in LOCKED_STATES and now - self.last_activity >= LOCK_TIMEOUT_S:  # locked, waiting for the partner, and nothing heard for a long time
+            self._release(now, "partner not heard for five minutes; lock given up")  # stop waiting
         return None  # nothing to do
 
     def next_wake(self):  # when should poll() be called again?
@@ -441,18 +473,28 @@ class Station:  # the link rules for one station
             return self.deadline  # until the deadline
         if self.state in LOCKED_STATES and self.my_turn and self.peer_empty and not self.close_when_done:  # idle with the lock kept open
             return self.last_activity + KEEPALIVE_S  # until the keep-alive is due
+        if self.state in LOCKED_STATES and not self.my_turn:  # locked and waiting for the partner
+            return self.last_activity + LOCK_TIMEOUT_S  # until the silence has lasted too long
         return None  # nothing scheduled
 
     def _beacon(self, now):  # send a beacon
         self.beacons += 1  # count it
         self.last_ident = now  # a beacon carries the callsign
-        audio = build_beacon(self.call, self.grid, self.levels, level=0)  # at the slowest level, to reach the furthest
-        return self._send(now, audio, "beacon", 0, "answer", control_seconds(FRAME_TYPE_ANSWER, 0))  # then listen for an answer
+        self.candidates = []  # a new reply window starts empty
+        audio = build_beacon(self.call, self.grid, self.levels, level=0, wide=self.wide)  # at the slowest level, to reach the furthest
+        window = (WIDE_SLOTS if self.wide else 1) * REPLY_SLOT_S  # how long to listen for answers
+        return self._send(now, audio, "beacon", 0, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window
 
     def _timed_out(self, now):  # the reply being waited for did not come
         waited_for = self.pending  # what was expected
         self.pending = None  # stop waiting
-        if waited_for == "answer":  # nobody answered the beacon
+        if waited_for == "answer" and self.candidates:  # a wide window has closed with at least one answer in it
+            best = max(self.candidates, key=lambda r: r.snr_db)  # choose the strongest
+            self.wide = len(self.candidates) > 1  # several stations are waiting: keep the window wide for the next call
+            self._say(now, f"{len(self.candidates)} answer(s) in the window; choosing {best.origin}")  # explain
+            return self._lock_with(best, now)  # lock with it
+        if waited_for == "answer":  # nobody answered the beacon (or the answers collided)
+            self.wide = True  # ask for a wide window from now on
             if self.beacons >= BEACON_TRIES:  # enough tries
                 self._release(now, "no answer to the beacon")  # give up
                 return None  # nothing to send

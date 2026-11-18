@@ -173,9 +173,9 @@ def build_control(frame_type, fields, level=0):  # the transmitter for control f
     return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), LEVELS[level])])  # chirps, then all the tones
 
 
-def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0):  # "here I am"
-    """Return the audio of a beacon from `call` at grid locator `grid`."""
-    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail), level)  # pack the fields and send
+def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False):  # "here I am"
+    """Return the audio of a beacon from `call` at grid locator `grid`; `wide` asks answering stations to spread over four reply slots."""
+    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide), level)  # pack the fields and send
 
 
 def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0):  # "I hear you"

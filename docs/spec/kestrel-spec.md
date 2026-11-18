@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.13 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.14 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -218,7 +218,7 @@ Airtime of a whole control frame:
 | Listening | 1 | 1 when the station will take answers |
 | Mail check | 1 | 1 asks any station holding mail for the origin to deliver it now |
 | Holds mail | 1 | 1 when the station is holding mail for others |
-| Spare | 1 | always 0 |
+| Wide window | 1 | 0 = one reply slot follows the beacon; 1 = four reply slots follow (Section 6.2) |
 
 **Answer (type 3), 124 bits**
 
@@ -265,13 +265,22 @@ Airtime of a whole control frame:
 
 ### 6.1 Beacon
 
-A station announces itself with a beacon frame (Section 5.8), by default at level L0. The beacon gives the callsign, grid locator and supported speed levels, says whether the station is taking answers and whether it holds mail for others, and carries the **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for a reply window. Window length: **TBD**.
+A station announces itself with a beacon frame (Section 5.8), by default at level L0. The beacon gives the callsign, grid locator and supported speed levels, says whether the station is taking answers and whether it holds mail for others, and carries the **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for the reply window (Section 6.2).
 
 A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**.
 
-### 6.2 Answer
+### 6.2 Answer and the reply window
 
-A station that wants to connect replies inside the window with an answer frame (Section 5.8), sent at L0 because the answering station has no measurement yet of the path in its own direction. The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use. If several stations reply, each picks a random slot within the window to reduce collisions, and the beaconing station chooses one. Slot rules: **TBD**.
+A station that wants to connect replies with an answer frame (Section 5.8), sent at L0 because the answering station has no measurement yet of the path in its own direction. The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use.
+
+The numbers below are starting values from simulation, to be tuned on the air.
+
+- **Reply slots.** The reply window is divided into slots of 39 seconds, the first starting 1 second after the beacon ends. A plain beacon is followed by one slot. A beacon with the wide-window flag set is followed by four.
+- **Answering.** After a plain beacon a station answers in the only slot. After a wide-window beacon it picks one of the four slots at random and answers at the start of that slot.
+- **Choosing.** With one slot, the beaconing station locks with the answer it decodes. With four, it listens to the whole window and locks with the strongest answer it decoded.
+- **When to widen.** A station's first beacon is plain. If a beacon brings no answer it can decode, which is what happens when several stations answer on top of each other, its following beacons ask for the wide window. It keeps asking for the wide window in later calls for as long as more than one answer arrives in a window.
+- **Not chosen.** An answering station that hears no confirmation with its own link number returns to listening and may answer the next beacon.
+- **Already worked.** A station does not answer a beacon from a station it has just finished a contact with, unless it has new traffic for it.
 
 ### 6.3 Lock, speed and turns
 
@@ -303,6 +312,7 @@ The numbers in this section are starting values from simulation, to be tuned on 
 - **No reply.** A station that hears no reply sends its frame again one level slower. A receiver that already holds the whole message answers "already have it" (status 2). A station reports a message as delivered only when its acknowledgment has been heard.
 - **Reacquiring.** After 3 transmissions in a row with no reply, or 4 requests to resend the same frame, the station enters REACQUIRE and sends a status-3 acknowledgment with part number 2 at L0, asking for the reply at L0. The partner answers with a status-3 acknowledgment, part number 0. Both then start their measurements afresh and the interrupted exchange resumes. After 4 probes with no reply the lock is RELEASED and the operator is told which messages were not delivered.
 - **Splitting again.** If the level falls while a split message is being sent, so that the next part would exceed the airtime limit (Section 6.8), the sender splits the whole message again for the new level and starts it again under the same message number. A receiver that holds parts of a message and receives a part with a different part count discards the parts it held.
+- **Silence.** A locked station that is waiting for its partner and hears nothing for 5 minutes releases the lock.
 - **Keep-alive.** When neither station has traffic and the lock is kept open, the station holding the turn offers it again after 120 seconds of silence.
 - **Identification.** Each station sends an identification frame before any other frame once 9 minutes have passed since it last sent its callsign, and as its last transmission of the contact with the end-of-contact flag set. A station that receives the closing identification sends its own in return.
 
@@ -358,7 +368,6 @@ Each station applies the same checks to every message it receives: deliver it if
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
 - The longer beacon carrying the heard list, held-mail list and delivery receipts.
-- Reply window length and the slot rules when several stations answer one beacon.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
 - Message lifetime; how long receipts stay listed.

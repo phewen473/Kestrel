@@ -13,6 +13,10 @@ Nothing here touches a radio. A `Station` is handed the audio it heard and the t
 5. **Turn.** When the sender has nothing left it offers the turn. The partner either starts sending or says it has nothing either.
 6. **Close.** When both are empty, each sends an identification frame with the end-of-contact flag.
 
+## When several stations answer
+
+A plain beacon is followed by one 39-second reply slot. If three stations all answer in it, they land on top of each other and the caller decodes none of them. Its next beacon then asks for a **wide window** of four slots, and each answering station picks a slot at random. The caller listens to all four, locks with the strongest answer it decoded, works that station, and beacons again for the rest. A station that has just been worked stays out of the next window.
+
 ## The rules
 
 | Situation | What the station does |
@@ -24,6 +28,7 @@ Nothing here touches a radio. A `Station` is handed the audio it heard and the t
 | No reply | The sender tries again one level slower. |
 | Three tries with no reply | The sender probes at the slowest level ("are you still there?"). A reply restores the lock and both sides start measuring afresh. |
 | Four probes with no reply | The lock is given up. Messages not acknowledged stay in the outbox and the operator is told. |
+| Nothing heard from the partner for five minutes | A station waiting for its partner gives up the lock. |
 | Level falls during a split message | The message is split again for the new level and started over under the same number, so no frame runs past the airtime limit. |
 | Both stations sending at once | The station that beaconed keeps the turn; the station that answered gives way. |
 | Nine minutes without sending a callsign | The station sends an identification frame before anything else. |
@@ -43,8 +48,11 @@ These are first settings, chosen in simulation and meant to be tuned on the air.
 | Resends of one frame at the receiver's request before probing | 4 |
 | Probes before giving up the lock | 4 |
 | Beacons without an answer before giving up | 5 |
+| Reply slot length | 39 s |
+| Reply slots after a wide-window beacon | 4 |
 | Pause between hearing and replying | 1 s |
 | Keep-alive after silence | 120 s |
+| Silence before a waiting station gives up the lock | 300 s |
 | Identification | every 9 minutes at most |
 
 ## What the simulation showed (18 November 2026)
@@ -56,6 +64,7 @@ Run `python tools/link_demo.py --scenario <name>`; charts are in `results/`.
 - **Path gone for a minute and a half:** three frames lost, the stations found each other again by probing, and every message arrived once.
 - **Path gone for good:** the sender gave up after four probes and reported what was not delivered.
 - **Fading:** 36 contacts across light, moderate and heavy fading at 0 to -9 dB. In every one, all six messages arrived complete, in order and once, and the contact closed properly.
+- **Several answering stations:** six groups of two to five stations answering one caller, on steady and fading paths. Every station was worked and every message arrived once. Three stations took 5 to 12 minutes, depending on how the slots fell; five took about 25.
 
 Two faults in the first design were found this way and fixed:
 
@@ -64,7 +73,6 @@ Two faults in the first design were found this way and fixed:
 
 ## Not covered yet
 
-- Several stations answering one beacon (the reply window and random slots).
 - Two stations transmitting at the same moment. The simulation takes turns, so a real collision is never produced; the give-way rule is tested by hand.
 - Nets, and store-and-forward.
 
@@ -74,5 +82,5 @@ Two faults in the first design were found this way and fixed:
 |---|---|
 | `station.py` | One station's rules: `Station`, with `poll`, `hear` and `handle` |
 | `adapt.py` | How a receiver chooses the level to ask for |
-| `simulate.py` | Two stations joined by the channel simulator: `run_link`, `Path`, `describe` |
+| `simulate.py` | Stations joined by the channel simulator: `run_link` (two stations), `run_group` (one caller, several answering stations), `Path`, `describe` |
 | `params.py` | The starting values above |

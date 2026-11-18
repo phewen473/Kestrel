@@ -45,7 +45,7 @@ Sends random messages at every level through noise only and through light, moder
 python tools/link_demo.py --scenario slip
 ```
 
-Runs two simulated stations through a whole contact (beacon, answer, lock, messages both ways, close) while the radio path changes, prints every transmission and each station's decisions, and writes `results/link_<scenario>.png`. Scenarios: `steady`, `asymmetric` (one direction strong, one weak), `slip` (conditions fall away and come back), `dropout` (the path vanishes for a minute and a half), `fading`, and `dead` (the path dies for good).
+Runs two simulated stations through a whole contact (beacon, answer, lock, messages both ways, close) while the radio path changes, prints every transmission and each station's decisions, and writes `results/link_<scenario>.png`. Scenarios: `steady`, `asymmetric` (one direction strong, one weak), `slip` (conditions fall away and come back), `dropout` (the path vanishes for a minute and a half), `fading`, `dead` (the path dies for good), and `group` (three stations answer one beacon and the caller works each in turn).
 
 ## make_spec_tables.py - write the specification's tables
 

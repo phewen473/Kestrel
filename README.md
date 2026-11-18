@@ -56,7 +56,8 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 5 is done (18 November 2026):** addresses and message numbers (spec v0.10). Every frame now says who it is for and which message it belongs to. Frames grew slightly. On a steady signal 200 characters now go as one 16-second frame at -7 dB or better, 31 seconds down to -10 dB, 60 seconds down to -12 dB, 89 seconds down to -14 dB, and four 80-second parts below that. On a fading signal the same steps come at +1, -2, -7 and -8 dB.
 - **Milestone 6 is done (18 November 2026):** the control frames (spec v0.12): beacon, answer, acknowledgment and identification, with an 18-bit channel report that tells the sender which speed level to use next. An acknowledgment takes 3 seconds at the fastest level and 24 at the slowest.
 - **Milestone 7 is done (18 November 2026):** the link rules (spec v0.13), run as two simulated stations. A contact goes beacon, answer, lock, messages both ways, close. Each direction runs at its own speed, set by the station that hears it. In simulation the link stepped from the fastest level to the slowest and back through a 19 dB slide without losing a frame, found its partner again after a 95-second gap, and delivered every message once in 36 fading contacts. See `link/README.md`.
-- Next: several stations answering one beacon, then nets and store-and-forward.
+- **Milestone 8 is done (18 November 2026):** the reply window (spec v0.14). When several stations answer one beacon and collide, the next beacon opens four reply slots and each station picks one at random; the caller works the strongest and beacons again for the rest. In simulation, groups of two to five answering stations were all worked.
+- Next: store-and-forward, then a sound-card version for the first on-air test.
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
@@ -86,7 +87,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.13) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.14) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -112,11 +113,12 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.13 (draft), 18 November 2026. Milestones 1 to 7 of the prototype done.
+- Spec version 0.14 (draft), 18 November 2026. Milestones 1 to 8 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Milestone 8 and spec v0.14: reply window for several answering stations.
 - Milestone 7 and spec v0.13: link rules and the two-station simulation.
 - Milestone 6 and spec v0.12: control frames (beacon, answer, acknowledgment, identification).
 - Spec v0.11: unattended mail holders operate under 97.221(b).
@@ -130,7 +132,7 @@ Last commits (all 2026-11-18):
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): several stations answering one beacon, then nets and store-and-forward. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): store-and-forward, then a sound-card version for the first on-air test; nets and L5 after that. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
