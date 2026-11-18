@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.11 (draft) - 18 November 2026
+
+- The transmitted signal is unchanged from 0.10.
+- Regulatory summary: unattended mail holders operate under 97.221(b) and, on HF, stay within the band segments that paragraph lists. Paragraph (c) does not fit, because every frame is wider than 500 Hz.
+
 ## 0.10 (draft) - 18 November 2026
 
 - Every message frame now starts its body with an address block, and there are two kinds of message frame. A link frame (frame type 0) carries a 12-bit link number and a 16-bit message number. A fully addressed frame (frame type 1) carries destination and origin callsigns (48 bits each), the message number, a hop count and the remaining lifetime.

@@ -82,7 +82,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.10) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.11) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -108,11 +108,12 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.10 (draft), 18 November 2026. Milestones 1 to 5 of the prototype done.
+- Spec version 0.11 (draft), 18 November 2026. Milestones 1 to 5 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Spec v0.11: unattended mail holders operate under 97.221(b).
 - Milestone 5 and spec v0.10: addresses and message numbers.
 - Milestone 4 and spec v0.9: fading measurement and fading-aware level limits.
 - Milestone 3 and spec v0.8: LDPC code, text compression, 150-character frame, level table in the spec.
