@@ -69,3 +69,68 @@ Both licenses require credit to the original. Anyone redistributing or modifying
 ## Contact
 
 Questions and comments are welcome through this repository's Issues.
+
+---
+
+# Project notes (for picking the work back up)
+
+_README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
+
+## What it is
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.6) and a Python prototype of the modem and an HF channel simulator.
+
+## Where it lives
+- Folder: the author's development PC.
+- Git remotes:
+  - a backup copy on a second drive
+  - a private local Git server
+  - `origin` = `https://github.com/phewen473/Kestrel.git` (public GitHub; the README and NOTICE point to it).
+- No server: it runs on the PC only (simulation, no radio yet).
+
+## Language and tools
+- Python 3.10 or newer; the local `.venv` uses Python 3.12.10.
+- Packages (`requirements.txt`): numpy >= 1.26, scipy >= 1.11, matplotlib >= 3.8, pytest >= 8.0.
+- Planned, not started: C++ modem core with CMake and a C interface, Qt operator program, Hamlib, PortAudio (see Development above).
+
+## How to build
+Nothing to compile yet. Create the environment once:
+`python -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`.
+
+## How to run or deploy
+- Tests: `.venv\Scripts\python -m pytest -q` (a few seconds).
+- One-frame demo: `.venv\Scripts\python tools\demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate` (writes a WAV and a waterfall picture into `results\`).
+- Sweeps: `tools\snr_sweep.py` (L0 decode rate against SNR) and `tools\level_sweep.py` (all levels); results go to `results\`.
+- Nothing is deployed. No on-air use until the matching spec version is published.
+
+## Current version and status
+- Spec version 0.6 (draft), 18 November 2026. Milestones 1 and 2 of the prototype done.
+- Status: **in progress**.
+
+## Where things were left
+Last commits (all 2026-11-18):
+- Milestone 2: speed levels L0-L4, airtime limits and message splitting.
+- Spec v0.6: signature chirp fixed as an up/down pair.
+- Spec v0.5: airtime limits (60 s, 90 s in poor conditions) and message splitting.
+- Milestone 1: HF channel simulator and first modem slice (L0).
+- Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
+
+Next steps (from "Where things stand" above): text compression, the LDPC code, fading-aware level limits, then the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+
+Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
+
+## Important files
+- `docs/spec/kestrel-spec.md` - the public technical description (FCC 97.309(a)(4)).
+- `docs/spec/CHANGELOG.md` - what changed in each spec version.
+- `sim/channel.py` - HF channel simulator.
+- `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
+- `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`).
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`.
+- `results/` - sweep CSVs and charts.
+- `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
+
+## Notes and gotchas
+- `origin` is public GitHub. The standing rule is to push to the local Git server and the backup drive; pushing to GitHub is his decision each time.
+- The spec is versioned so that what is published always matches what is transmitted. Change the spec version whenever the signal changes.
+- No encryption, ever (Part 97).
+- `.venv\`, `__pycache__\`, `.pytest_cache\` and `results/demo.wav` are not tracked (`.gitignore`); recreate them as needed.
+- Each subfolder has its own README with more detail.
