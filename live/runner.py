@@ -19,6 +19,8 @@ LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the r
 def describe(result):  # one line about a received frame
     """Return a readable line describing the receiver's report `result`."""
     name = KIND.get(result.frame_type, "frame")  # what kind of frame
+    if not result.ok and result.level < 0:  # nothing was readable at all, not even the header
+        return "noise briefly looked like the start of a frame; nothing decoded"  # a false alarm, said plainly
     if not result.ok:  # it failed its check
         return f"heard a {name} at L{result.level} that failed its check ({result.snr_db:+.0f} dB)"  # say so
     line = f"heard {name} at L{result.level}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
