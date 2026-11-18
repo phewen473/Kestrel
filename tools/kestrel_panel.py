@@ -410,8 +410,7 @@ class Panel:  # the control panel window
                 self._tune(rig, entry)  # set mode and frequency
                 rig.close()  # hang up
         except (OSError, RuntimeError, ValueError) as problem:  # no connection, or the radio refused
-            hint = f"  -  the radio did not answer on {settings['cat_port']}; check the rig type and CAT serial port under Settings > Rig Information, and that no other program is using that port" if "timed out" in str(problem) and settings["cat_port"] else ""  # a silent radio usually means the wrong port or rig type
-            self.say(f"could not tune the radio: {problem}{hint}")  # say what went wrong, and where to look
+            self.say(f"could not tune the radio: {problem}")  # say what went wrong (rig control's own message says what to check)
 
     def _tune(self, rig, entry):  # set the radio to a frequency entry
         rig.set_mode(entry["mode"])  # the mode first

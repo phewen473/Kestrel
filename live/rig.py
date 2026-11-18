@@ -16,6 +16,7 @@ import shutil  # looks for a program on the search path
 import socket  # the network connection to rigctld
 import subprocess  # starts the rigctld program
 import sys  # tells Windows from other systems
+import tempfile  # a scratch file for rigctld's own messages
 import time  # short waits while rigctld starts
 
 RIGCTLD_NAMES = ("rigctld", "rigctld-wsjtx", "rigctld.exe", "rigctld-wsjtx.exe")  # names the rigctld program goes by (WSJT-X ships its own copy)
@@ -71,6 +72,7 @@ class RigServer:  # a rigctld started and stopped by Kestrel
         self.process = None  # the rigctld process, when one is running
         self.config = None  # the settings it was started with
         self.address = ""  # where it is listening, as host:port
+        self.notes = None  # a scratch file that collects rigctld's own messages
 
     def ensure(self, program, model, port, baud, handshake="none"):  # make sure rigctld is running with these settings
         """Start rigctld if needed and return its address. Raise RuntimeError with the reason if it will not start."""
@@ -84,23 +86,34 @@ class RigServer:  # a rigctld started and stopped by Kestrel
         command = [program, "-m", str(config[1]), "-r", port, "-s", str(config[3]), "-T", "127.0.0.1", "-t", str(tcp)]  # radio type, serial port, speed, and where to listen
         if handshake == "hardware":  # the radio wants RTS/CTS handshaking
             command += ["-C", "serial_handshake=Hardware"]  # say so
+        self.notes = tempfile.TemporaryFile(mode="w+")  # rigctld's messages go to a scratch file (a pipe nobody reads would fill up and stall it)
         try:  # the program may be missing
-            self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, cwd=os.path.dirname(program) or None, **HIDDEN)  # start rigctld
+            self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=self.notes, text=True, cwd=os.path.dirname(program) or None, **HIDDEN)  # start rigctld
         except OSError as problem:  # it could not be started
             raise RuntimeError(f"could not start the rig control program: {problem}")  # say why
         self.config, self.address = config, f"127.0.0.1:{tcp}"  # remember what is running and where
         for _ in range(60):  # give it up to six seconds to open the radio
             if self.process.poll() is not None:  # it has already given up
-                reason = (self.process.stderr.read() or "").strip().splitlines()[-1:]  # the last thing it said
+                self.notes.seek(0)  # go back to the start of its messages
+                reason = self.notes.read().strip().splitlines()[-1:]  # the last thing it said
                 self.process = None  # nothing is running
-                raise RuntimeError("rig control could not open the radio" + (f": {reason[0]}" if reason else "") + f" (check the radio type, that {port} is the right port and that no other program is using it)")  # say why
+                raise RuntimeError("rig control could not open the radio" + (f": {reason[0]}" if reason else "") + f" (check the rig type, that {port} is the right port and that no other program is using it)")  # say why
             try:  # is it listening yet?
                 socket.create_connection(("127.0.0.1", tcp), timeout=0.2).close()  # try to connect
-                return self.address  # yes: ready
+                break  # yes: go on to check the radio itself
             except OSError:  # not yet
                 time.sleep(0.1)  # wait a moment
-        self.stop()  # it never started listening
-        raise RuntimeError("rig control did not start in time")  # say so
+        else:  # it never started listening
+            self.stop()  # give up on it
+            raise RuntimeError("rig control did not start in time")  # say so
+        try:  # rigctld is running; now make sure the radio itself answers
+            check = RigCtl(self.address, timeout=5.0)  # connect
+            check.frequency()  # ask the radio where it is tuned
+            check.close()  # hang up
+        except (OSError, RuntimeError, ValueError):  # no answer, or nonsense
+            self.stop()  # do not leave a rig control running that cannot reach the radio
+            raise RuntimeError(f"the radio did not answer on {port}. Check that the rig type and CAT port are right, that the radio is on, and that no other program (another rig control window, WSJT-X, JS8Call) is using {port}")  # say what to check
+        return self.address  # ready, and proven to reach the radio
 
     def stop(self):  # stop rigctld
         """Stop the rigctld this object started, if any."""
@@ -111,6 +124,9 @@ class RigServer:  # a rigctld started and stopped by Kestrel
             except subprocess.TimeoutExpired:  # it did not
                 self.process.kill()  # insist
         self.process = None  # nothing is running now
+        if self.notes is not None:  # its messages are no longer needed
+            self.notes.close()  # delete the scratch file
+            self.notes = None  # none is open now
 
 
 class RigCtl:  # a connection to rigctld
