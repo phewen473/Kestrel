@@ -47,6 +47,8 @@ python -m venv .venv
 
 The demo sends one message through the simulated channel, decodes it, and writes a sound file and a waterfall picture into `results/`.
 
+**Windows, the short way:** copy the folder to the computer, double-click `setup_windows.bat` once (it needs Python from python.org and the internet), then double-click `kestrel_panel.bat` to open the control panel. In the panel choose the sound devices that lead to and from the radio; **Monitor** only listens and never transmits.
+
 ## Where things stand
 
 - **Milestone 1 is done (18 November 2026):** the channel simulator and the first modem slice work end to end in simulation.
@@ -108,6 +110,7 @@ Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per t
 ## How to build
 Nothing to compile yet. Create the environment once:
 `python -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`.
+On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens the control panel.
 
 ## How to run or deploy
 - Tests: `.venv\Scripts\python -m pytest -q` (a few seconds).
