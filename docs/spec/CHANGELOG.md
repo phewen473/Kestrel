@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.12 (draft) - 18 November 2026
+
+- Four control frames defined (frame types 2 to 5): beacon, answer, acknowledgment and identification. They use the same chirp pair, header, pilots and interleaver as message frames, with a short body protected by the header's convolutional code.
+- Channel report defined as an 18-bit field: SNR, fading index, frequency offset and the speed level the receiver wants next.
+- Link rules stated: each direction has its own speed level; a station sends at the level its partner last asked for, or slower. The lock is confirmed by an acknowledgment frame with status 3, which is also the keep-alive.
+- Station identification inside a lock is now a defined frame, sent at least every 10 minutes and at the end of the contact.
+- Message frames are unchanged from 0.10.
+
 ## 0.11 (draft) - 18 November 2026
 
 - The transmitted signal is unchanged from 0.10.

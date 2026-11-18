@@ -2,6 +2,7 @@
 
 import numpy as np  # numerical arrays
 
+from modem import ACK_HAVE_IT, ChannelReport, build_ack, build_answer, build_beacon, build_ident, control_seconds  # control frames
 from modem import (  # transmitter, receiver, levels and planner
     LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, link_id, pick_level, plan_message, receive,  # (continued)
 )  # end of the import list
@@ -185,3 +186,32 @@ def test_long_addressed_message_is_split_and_rejoined():  # 200 characters that 
     assert join_parts(heard) == LONG  # the parts go back together
     stray = receive(build_frame(plan[1]["text"], plan[1]["level"], 1, 2, dest="ALL", origin="KO4WSC", msg_id=10))  # the second part of a different message
     assert join_parts([heard[0], stray]) is None  # parts of different messages are never joined
+
+
+def test_beacon_and_answer_through_noise():  # the two frames that start a contact
+    rng = np.random.default_rng(1001)  # repeatable random source
+    beacon = receive(run_channel(build_beacon("KO4WSC", "EM92", mail_check=True), -19.0, rng, offset_hz=11.0))  # a beacon at the slowest level, near its limit
+    assert beacon.ok and beacon.frame_type == 2 and beacon.level == 0  # it decodes and says what it is
+    assert (beacon.origin, beacon.fields["grid"], beacon.fields["levels"]) == ("KO4WSC", "EM92", (0, 1, 2, 3, 4))  # who, where, and what it can do
+    assert beacon.fields["listening"] and beacon.fields["mail_check"] and not beacon.fields["holds_mail"]  # its flags
+    report = ChannelReport(round(beacon.snr_db), beacon.fade_index, beacon.offset_hz, 1)  # what the listener measured, asking for level 1
+    answer = receive(run_channel(build_answer("KO4WSC", "W1AW", report, level=1), -13.0, rng, offset_hz=-7.0))  # the answer comes back faster
+    assert answer.ok and answer.frame_type == 3 and answer.level == 1  # it decodes at the level it was sent at
+    assert (answer.dest, answer.origin) == ("KO4WSC", "W1AW")  # addressed to the beaconing station, from the answering one
+    assert abs(answer.fields["report"].snr_db - (-19.0)) <= 2 and answer.fields["report"].want_level == 1  # the report of the beacon arrives
+    assert abs(answer.fields["report"].offset_hz - 11.0) <= 2  # including the frequency error the listener saw
+
+
+def test_acknowledgment_and_identification_at_every_level():  # the frames that run and close a link
+    link = link_id("KO4WSC", "W1AW")  # the pair's link number
+    for spec in LEVELS:  # each speed level in turn
+        rng = np.random.default_rng(1100 + spec.number)  # repeatable random source
+        snr_db = MIN_SNR_DB[spec.number] + 3.0  # a little above the level's limit
+        report = ChannelReport(-5.0, 0.25, 4.0, spec.number)  # an arbitrary report
+        ack = receive(run_channel(build_ack(link, 4242, 3, ACK_HAVE_IT, report, level=spec.number), snr_db, rng, offset_hz=5.0))  # send an acknowledgment
+        assert ack.ok and ack.frame_type == 4 and ack.level == spec.number  # it decodes at its own level
+        assert (ack.link, ack.msg_id, ack.part, ack.fields["status"]) == (link, 4242, 3, ACK_HAVE_IT)  # which frame it is about, and the verdict
+        assert ack.fields["report"] == report  # the channel report arrives intact
+        ident = receive(run_channel(build_ident("KO4WSC/P", link, final=True, level=spec.number), snr_db, rng, offset_hz=-5.0))  # send an identification
+        assert ident.ok and ident.frame_type == 5 and (ident.origin, ident.link, ident.fields["final"]) == ("KO4WSC/P", link, True)  # callsign, link and end-of-contact flag
+    assert control_seconds(4, 4) < 4 and control_seconds(4, 0) < 30  # an acknowledgment is quick: under 4 s at the fastest level, under 30 s at the slowest

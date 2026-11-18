@@ -136,3 +136,19 @@ def test_addressed_frames_hold_less_text():  # the longer address block takes ro
     assert [capacity_bits(c, 1) for c in range(4)] == [258, 608, 958, 1308]  # fully addressed frames: 92 bits fewer
     with pytest.raises(ValueError):  # 200 characters that do not compress...
         choose_packing("~" * 200, 1)  # ...do not fit one addressed frame
+
+
+def test_channel_report_and_locator_coding():  # the small fields inside control frames
+    from modem import control  # the control-frame field packer
+    report = control.ChannelReport(snr_db=-7.4, fade_index=0.62, offset_hz=-13.0, want_level=3)  # an ordinary report
+    back = control.unpack_report(control.pack_report(report))  # pack it and unpack it
+    assert (back.snr_db, back.fade_index, back.offset_hz, back.want_level) == (-7.0, 0.5, -12.0, 3)  # rounded to 1 dB, a quarter, and 2 Hz
+    wild = control.unpack_report(control.pack_report(control.ChannelReport(99.0, float("nan"), 500.0, 0)))  # readings far outside the fields
+    assert (wild.snr_db, wild.fade_index, wild.offset_hz) == (33.0, 1.75, 62.0)  # each is held to the end of its range; a missing fading reading reads as fading
+    assert len(control.pack_report(report)) == 18  # a report is 18 bits
+    for grid in ("EM92", "AA00", "RR99", "fn31"):  # corners of the locator range, and lower case
+        assert control.bits_to_grid(control.grid_to_bits(grid)) == grid.upper()  # it comes back in capitals
+    for bad in ("EM9", "SM92", "EMX2", "EM92AB"):  # too short, a letter past R, a letter for a digit, too long
+        with pytest.raises(ValueError):  # each must be refused
+            control.grid_to_bits(bad)  # try to encode it
+    assert control.bits_to_levels(control.levels_to_bits((0, 2, 4))) == (0, 2, 4)  # the list of levels survives

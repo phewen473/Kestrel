@@ -20,7 +20,7 @@ from .blanker import blank_impulses  # static-crash blanker
 from .chirp import detect_chirp_pair, make_chirp_pair  # signature chirp
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header
-from . import ldpc  # error correction for the body
+from . import control, ldpc  # control-frame fields, and error correction for the message body
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
@@ -28,7 +28,8 @@ from .mfsk import (  # tone waveform
     signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
 )  # end of the import list
 from .params import (  # frame format numbers
-    ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CHIRP_SAMPLES, FRAME_TYPE_ADDRESSED, FRAME_TYPE_LINK, FS,  # (continued)
+    ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CHIRP_SAMPLES, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
+    FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS,  # (continued)
     HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
     MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
 )  # end of the import list
@@ -39,14 +40,8 @@ HEADER_SYMBOLS_ONCE = ceil(HEADER_CODED_BITS / BITS_PER_SYMBOL)  # tones for one
 HEADER_SYMBOLS = HEADER_SYMBOLS_ONCE * HEADER_REPEAT  # tones for both copies (24)
 
 
-def body_layout(size_class):  # work out the shape of the body for a size class
-    """Return a dict describing the body: bit counts, tone counts and where the pilots sit.
-
-    Both kinds of frame have the same body size. A fully addressed frame
-    has a longer address block and correspondingly less room for text.
-    """
-    info = ADDRESS_BITS[FRAME_TYPE_LINK] + LENGTH_BITS + CHAR_BITS * SIZE_CLASSES[size_class] + BODY_CRC_BITS  # address block + length field + text room + check
-    coded = 2 * info  # bits after error-correction coding (the LDPC code doubles them)
+def _layout(info, coded):  # work out the shape of a body from its bit counts
+    """Return a dict describing a body with `info` data bits and `coded` bits after error correction."""
     ndata = ceil(coded / BITS_PER_SYMBOL)  # data tones needed
     npilot = ceil(ndata / PILOT_EVERY)  # one pilot per 15 data tones
     total = ndata + npilot  # all body tones
@@ -62,6 +57,27 @@ def body_layout(size_class):  # work out the shape of the body for a size class
         "data_pos": np.flatnonzero(~is_pilot),  # where the data tones are
         "pilot_tones": (PILOT_STEP * np.arange(npilot) + PILOT_START) % M_TONES,  # which tone each pilot uses
     }  # end of the layout
+
+
+def body_layout(size_class):  # the shape of a message frame's body
+    """Return a dict describing a message body: bit counts, tone counts and where the pilots sit.
+
+    Both kinds of message frame have the same body size. A fully addressed
+    frame has a longer address block and correspondingly less room for text.
+    """
+    info = ADDRESS_BITS[FRAME_TYPE_LINK] + LENGTH_BITS + CHAR_BITS * SIZE_CLASSES[size_class] + BODY_CRC_BITS  # address block + length field + text room + check
+    return _layout(info, 2 * info)  # the LDPC code doubles the bits
+
+
+def control_layout(frame_type):  # the shape of a control frame's body
+    """Return a dict describing the body of a beacon, answer, acknowledgment or identification frame."""
+    info = CONTROL_BITS[frame_type] + BODY_CRC_BITS  # the fields + check
+    return _layout(info, 2 * (info + TAIL))  # the convolutional code doubles the bits, after six tail bits
+
+
+def control_seconds(frame_type, level=0):  # how long a control frame lasts on the air
+    """Return the airtime of a whole control frame, in seconds."""
+    return 2 * CHIRP_SAMPLES / FS + (HEADER_SYMBOLS + control_layout(frame_type)["total"]) * LEVELS[level].seconds  # chirps + header + body
 
 
 def frame_seconds(size_class, level=0):  # how long a frame lasts on the air
@@ -83,9 +99,13 @@ def _header_bits(frame_type, level, size_class, part, parts, compressed):  # the
     return np.concatenate([fields, crc8(fields)])  # fields followed by their check value
 
 
-def _body_symbols(data_bits, layout):  # body bits -> the tones of the body
-    """Return the tone number of every body symbol for the given body bits (check value included)."""
-    coded = ldpc.encode(data_bits)  # add error correction
+def _body_symbols(data_bits, layout, is_control=False):  # body bits -> the tones of the body
+    """Return the tone number of every body symbol for the given body bits (check value included).
+
+    Message bodies use the LDPC code; the short control bodies use the
+    same convolutional code as the header.
+    """
+    coded = conv_encode(data_bits) if is_control else ldpc.encode(data_bits)  # add error correction
     coded = np.concatenate([coded, np.zeros(layout["padded"] - layout["coded"], dtype=np.uint8)])  # round up to whole tones
     body_syms = np.zeros(layout["total"], dtype=np.int64)  # room for every body tone
     body_syms[layout["data_pos"]] = bits_to_symbols(interleave(coded))  # shuffled data bits become the data tones
@@ -141,6 +161,37 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # chirps, then all the tones
 
 
+def build_control(frame_type, fields, level=0):  # the transmitter for control frames
+    """Return the audio of a control frame of the given type carrying the packed `fields` (see control.py)."""
+    if len(fields) != CONTROL_BITS[frame_type]:  # each control frame has a fixed length
+        raise ValueError("wrong number of bits for this control frame")  # refuse nonsense
+    layout = control_layout(frame_type)  # shape of this frame's body
+    header_syms = np.tile(bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False))), HEADER_REPEAT)  # header: type and level; the other fields are zero; sent twice
+    data_bits = np.concatenate([fields, crc16(fields)])  # the fields and their check value
+    body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
+    return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), LEVELS[level])])  # chirps, then all the tones
+
+
+def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0):  # "here I am"
+    """Return the audio of a beacon from `call` at grid locator `grid`."""
+    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail), level)  # pack the fields and send
+
+
+def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0):  # "I hear you"
+    """Return the audio of `origin`'s answer to a beacon from `dest`, carrying a report of how the beacon was received."""
+    return build_control(FRAME_TYPE_ANSWER, control.pack_answer(dest, origin, report, levels, mail_check), level)  # pack the fields and send
+
+
+def build_ack(link, msg_id, part, status, report, level=0):  # "got it" / "send it again" / "already have it"
+    """Return the audio of an acknowledgment for part `part` of message `msg_id` on link `link`."""
+    return build_control(FRAME_TYPE_ACK, control.pack_ack(link, msg_id, part, status, report), level)  # pack the fields and send
+
+
+def build_ident(call, link, final=False, level=0):  # "this is ..."
+    """Return the audio of a station identification; `final` marks the end of the contact."""
+    return build_control(FRAME_TYPE_IDENT, control.pack_ident(call, link, final), level)  # pack the fields and send
+
+
 @dataclass  # a plain record of what the receiver found
 class RxResult:  # the receiver's report
     """Everything the receiver learned from one frame."""
@@ -166,6 +217,7 @@ class RxResult:  # the receiver's report
     origin: str = ""  # originating callsign (fully addressed frames only)
     hops: int = 0  # relays so far (fully addressed frames only)
     life_hours: int = 0  # hours the message may still be kept (fully addressed frames only)
+    fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
 
 
@@ -194,11 +246,12 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     result.part = bits_to_int(header[8:11])  # fourth field: part number
     result.parts = bits_to_int(header[11:14]) + 1  # fifth field: part count
     result.compressed = bool(header[14])  # sixth field: is the text compressed?
-    if result.frame_type not in ADDRESS_BITS or result.part >= result.parts:  # only sensible message frames are accepted
+    is_control = result.frame_type in CONTROL_BITS  # a beacon, answer, acknowledgment or identification?
+    if not is_control and (result.frame_type not in ADDRESS_BITS or result.part >= result.parts):  # neither a control frame nor a sensible message frame
         result.reason = "unsupported frame"  # say why we stopped
         return result  # give up on this reading of the header
     offset = found["offset_hz"]  # frequency error measured from the chirp
-    layout = body_layout(result.size_class)  # the header told us the body's shape
+    layout = control_layout(result.frame_type) if is_control else body_layout(result.size_class)  # the header told us the body's shape
     body_start = found["start"] + 2 * CHIRP_SAMPLES + HEADER_SYMBOLS * spec.samples  # the body follows the chirps and the header
     extra, drift = pilot_frequency_fit(x, body_start, layout["pilot_pos"], layout["pilot_tones"], spec, offset)  # fine frequency and drift from the pilots
     result.offset_hz = offset + extra  # best estimate of the offset at the start of the body
@@ -208,22 +261,33 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     noise = noise_level(tone_e)  # average noise energy per tone position
     _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
     llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]], noise))[:layout["coded"]]  # soft bits back in original order, padding dropped
-    if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
-        llrs = llrs + prior_llrs  # combine the two copies
-    result.body_llrs = llrs  # keep the soft bits in case another retry follows
-    data, _ = ldpc.decode(llrs, layout["info"])  # correct errors in the body
+    if is_control:  # short frames: the convolutional code, and no combining of retries
+        data = viterbi_decode(llrs)  # correct errors in the body
+    else:  # message frames: the LDPC code, with retries combined
+        if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
+            llrs = llrs + prior_llrs  # combine the two copies
+        result.body_llrs = llrs  # keep the soft bits in case another retry follows
+        data, _ = ldpc.decode(llrs, layout["info"])  # correct errors in the body
     if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the body check must match
         result.reason = "body check failed"  # say why we stopped
         return result  # the caller may retry and combine
-    block = ADDRESS_BITS[result.frame_type]  # length of the address block at the start of the body
+    block = ADDRESS_BITS.get(result.frame_type, 0)  # length of the address block at the start of a message body
     try:  # the check passed, so this should always work
-        _read_address_block(result, data[:block])  # who the frame is for, and which message it is
-        result.text = bits_to_text(data[block:-BODY_CRC_BITS], result.compressed)  # turn the rest back into text
+        if is_control:  # a beacon, answer, acknowledgment or identification
+            result.fields = control.unpack(result.frame_type, data[:-BODY_CRC_BITS])  # its named fields
+            result.origin = result.fields.get("origin", "")  # copy the common fields to their usual places...
+            result.dest = result.fields.get("dest", "")  # ...so callers can treat all frames alike
+            result.link = result.fields.get("link", -1)  # the link number, when the frame carries one
+            result.msg_id = result.fields.get("msg_id", -1)  # the message number, when the frame carries one
+            result.part = result.fields.get("part", 0)  # the part number, when the frame carries one
+        else:  # a message
+            _read_address_block(result, data[:block])  # who the frame is for, and which message it is
+            result.text = bits_to_text(data[block:-BODY_CRC_BITS], result.compressed)  # turn the rest back into text
     except ValueError:  # a damaged frame slipped past the check (very rare)
         result.reason = "body could not be read"  # say why we stopped
         return result  # give up on this copy
     result.ok = True  # success
-    _measure(result, band, _body_symbols(data, layout), noise, spec)  # better reading: now every tone of the body is known, not just the pilots
+    _measure(result, band, _body_symbols(data, layout, is_control), noise, spec)  # better reading: now every tone of the body is known, not just the pilots
     return result  # the finished report
 
 
@@ -249,7 +313,7 @@ def _measure(result, band, tones, noise, spec):  # fill in the channel measureme
 
 def _score(result):  # how believable a failed attempt is
     """Return a number that is higher for the failed attempt most likely to be the real frame."""
-    return result.snr_db if result.body_llrs is not None and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
+    return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
 def receive(x, blank=True, prior_llrs=None):  # the receiver

@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.11 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.12 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -15,7 +15,7 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 - **Emission:** data, sent as audio tones through a single-sideband transmitter.
 - **Bandwidth:** every Kestrel waveform stays within 2.8 kHz on HF.
 - **Content:** plain text. Kestrel never encrypts or obscures message meaning (97.113). Message signing to prove the sender may be added later; it does not hide content.
-- **Identification:** every beacon, connection frame and fully addressed message frame carries the sending or originating station's callsign in plain form (Section 4.2). Frames exchanged inside a lock carry only a short link number, so a locked station also sends its callsign at least every 10 minutes and at the end of the contact (97.119); the frame used for this: **TBD**.
+- **Identification:** every beacon, connection frame and fully addressed message frame carries the sending or originating station's callsign in plain form (Section 4.2). Frames exchanged inside a lock carry only a short link number, so a locked station also sends an identification frame (Section 5.8) at least every 10 minutes and at the end of the contact (97.119).
 - **Automatic operation:** unattended relays and mail holders are subject to the message-forwarding and automatic-control rules (97.219, 97.221). A station that holds and delivers mail with no operator present operates under 97.221(b): on HF it stays within the segments that paragraph lists (28.120-28.189, 24.925-24.930, 21.090-21.100, 18.105-18.110, 14.0950-14.0995, 14.1005-14.112, 10.140-10.150, 7.100-7.105 and 3.585-3.600 MHz), or it uses the 6 m and shorter bands. Paragraph (c), which allows unattended replies elsewhere, is limited to 500 Hz and does not fit Kestrel, because every frame's chirp pair is about 2 kHz wide. A station with an operator at the controls is not limited to those segments. This is the author's reading of the rule as published at ecfr.gov; ARRL has been asked to review it and has not yet replied.
 
 ## 3. Layers
@@ -146,13 +146,15 @@ The header carries 16 field bits followed by an 8-bit check value:
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); other values reserved |
+| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); 2 = beacon; 3 = answer; 4 = acknowledgment; 5 = identification (Section 5.8); 6 and 7 reserved |
 | Speed level | 3 | 0 to 4 |
 | Size class | 2 | 0 to 3 (body of 402, 752, 1102 or 1452 bits) |
 | Part number | 3 | 0 for the first part |
 | Part count | 3 | number of parts minus one |
 | Compressed | 1 | 1 when the text is compressed |
 | Spare | 1 | always 0 |
+
+In control frames (types 2 to 5) the size class, part number, part count and compressed fields are sent as 0.
 
 - **Header check value:** CRC-8 with polynomial 0x07 and start value 0x00 over the 16 field bits, most significant bit first.
 - **Header coding:** the 24 bits are followed by 6 zero bits and encoded with the rate-1/2, constraint-length-7 convolutional code with generators 171 and 133 (octal), giving 60 bits, sent as 12 tones. For each input bit the 7-bit register is the six previous input bits (oldest in the highest position) followed by the new bit; the first output bit is the parity of the register ANDed with 171 octal, the second with 133 octal.
@@ -183,25 +185,105 @@ When a frame fails its check, the same measurements are made from the pilot tone
 
 Measurements of Doppler spread (fading speed) and delay spread (multipath) are planned.
 
+### 5.8 Control frames
+
+Beacons, answers, acknowledgments and identifications are short frames with the same structure as a message frame: chirp pair, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
+
+**Body.** The fields of the frame (tables below), followed by the 16-bit check value of Section 4 over those fields. The body is encoded with the header's convolutional code (Section 5.4: six zero bits added, rate 1/2, generators 171 and 133), padded with zeros to a whole number of tones, interleaved by the rule of Section 5.3, and sent with pilots as in Section 5.5. Retries of control frames are not combined.
+
+| Frame | Field bits | Bits sent after coding and padding | Body tones | Interleaver step |
+|---|---|---|---|---|
+| Beacon | 75 | 195 | 42 | 121 |
+| Answer | 124 | 295 | 63 | 182 |
+| Acknowledgment | 51 | 150 | 32 | 91 |
+| Identification | 64 | 175 | 38 | 108 |
+
+Airtime of a whole control frame:
+
+| Frame | L0 | L1 | L2 | L3 | L4 |
+|---|---|---|---|---|---|
+| Beacon | 28 s | 11 s | 8 s | 5 s | 3.5 s |
+| Answer | 37 s | 14 s | 10 s | 6 s | 4 s |
+| Acknowledgment | 24 s | 10 s | 7 s | 4.5 s | 3.3 s |
+| Identification | 27 s | 10 s | 8 s | 5 s | 3.4 s |
+
+**Beacon (type 2), 75 bits**
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Origin | 48 | Callsign of the beaconing station (Section 4.2) |
+| Locator | 15 | Four-character Maidenhead grid locator |
+| Levels | 8 | Speed levels the station can use: the bit for level n has the value 2^n |
+| Listening | 1 | 1 when the station will take answers |
+| Mail check | 1 | 1 asks any station holding mail for the origin to deliver it now |
+| Holds mail | 1 | 1 when the station is holding mail for others |
+| Spare | 1 | always 0 |
+
+**Answer (type 3), 124 bits**
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Destination | 48 | Callsign of the beaconing station being answered |
+| Origin | 48 | Callsign of the answering station |
+| Channel report | 18 | How the beacon was received (see below) |
+| Levels | 8 | Speed levels the answering station can use |
+| Mail check | 1 | 1 asks the beaconing station to deliver any mail it holds for the origin |
+| Spare | 1 | always 0 |
+
+**Acknowledgment (type 4), 51 bits**
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Link number | 12 | The lock this frame belongs to (Section 4.2) |
+| Message number | 16 | The message being acknowledged |
+| Part number | 3 | The part being acknowledged |
+| Status | 2 | 0 = received correctly; 1 = failed its check, send again; 2 = already received or delivered, do not send again; 3 = no message referred to (confirms or keeps alive the lock; message and part numbers are 0) |
+| Channel report | 18 | How the frame being acknowledged was received |
+
+**Identification (type 5), 64 bits**
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Origin | 48 | Callsign of the sending station |
+| Link number | 12 | The lock this frame belongs to |
+| End of contact | 1 | 1 when this is the station's last transmission of the contact |
+| Spare | 3 | always 0 |
+
+**Channel report, 18 bits**
+
+| Field | Bits | Coding |
+|---|---|---|
+| SNR | 6 | SNR in 2.5 kHz, rounded to a whole dB, plus 30; held to 0 to 63 (-30 to +33 dB) |
+| Fading index | 3 | The fading index of Section 5.7 times 4, rounded; held to 0 to 7. A missing reading is sent as 7 |
+| Frequency offset | 6 | Offset in Hz divided by 2, rounded, as a signed (two's complement) number; held to -32 to 31 (-64 to +62 Hz) |
+| Wanted level | 3 | The speed level the reporting station asks the other station to use for its next frames |
+
+**Locator coding.** The two letters (A to R) count 0 to 17 and the two digits 0 to 9. The locator is the number ((first letter x 18 + second letter) x 10 + first digit) x 10 + second digit, sent as 15 bits, most significant bit first.
+
 ## 6. Link
 
 ### 6.1 Beacon
 
-A station announces itself with a beacon at level L0. The beacon carries the callsign, Maidenhead grid locator, the speed levels the station supports, a flag saying whether it is accepting connections, a short heard list (stations it has heard recently and their SNR), the callsigns it is holding mail for, the IDs of recent delivery receipts it knows of, and a **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for a reply window. Window length: **TBD**.
+A station announces itself with a beacon frame (Section 5.8), by default at level L0. The beacon gives the callsign, grid locator and supported speed levels, says whether the station is taking answers and whether it holds mail for others, and carries the **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for a reply window. Window length: **TBD**.
+
+A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**.
 
 ### 6.2 Answer
 
-A station that wants to connect replies inside the window at L0. If several stations reply, each picks a random slot within the window to reduce collisions, and the beaconing station chooses one.
+A station that wants to connect replies inside the window with an answer frame (Section 5.8). The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use. The answering station sends it at the level its own measurement of the beacon supports (Section 5.2), or slower. If several stations reply, each picks a random slot within the window to reduce collisions, and the beaconing station chooses one.
 
 ### 6.3 Negotiation and lock
 
-The two stations exchange channel measurements and agree on a starting level, using the band's starting profile (Section 6.6) as the first guess. They then align timing and frequency and enter the LOCKED state. From then on every frame is addressed to the pair and keeps its own session timing, set by the handshake.
+- The beaconing station completes the lock by sending an acknowledgment frame with status 3, carrying the link number (Section 4.2) and its report of how the answer was received. Both stations are then in the LOCKED state.
+- **Each direction has its own speed level.** A station sends at the level its partner most recently asked for in a channel report, or slower; it never sends faster. Because every frame states its own level, the two ends cannot fall out of step.
+- The receiving station decides the level it asks for from its own measurements, by the rule of Section 5.2, using the band's starting profile (Section 6.6) until it has measurements of its own.
+- From then on frames between the pair carry the link number and keep their own session timing, set by the handshake.
 
 ### 6.4 Lock states
 
 | State | Meaning | Leaves when |
 |---|---|---|
-| LOCKED | Link healthy | Conditions slip → DEGRADED; END sent or received → RELEASED |
+| LOCKED | Link healthy | Conditions slip → DEGRADED; identification frame with the end-of-contact flag sent or received → RELEASED |
 | DEGRADED | Errors or SNR falling | Frames clean again → LOCKED; sustained loss → REACQUIRE |
 | REACQUIRE | Sending short sync bursts at L0 using the last known offset, timing and level | Sync regained → LOCKED; timeout → RELEASED |
 | RELEASED | Session over | Station returns to beaconing or listening |
@@ -210,10 +292,12 @@ A single bad frame never drops the lock. Timeouts and thresholds: **TBD**.
 
 ### 6.5 Acknowledgment and speed changes
 
-- Every frame is acknowledged (ACK) or rejected (NAK). Each ACK or NAK carries the receiver's latest channel measurements: SNR, fading index and frequency offset (Section 5.7).
-- After several clean frames in a row the link steps up one level. Count: **TBD**.
-- When measurements show conditions slipping, the link steps down before frames start failing. After a failed frame it steps down and resends, with HARQ combining.
-- A short keep-alive holds the lock between messages.
+- Every message frame is answered with an acknowledgment frame (Section 5.8): received correctly, send again, or already have it. Each acknowledgment carries the receiver's channel report for that frame, including the level it wants next.
+- A frame that failed is sent again, and the receiver combines the copies (Section 5.6). An acknowledgment that is not heard is treated as a failure; the frame is sent again and a receiver that already has it answers "already have it".
+- The receiver asks for a faster level after several clean frames in a row. Count: **TBD**.
+- When its measurements show conditions slipping, the receiver asks for a slower level before frames start failing. After a failed frame it asks for a slower level.
+- An acknowledgment frame with status 3 serves as the keep-alive that holds the lock between messages.
+- Each station sends an identification frame at least every 10 minutes while locked, and as its last transmission of the contact with the end-of-contact flag set.
 
 ### 6.6 Band starting profiles
 
@@ -266,7 +350,7 @@ Each station applies the same checks to every message it receives: deliver it if
 
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
-- Frame types other than a message (beacon, answer, acknowledgment, identification).
+- The longer beacon carrying the heard list, held-mail list and delivery receipts.
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.

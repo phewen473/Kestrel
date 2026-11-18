@@ -11,7 +11,7 @@ chirp pair (2 s) | header (24 tones) | body (data tones, with a known pilot tone
 | Part | What it does |
 |---|---|
 | Chirp pair | A 1-second rising sweep, then a 1-second falling sweep, 500 to 2500 Hz. Finds the frame and measures timing and frequency offset. |
-| Header | Frame type (link frame or fully addressed frame), speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
+| Header | Frame type (message in a link frame, message in a fully addressed frame, beacon, answer, acknowledgment or identification), speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
 | Body | An address block (who the frame is for and which message it is), the character count, the text (plain 7-bit ASCII, or compressed), and a 16-bit check value, protected by the LDPC error-correcting code and shuffled across the frame. |
 | Pilots | Known tones the receiver uses to follow frequency drift and to measure SNR. |
 
@@ -50,6 +50,30 @@ Every frame's body starts with an address block. There are two kinds of frame:
 build_frame("QSL 73", level=3, link=link_id("KO4WSC", "W1AW"), msg_id=17)          # link frame
 build_frame("QSL 73", level=0, dest="W1AW", origin="KO4WSC", msg_id=17)           # fully addressed frame
 ```
+
+## Control frames (`control.py`)
+
+Four short frames set up and run a link. They look like message frames on the air (chirp pair, header, body) and can be sent at any speed level.
+
+| Frame | What it says | L0 | L2 | L4 |
+|---|---|---|---|---|
+| Beacon | "Here I am": callsign, grid locator, speed levels, whether it takes answers, mail-check flag, whether it holds mail | 28 s | 8 s | 3.5 s |
+| Answer | "I hear you": both callsigns, a report of how the beacon was received, the answerer's speed levels | 37 s | 10 s | 4 s |
+| Acknowledgment | "Got it", "send it again" or "already have it" for one frame of one message, with a channel report. With no message named it confirms or keeps alive the lock | 24 s | 7 s | 3.3 s |
+| Identification | The station's callsign, sent every 10 minutes in a lock and at the end of a contact | 27 s | 8 s | 3.4 s |
+
+Every answer and acknowledgment carries a **channel report** (18 bits): the SNR, the fading index, the frequency offset, and the speed level the receiver wants the sender to use next. That last field is how the speed adapts: the station that hears the signal decides, and the sender follows.
+
+```
+build_beacon("KO4WSC", "EM92", mail_check=True)                                    # level 0 unless told otherwise
+build_answer("KO4WSC", "W1AW", ChannelReport(-12.0, 0.0, 6.0, want_level=2), level=1)
+build_ack(link, msg_id=17, part=0, status=ACK_OK, report=report, level=3)
+build_ident("KO4WSC", link, final=True, level=3)
+```
+
+`receive` returns the same report as for a message, with the frame's fields in `result.fields`.
+
+Control frames decode at about the same SNR as message frames (36 to 40 of 40 at each level's steady limit). In slow fading a short frame can vanish into one fade: at the fading limits 31 to 40 of 40 got through. The link layer must be ready to repeat them.
 
 ## Frame sizes and text compression (`text.py`, `compress.py`)
 
@@ -119,6 +143,7 @@ All of these are now written into the specification (sections 4 and 5).
 | `chirp.py` | Makes and detects the signature chirp pair |
 | `mfsk.py` | The 32-tone waveform, soft-bit calculation and pilot drift tracking |
 | `address.py` | Callsign coding (48 bits each) and the link number |
+| `control.py` | The fields of beacon, answer, acknowledgment and identification frames, and the channel report |
 | `ldpc.py` | The LDPC code that protects the body: builds the check tables, encodes, decodes |
 | `compress.py` | Text compression: the fixed code table, compress and decompress |
 | `fec.py` | The header's convolutional encoder and Viterbi decoder |
@@ -176,4 +201,4 @@ The steady column is where every test frame decoded. The fading columns are wher
 
 ## Not built yet
 
-A fifth, faster level (L5, which needs a different waveform), the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.
+A fifth, faster level (L5, which needs a different waveform), the link layer itself (the rules that use these frames: beacon and answer timing, lock states, speed adaptation), nets and store-and-forward.
