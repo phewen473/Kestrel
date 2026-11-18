@@ -22,12 +22,13 @@ PILOT_EVERY = 15  # one known pilot tone is sent before every 15 data tones
 PILOT_STEP = 7  # pilot number g uses tone (7 * g + 3) mod 32
 PILOT_START = 3  # tone used by the very first pilot
 
-SIZE_CLASSES = (50, 100, 200)  # the three message sizes, in characters
+SIZE_CLASSES = (50, 100, 150, 200)  # the four frame sizes, in plain (uncompressed) characters
+MAX_CHARS = 200  # longest message, in characters
 LENGTH_BITS = 8  # bits used to say how many characters the frame really carries
 CHAR_BITS = 7  # bits per character (7-bit ASCII)
 BODY_CRC_BITS = 16  # check bits at the end of the message body
 
-HEADER_FIELD_BITS = 16  # frame type (3) + level (3) + size class (2) + part number (3) + part count (3) + spare (2)
+HEADER_FIELD_BITS = 16  # frame type (3) + level (3) + size class (2) + part number (3) + part count (3) + compressed (1) + spare (1)
 HEADER_CRC_BITS = 8  # check bits at the end of the header
 HEADER_REPEAT = 2  # the coded header is sent twice for extra robustness
 FRAME_TYPE_MESSAGE = 0  # header value meaning "this frame carries a message or a part of one"

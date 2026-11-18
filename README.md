@@ -6,7 +6,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 
 ## What Kestrel does
 
-- **Short messages:** free text, up to 200 characters of 7-bit ASCII, control characters included, sent in 50-, 100- or 200-character frames.
+- **Short messages:** free text, up to 200 characters of 7-bit ASCII, control characters included, sent in 50-, 100-, 150- or 200-character frames. Ordinary English text is compressed when that lets it fit a smaller frame.
 - **Adaptive speed:** a family of waveforms, from a slow, very robust level for weak signals up to a fast level for strong ones. The two stations negotiate the level automatically from measured noise, fading, multipath and band.
 - **Beacon, answer, lock:** a station beacons its presence; a listener answers; the pair negotiate a level and lock for messaging. Every frame is acknowledged, and failed frames are combined with their retries rather than thrown away.
 - **Self-describing frames:** every frame starts with a signature chirp pair (a one-second sweep up, then a one-second sweep down) and a robust header that states its speed level and size, so a receiver needs no shared clock slot to decode it.
@@ -20,10 +20,11 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 |---|---|
 | `docs/spec/kestrel-spec.md` | The technical description (draft) |
 | `docs/spec/CHANGELOG.md` | What changed in each version of the spec |
+| `docs/spec/tables/` | Tables the spec refers to: the error-correction check lists and the compression codes |
 | `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
-| `modem/` | Modem prototype (Python reference): chirp, L0 waveform, header, error correction, receiver |
+| `modem/` | Modem prototype (Python reference): chirp, speed levels, header, LDPC error correction, text compression, receiver |
 | `tests/` | Automated tests |
-| `tools/` | Scripts to run by hand: a one-frame demo and the SNR sweep |
+| `tools/` | Scripts to run by hand: a one-frame demo, the SNR sweeps and the spec table writer |
 | `results/` | Measured results: decode rate against SNR, and a picture of the signal |
 | `LICENSE`, `docs/LICENSE-CC-BY-4.0.txt`, `NOTICE` | License texts and the attribution notice |
 
@@ -46,8 +47,9 @@ The demo sends one message through the simulated channel, decodes it, and writes
 
 - **Milestone 1 is done (18 November 2026):** the channel simulator and the first modem slice work end to end in simulation.
 - **Milestone 2 is done (18 November 2026):** five speed levels (L0 to L4), automatic level choice, the 60- and 90-second airtime limits, and message splitting. In noise alone, a 200-character message goes as one 16-second frame at -7 dB or better, one 59-second frame down to -12 dB, one 88-second frame down to -14 dB, and four 77-second parts below that; the slowest level decoded every test frame at -21 dB. Fading costs about 9 dB or more. Details and charts are in `modem/README.md` and `results/`.
-- The signature chirp pair is agreed and in the spec. The other numbers the prototype uses are test values; the spec keeps them as **TBD** until they are agreed.
-- Next: text compression, the LDPC code, fading-aware level limits, then the link layer (beacon, answer, negotiation, acknowledgments).
+- **Milestone 3 is done (18 November 2026):** the LDPC error-correcting code, text compression, a 150-character frame size, and the exact level table written into the spec (v0.8). The receiver now decodes about a decibel deeper, and heavy fading costs 4 dB less than before. A 200-character English message goes as one 13-second frame at -7 dB or better, one 45-second frame down to -13 dB, one 67-second frame down to -14 dB, and three 76-second parts below that.
+- The waveform of levels L0 to L4, the header, the error correction and the compression are now fully described in the spec. Items still open are marked **TBD** there.
+- Next: fading-aware level limits, addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments).
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
@@ -77,7 +79,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.6) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.8) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -103,18 +105,20 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.6 (draft), 18 November 2026. Milestones 1 and 2 of the prototype done.
+- Spec version 0.8 (draft), 18 November 2026. Milestones 1, 2 and 3 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Milestone 3 and spec v0.8: LDPC code, text compression, 150-character frame, level table in the spec.
+- Spec v0.7: header sent at the frame's own level.
 - Milestone 2: speed levels L0-L4, airtime limits and message splitting.
 - Spec v0.6: signature chirp fixed as an up/down pair.
 - Spec v0.5: airtime limits (60 s, 90 s in poor conditions) and message splitting.
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): text compression, the LDPC code, fading-aware level limits, then the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): fading-aware level limits, addresses and message IDs, then the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
@@ -122,9 +126,10 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `docs/spec/kestrel-spec.md` - the public technical description (FCC 97.309(a)(4)).
 - `docs/spec/CHANGELOG.md` - what changed in each spec version.
 - `sim/channel.py` - HF channel simulator.
-- `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
+- `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
+- `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `ldpc.py`, `compress.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
 - `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`).
-- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`.
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `make_spec_tables.py`.
 - `results/` - sweep CSVs and charts.
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 

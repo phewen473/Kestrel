@@ -1,5 +1,14 @@
 # Kestrel specification changelog
 
+## 0.8 (draft) - 18 November 2026
+
+- Speed levels L0 to L4 are now defined exactly: tone length, tone frequencies, airtime of each frame size, and the weakest signal each level decoded in simulation.
+- Body error correction is now defined: a rate-1/2 repeat-accumulate LDPC code, with its check tables in `tables/`. It replaces the convolutional code used in earlier prototypes for the body; the header keeps the convolutional code.
+- Text compression added: a fixed Huffman code (`tables/compression_codes.txt`), used only when it lets the text fit a smaller frame. The header has a new "compressed" flag.
+- A fourth frame size added (150 characters), so frames are 50, 100, 150 or 200 characters.
+- Header fields, header coding, check values (CRC-8 and CRC-16), interleaver and pilot pattern are now written out in full.
+- The receiver accepts a speed level only when both the header and the body check out at that level.
+
 ## 0.7 (draft) - 18 November 2026
 
 - The header is now sent at the frame's own speed level, not at the most robust level. The receiver finds the level by trying the header at each one and accepting the level whose check value matches and whose level field agrees. Chosen after simulator tests: every test frame was received at the right level, and fast frames avoid about 10 seconds of header.

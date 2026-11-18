@@ -18,8 +18,8 @@ def _send(text, snr_db, seed, **channel):  # helper: transmit and receive once
 
 def test_frame_lengths_match_the_design():  # airtime of each size class
     assert abs(len(build_frame(SHORT)) / FS - frame_seconds(0)) < 1e-9  # the audio is exactly as long as predicted
-    assert [round(frame_seconds(c)) for c in range(3)] == [77, 136, 256]  # L0: about 1, 2 and 4 minutes
-    assert frame_seconds(2, 2) <= 60 and frame_seconds(2, 1) <= 90  # 200 characters fit the 60 s cap at L2 and the 90 s cap at L1
+    assert [round(frame_seconds(c)) for c in range(4)] == [76, 136, 195, 255]  # L0: about 1, 2, 3 and 4 minutes
+    assert frame_seconds(3, 2) <= 60 and frame_seconds(3, 1) <= 90  # 200 characters fit the 60 s cap at L2 and the 90 s cap at L1
 
 
 def test_clean_channel():  # no noise at all
@@ -44,7 +44,7 @@ def test_weak_signal_near_the_design_target():  # 20 dB below the noise
 def test_full_length_message_with_drift():  # 200 characters while the frequency drifts
     result = _send(LONG, -14.0, 4, offset_hz=-8.0, drift_hz_s=0.01)  # drifts 2.5 Hz over the 4-minute frame
     assert result.ok and result.text == LONG  # the exact message comes back
-    assert result.size_class == 2  # the header announced the 200-character size
+    assert result.size_class == 3  # the header announced the 200-character size
     assert abs(result.drift_hz_s - 0.01) < 0.003  # the pilots measured the drift
 
 
@@ -63,11 +63,11 @@ def test_static_crashes_need_the_blanker():  # heavy static: the blanker makes t
 
 
 def test_two_failed_copies_combine_into_a_good_one():  # the "combine retries" feature (HARQ)
-    first = _send(SHORT, -23.5, 211)  # first copy: too weak to decode by itself
-    second_alone = _send(SHORT, -23.5, 311)  # second copy: also too weak by itself
+    first = _send(SHORT, -23.3, 211)  # first copy: too weak to decode by itself
+    second_alone = _send(SHORT, -23.3, 311)  # second copy: also too weak by itself
     assert not first.ok and not second_alone.ok  # neither copy decodes alone
     assert first.body_llrs is not None  # but the first copy's soft bits were kept
-    heard = run_channel(build_frame(SHORT), -23.5, np.random.default_rng(311))  # the same second copy again
+    heard = run_channel(build_frame(SHORT), -23.3, np.random.default_rng(311))  # the same second copy again
     combined = receive(heard, prior_llrs=first.body_llrs)  # decode it together with the first copy
     assert combined.ok and combined.text == SHORT  # together they decode
 
@@ -116,3 +116,17 @@ def test_split_message_is_reassembled():  # a 200-character message at L0, sent 
     assert [r.part for r in reports] == [0, 1, 2, 3] and all(r.parts == 4 for r in reports)  # every part knows its place
     assert join_parts(reports[:3]) is None  # with one part missing there is no message yet
     assert join_parts(reports) == LONG  # with all four the message is whole again
+
+
+def test_compressed_message_end_to_end():  # compression lets a longer text ride in a smaller frame
+    english = "arrived safe, will call sunday after church. love to all"  # 56 characters: too long for the smallest frame unless compressed
+    result = _send(english, -19.0, 50)  # weak signal, noise only
+    assert result.ok and result.text == english  # the exact message comes back
+    assert result.compressed and result.size_class == 0  # it travelled compressed in the smallest frame
+
+
+def test_compression_reduces_the_number_of_parts():  # splitting packs more text into each part when it compresses
+    english = "Net at 0100Z confirmed. Bring the 40 m list and check in on 7.110 if the band is open. Weather here is clear and cold tonight, wind light from the north."  # 153 characters
+    plan = plan_message(english, MIN_SNR_DB[0] + 2.0)  # conditions only good enough for L0
+    assert len(plan) == 3  # three parts instead of the four that plain 50-character pieces would need
+    assert "".join(item["text"] for item in plan) == english  # nothing lost in the cutting

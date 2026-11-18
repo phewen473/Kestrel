@@ -11,25 +11,33 @@ chirp pair (2 s) | header (24 tones) | body (data tones, with a known pilot tone
 | Part | What it does |
 |---|---|
 | Chirp pair | A 1-second rising sweep, then a 1-second falling sweep, 500 to 2500 Hz. Finds the frame and measures timing and frequency offset. |
-| Header | Frame type, speed level, size class, part number and part count, with a check value. Sent twice. |
-| Body | Character count, the characters (7-bit ASCII), and a 16-bit check value, protected by error correction and shuffled across the frame. |
+| Header | Frame type, speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
+| Body | Character count, the text (plain 7-bit ASCII, or compressed), and a 16-bit check value, protected by the LDPC error-correcting code and shuffled across the frame. |
 | Pilots | Known tones the receiver uses to follow frequency drift and to measure SNR. |
 
-The header and body are sent at the frame's own speed level. The receiver is not told the level: it tries the header at each level and accepts the one whose check value matches and whose level field agrees.
+The header and body are sent at the frame's own speed level. The receiver is not told the level: it tries the header at each level. A level whose header check matches and whose level field agrees is a candidate, and it is accepted when the body read at that level passes its check too. (About one frame in a thousand, noise makes a wrong level's header pass; the body check catches it.)
 
 ## Speed levels
 
 Every level sends the same 32 tones. A faster level sends each tone for a shorter time, which shortens the frame and costs sensitivity in proportion.
 
-| Level | Tone length | Width on the air | 50 chars | 100 chars | 200 chars | Weakest SNR (noise only) |
-|---|---|---|---|---|---|---|
-| L0 | 0.4 s | about 160 Hz | 77 s | 136 s | 256 s | -20 dB |
-| L1 | 0.135 s | about 470 Hz | 27 s | 47 s | 88 s | -16 dB |
-| L2 | 0.09 s | about 700 Hz | 19 s | 32 s | 59 s | -14 dB |
-| L3 | 0.045 s | about 710 Hz | 10 s | 17 s | 31 s | -11 dB |
-| L4 | 0.0225 s | about 1420 Hz | 6 s | 10 s | 16 s | -9 dB |
+| Level | Tone length | Width on the air | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR (noise only) |
+|---|---|---|---|---|---|---|---|
+| L0 | 0.4 s | about 160 Hz | 76 s | 136 s | 195 s | 255 s | -20 dB |
+| L1 | 0.135 s | about 470 Hz | 27 s | 47 s | 67 s | 87 s | -16 dB |
+| L2 | 0.09 s | about 700 Hz | 19 s | 32 s | 46 s | 59 s | -15 dB |
+| L3 | 0.045 s | about 710 Hz | 10 s | 17 s | 24 s | 30 s | -12 dB |
+| L4 | 0.0225 s | about 1420 Hz | 6 s | 10 s | 13 s | 16 s | -9 dB |
 
-"Weakest SNR" is the lowest value (in 2.5 kHz) at which all 40 test frames decoded in `tools/level_sweep.py`. L1 and L2 were sized so that a full 200-character message fits the 90-second and 60-second limits.
+"Weakest SNR" is the lowest value (in 2.5 kHz) at which all 40 test frames decoded in `tools/level_sweep.py`. L1 and L2 were sized so that a full 200-character message fits the 90-second and 60-second limits. The exact tone frequencies are in the specification, section 5.2.
+
+## Frame sizes and text compression (`text.py`, `compress.py`)
+
+A frame's body holds 350, 700, 1050 or 1400 text bits: 50, 100, 150 or 200 characters of plain text. The sender uses the smallest size that holds the message.
+
+Text can also be sent compressed, with a fixed table that gives common characters short codes (space 3 bits, "e" and "t" 4 bits) and rare ones long codes (up to 13 bits). The rule is simple: **compress only when it lets the message fit a smaller frame.** A 200-character English sentence that compresses to 978 bits goes in the 150-character frame instead of the 200-character one, saving about a quarter of the airtime. Traffic that is mostly capitals and digits saves about a seventh, which is often not enough to drop a size, so it goes plain.
+
+The table is fixed and published (`docs/spec/tables/compression_codes.txt`), so nothing has to be agreed between stations beforehand.
 
 ## Choosing a level, airtime limits and splitting (`plan.py`)
 
@@ -42,29 +50,30 @@ Every level sends the same 32 tones. A faster level sends each tone for a shorte
 
 For a 200-character message that works out as:
 
-| SNR (noise only) | What is sent |
-|---|---|
-| -7 dB or better | one L4 frame, 16 s |
-| -9 dB or better | one L3 frame, 31 s |
-| -12 dB or better | one L2 frame, 59 s |
-| -14 dB or better | one L1 frame, 88 s (uses the 90-second allowance) |
-| weaker | four L0 frames of 50 characters, 77 s each |
+| SNR (noise only) | Text that does not compress | Plain English (fits the 150-character frame) |
+|---|---|---|
+| -7 dB or better | one L4 frame, 16 s | one L4 frame, 13 s |
+| -10 dB or better | one L3 frame, 30 s | one L3 frame, 24 s |
+| -13 dB or better | one L2 frame, 59 s | one L2 frame, 45 s |
+| -14 dB or better | one L1 frame, 87 s (uses the 90-second allowance) | one L1 frame, 67 s (uses the allowance) |
+| weaker | four L0 frames, 76 s each | three L0 frames, 76 s each |
 
 `join_parts` puts a split message back together once every part has arrived.
 
-## Prototype numbers
+## The numbers
 
-The chirp pair is agreed and in the specification. The rest are test values; the specification keeps them as TBD until they are agreed.
+All of these are now written into the specification (sections 4 and 5).
 
 | Item | Value |
 |---|---|
 | Sample rate | 12,000 samples per second |
-| Chirp | 500-2500 Hz, 1 s up + 1 s down (agreed; in the spec since v0.6) |
+| Chirp | 500-2500 Hz, 1 s up + 1 s down |
 | Tones | 32 per level (5 bits each), centred near 1500 Hz |
-| Error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder (stand-in for the planned LDPC code) |
+| Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalised min-sum, up to 80 passes |
+| Header error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder |
 | Interleaver | Golden-ratio step formula over the whole frame |
 | Checks | CRC-8 on the header, CRC-16 on the body |
-| Header fields | type (3 bits), level (3), size class (2), part number (3), part count (3), spare (2) |
+| Header fields | type (3 bits), level (3), size class (2), part number (3), part count (3), compressed (1), spare (1) |
 
 ## Files
 
@@ -76,7 +85,9 @@ The chirp pair is agreed and in the specification. The rest are test values; the
 | `plan.py` | Level choice, airtime limits, splitting and reassembly |
 | `chirp.py` | Makes and detects the signature chirp pair |
 | `mfsk.py` | The 32-tone waveform, soft-bit calculation and pilot drift tracking |
-| `fec.py` | Error-correction encoder and Viterbi decoder |
+| `ldpc.py` | The LDPC code that protects the body: builds the check tables, encodes, decodes |
+| `compress.py` | Text compression: the fixed code table, compress and decompress |
+| `fec.py` | The header's convolutional encoder and Viterbi decoder |
 | `interleave.py` | The bit shuffler |
 | `crc.py`, `bits.py`, `text.py` | Check values, bit helpers, and text to bits |
 | `blanker.py` | Static-crash blanker |
@@ -90,19 +101,20 @@ From `tools/snr_sweep.py`: 40 random 40-character messages per point, each with 
 | Noise only | -21 dB | between -22 and -23 dB |
 | Light fading (0.1 Hz, 0.5 ms) | -12 dB | -19 dB |
 | Moderate fading (0.5 Hz, 1 ms) | -12 dB (95 % at -16 dB) | -19 dB |
-| Heavy fading (1 Hz, 2 ms) | -4 dB (97 % from -10 dB) | -18 dB |
+| Heavy fading (1 Hz, 2 ms) | -8 dB (95 % from -12 dB) | -18 dB |
 
-Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; the blanker rescues a frame from heavy static crashes; two copies that each fail at -23.5 dB decode when combined; and a 200-character message split into four L0 parts is reassembled.
+Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; the blanker rescues a frame from heavy static crashes; two copies that each fail at -23.3 dB decode when combined; a split message is reassembled; and a compressed message goes through end to end.
 
 ## What we learned
 
 - **The chirp pair works.** One sweep up and one down lets the receiver separate timing from frequency error. It measured a 15 Hz offset to within half a hertz at -15 dB.
 - **In deep noise the chirp was the weak link at first.** A noise peak could outrank the real chirp. The receiver now keeps the best three candidates and lets the header check choose.
 - **Speed costs what theory says.** Each level's limit moved by almost exactly the ratio of tone lengths, so the level table can be planned on paper.
-- **A header at L0 would cost every frame about 10 seconds.** That is why the header is sent at the frame's own level and the receiver discovers the level. This was agreed and has been in the specification since v0.7.
-- **Fading costs about 9 dB or more** at the every-frame point, and heavy fading leaves a few percent of frames failing until the signal is much stronger. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
+- **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification adopted this in v0.7.
+- **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones, and in heavy fading the every-frame point moved from -4 dB to -8 dB.
+- **Fading costs about 8 to 12 dB** at the every-frame point. Slow fades last longer than the interleaver can spread. Combining retries is the tool meant to cover this.
 - **The SNR reading runs about 2 dB low in heavy fading**, because fast fading smears each tone's energy. The level choice above uses noise-only limits; the link layer will need fading-aware limits.
 
 ## Not built yet
 
-A fifth, faster level (L5, which needs a different waveform), text compression, the planned LDPC code, addresses and message IDs, the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.
+A fifth, faster level (L5, which needs a different waveform), fading-aware level limits, addresses and message IDs, the link layer (beacon, answer, negotiation, acknowledgments), nets and store-and-forward.

@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT)  # make "modem" and "sim" importable when run as a scri
 from modem import LEVELS, build_frame, frame_seconds, receive  # levels, transmitter, airtime, receiver  # noqa: E402
 from sim import run_channel  # channel simulator  # noqa: E402
 
-FIRST_SNR = (-24, -19, -17, -14, -11)  # where each level's sweep starts (a few dB below where it should begin to work)
+FIRST_SNR = (-25, -20, -18, -15, -12)  # where each level's sweep starts (a few dB below where it should begin to work)
 POINTS = 8  # SNR values tested per level, 1 dB apart
 PRINTABLE = [chr(c) for c in range(32, 127)]  # characters used to build random test messages
 
@@ -62,7 +62,7 @@ def main():  # the script itself
     fig, ax = plt.subplots(figsize=(8, 5))  # one chart, 8 by 5 inches
     for spec in LEVELS:  # one line per level
         pts = [(r[1], 100 * r[4]) for r in rows if r[0] == spec.number]  # (SNR, percent decoded) points
-        label = f"L{spec.number}: 200 characters in {frame_seconds(2, spec.number):.0f} s"  # legend text with the airtime
+        label = f"L{spec.number}: 200 characters in {frame_seconds(3, spec.number):.0f} s"  # legend text with the airtime
         ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=label)  # draw the line
     ax.set_xlabel("SNR in 2.5 kHz (dB)")  # x-axis title
     ax.set_ylabel("Frames decoded (%)")  # y-axis title

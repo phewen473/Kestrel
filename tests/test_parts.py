@@ -7,7 +7,9 @@ from modem.chirp import make_chirp_pair, detect_chirp_pair  # signature chirp
 from modem.crc import crc8, crc16  # check values
 from modem.fec import conv_encode, viterbi_decode  # error correction
 from modem.interleave import deinterleave, interleave, permutation  # bit shuffler
-from modem.text import bits_to_text, pick_size_class, text_to_bits  # message <-> bits
+from modem import ldpc  # LDPC error correction
+from modem.compress import LENGTHS, compress, compressed_bits, decompress  # text compression
+from modem.text import bits_to_text, choose_packing, pick_size_class, text_to_bits  # message <-> bits
 from sim import run_channel  # channel simulator
 
 
@@ -18,20 +20,65 @@ def _bytes_to_bits(data):  # helper for the CRC test
 
 def test_text_roundtrip_keeps_control_characters():  # 7-bit ASCII must survive, control characters included
     text = "Bell\x07 Tab\t Newline\n Escape\x1b Null\x00 DEL\x7f end"  # a message full of control characters
-    bits = text_to_bits(text, pick_size_class(len(text)))  # message -> bits
-    assert len(bits) == 8 + 7 * 50  # length field plus fifty 7-bit characters
-    assert bits_to_text(bits) == text  # bits -> the very same message
+    bits = text_to_bits(text, 0, False)  # message -> plain bits in the smallest frame
+    assert len(bits) == 8 + 7 * 50  # character count plus fifty 7-bit characters
+    assert bits_to_text(bits, False) == text  # bits -> the very same message
 
 
-def test_size_class_is_smallest_that_fits():  # 50, 100 or 200 characters
-    assert [pick_size_class(n) for n in (0, 50, 51, 100, 101, 200)] == [0, 0, 1, 1, 2, 2]  # boundaries land in the right class
+def test_size_class_is_smallest_that_fits():  # 50, 100, 150 or 200 plain characters
+    assert [pick_size_class("#" * n) for n in (0, 50, 51, 100, 101, 150, 151, 200)] == [0, 0, 1, 1, 2, 2, 3, 3]  # boundaries land in the right class
     with pytest.raises(ValueError):  # 201 characters is too many
-        pick_size_class(201)  # must be refused
+        pick_size_class("#" * 201)  # must be refused
 
 
 def test_text_rejects_non_ascii():  # only 7-bit ASCII is allowed
     with pytest.raises(ValueError):  # an accented letter is outside 7-bit ASCII
-        text_to_bits("café", 0)  # must be refused
+        choose_packing("caf\u00e9")  # must be refused
+
+
+def test_compression_table_is_a_complete_code():  # the code lengths must form a full, unambiguous code
+    assert len(LENGTHS) == 128  # one length for every ASCII character
+    assert sum(2.0 ** -length for length in LENGTHS) == 1.0  # Kraft equality: no wasted codes and no clashes
+
+
+def test_compression_roundtrip_for_every_character():  # every character must survive
+    text = "".join(chr(c) for c in range(128))  # all 128 ASCII characters once each
+    bits = compress(text)  # squeeze
+    assert len(bits) == compressed_bits(text)  # the bit count matches the prediction
+    assert decompress(bits, len(text)) == text  # and it unsqueezes to the same text
+
+
+def test_compression_is_used_only_when_it_saves_a_size_class():  # compress only when it shortens the frame
+    english = "arrived safe, will call sunday after church. love to all"  # 56 characters of plain English
+    assert compressed_bits(english) < 0.8 * 7 * len(english)  # plain English shrinks by more than a fifth
+    assert choose_packing(english) == (0, True)  # compressed, it fits the 50-character frame
+    assert choose_packing("KO4WSC DE N1CALL") == (0, False)  # a short text already fits the smallest frame: sent plain
+    bits = text_to_bits(english, 0, True)  # pack it compressed
+    assert bits_to_text(bits, True) == english  # and it comes back unchanged
+
+
+def test_ldpc_codeword_satisfies_every_check():  # the encoder and the check table must agree
+    rng = np.random.default_rng(3)  # repeatable random source
+    for k in (374, 724, 1074, 1424):  # the four body sizes
+        data = rng.integers(0, 2, k)  # random data bits
+        word = ldpc.encode(data)  # encode them
+        assert len(word) == 2 * k and np.array_equal(word[:k], data)  # data first, then as many parity bits
+        sums = np.zeros(k, dtype=np.int64)  # ones feeding each check
+        for row in ldpc.info_checks(k):  # the three checks of every data bit
+            np.add.at(sums, row, data)  # add the data bits in
+        sums += word[k:]  # each check also includes its own parity bit...
+        sums[1:] += word[k:-1]  # ...and the parity bit before it
+        assert not (sums & 1).any()  # every check must come out even
+        assert sorted(ldpc.info_checks(k)[0]) == list(range(k))  # each shuffle uses every check exactly once
+
+
+def test_ldpc_corrects_noisy_input():  # the decoder must fix a noisy codeword
+    rng = np.random.default_rng(4)  # repeatable random source
+    data = rng.integers(0, 2, 724)  # random data bits
+    soft = (1.0 - 2.0 * ldpc.encode(data)) + 0.7 * rng.standard_normal(1448)  # codeword as +1/-1 with strong noise added
+    assert (soft < 0).astype(int)[:724].tolist() != data.tolist()  # the noise really did flip some data bits
+    decoded, converged = ldpc.decode(soft, 724)  # decode
+    assert converged and np.array_equal(decoded, data)  # every check satisfied and the data recovered
 
 
 def test_crc_matches_published_check_values():  # compare with the standard test message

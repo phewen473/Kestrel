@@ -10,7 +10,7 @@ They take about ten to fifteen seconds. All of them should pass before any chang
 
 | File | What it checks |
 |---|---|
-| `test_parts.py` | Each building block alone: text to bits (control characters included), size classes, the CRCs against published check values, error correction, the interleaver, and the chirp's timing and frequency measurement |
-| `test_end_to_end.py` | Whole messages through the simulated channel: clean, noisy with a frequency offset, weak signal at -20 dB, a 200-character message with drift, moderate fading, heavy static crashes (with and without the blanker), two failed copies combining into a good one, pure noise being rejected, every speed level decoding and announcing itself, the level choice, the 60- and 90-second airtime limits, and a split message being reassembled |
+| `test_parts.py` | Each building block alone: text to bits (control characters included), size classes, the compression table (complete, reversible for every character, used only when it saves a frame size), the LDPC code (every codeword satisfies every check; noisy input is corrected), the CRCs against published check values, the header's error correction, the interleaver, and the chirp's timing and frequency measurement |
+| `test_end_to_end.py` | Whole messages through the simulated channel: clean, noisy with a frequency offset, weak signal at -20 dB, a 200-character message with drift, moderate fading, heavy static crashes (with and without the blanker), two failed copies combining into a good one, pure noise being rejected, every speed level decoding and announcing itself, the level choice, the 60- and 90-second airtime limits, a split message being reassembled, a compressed message end to end, and compression reducing the number of parts |
 
 The tests use fixed random seeds, so they give the same answer every time.

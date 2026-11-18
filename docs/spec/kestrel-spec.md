@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.7 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.8 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -32,60 +32,113 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 
 - 7-bit ASCII (values 0-127), including control characters.
 - Maximum 200 characters per message.
-- Three frame sizes (size classes): 50, 100 and 200 characters. The sender uses the smallest class that holds the message.
-- Each frame carries a CRC so the receiver can confirm it decoded the message correctly. CRC length: **TBD** (16 bits planned).
+- Four frame sizes (size classes), holding 350, 700, 1050 or 1400 text bits. That is 50, 100, 150 or 200 characters of plain text at 7 bits each. The sender uses the smallest class that holds the text.
+- **Body contents**, in order: the character count (8 bits), the text bits padded with zeros to the class size, and a 16-bit check value over everything before it. The body therefore holds 374, 724, 1074 or 1424 bits.
+- **Body check value:** CRC-16 with polynomial 0x1021, start value 0xFFFF, no bit reversal and no final inversion (CRC-16/CCITT-FALSE), most significant bit first.
+
+### 4.1 Text compression
+
+Text may be sent plain (7 bits per character, most significant bit first) or compressed. A flag in the header says which.
+
+- The compressed form is a fixed Huffman code: each ASCII character has a code of 3 to 13 bits, short for common characters (space 3 bits, "e" and "t" 4 bits) and long for rare ones. The code length and code of every character are listed in `tables/compression_codes.txt`.
+- The codes follow from the lengths by the canonical rule: sort the characters by (code length, character number); the first gets code 0; each next character gets the previous code plus one, shifted left by the increase in length. Codes are sent most significant bit first.
+- The character count in the body tells the receiver how many characters to decode; the padding after them is ignored.
+- **Rule for the sender:** compress only when the compressed text fits a smaller size class than the plain text. Otherwise send plain.
+
+Typical savings are about a quarter for plain English and about a seventh for traffic that is mostly capitals and digits.
 
 ## 5. Modem
+
+All audio figures assume a sample rate of 12,000 samples per second.
 
 ### 5.1 Frame structure
 
 Every frame has three parts, in order:
 
 1. **Chirp pair:** a linear frequency sweep up from 500 Hz to 2500 Hz lasting 1 second, followed at once by a linear sweep down from 2500 Hz to 500 Hz lasting 1 second (audio frequencies; 2 seconds in all). Each sweep fades in and out over 20 ms. The pair is used to find the frame and to measure its timing and frequency offset. Two sweeps are used because a single sweep cannot tell a timing error from a frequency error: a frequency error moves the two detection peaks in opposite directions, while a timing error moves them together.
-2. **Header:** a short block sent at the same speed level as the body. It states the frame type, the speed level, the size class and, for a split message, the part number and the number of parts. It carries its own check value and is sent twice in a row, so it is more robust than the body that follows it. The addresses needed to route the frame, and the exact fields: **TBD**.
-3. **Body:** the payload at the negotiated speed level, with known pilot symbols spread through it so the receiver can keep tracking timing, frequency and fading to the end.
+2. **Header:** 24 tones sent at the same speed level as the body (Section 5.4).
+3. **Body:** the payload at the frame's speed level, with known pilot tones spread through it (Section 5.5).
 
-The receiver is not told the level in advance. After the chirp pair it tries to read the header at each speed level in turn, and accepts the level at which the header's check value matches and the header's level field names that same level. Sending the header at the frame's own level keeps fast frames short: a header at the slowest level would add about 10 seconds to every frame.
+The receiver is not told the level in advance. After the chirp pair it tries to read the header at each speed level in turn. A level is a candidate when the header's check value matches, the header's level field names that same level, and the spare bit is zero. Noise can occasionally make a wrong level pass, so the receiver accepts a level only when the body read at that level also passes its check. Sending the header at the frame's own level keeps fast frames short: a header at the slowest level would add about 10 seconds to every frame.
 
 Because the header states the level and size, the receiver then knows how long the frame is and how to decode it. No global time slots are needed.
 
 ### 5.2 Speed levels
 
-Kestrel uses a family of waveforms, numbered L0 (slowest, most robust) upward. The robust levels use multiple-tone frequency-shift keying (MFSK), which does not depend on carrier phase and holds up in deep fading. The fast levels use phase-based modulation (PSK, possibly OFDM) and are used only when the path supports them.
+Every level uses the same signalling: 32 tones, one tone at a time, each tone carrying 5 bits (multiple-tone frequency-shift keying, MFSK). Tone signalling does not depend on carrier phase and holds up in fading. A faster level sends each tone for a shorter time.
 
-The number of levels and their exact waveforms are **TBD**. Working estimates for a full 200-character frame:
+- A group of 5 bits, read most significant bit first, is the tone number 0 to 31.
+- Tone number m of a level is a cosine at frequency (lowest tone + m x tone spacing), starting at phase zero, lasting one tone length at constant amplitude. Every tone holds a whole number of cycles, so the phase is continuous from tone to tone.
 
-| Level | Airtime, 200 chars | Weakest usable SNR (2.5 kHz) | Use |
-|---|---|---|---|
-| L5 | about 5 s | about −5 dB | strong, stable paths |
-| L4 | about 15 s | about −10 dB | |
-| L3 | about 30 s | about −13 dB | |
-| L2 | about 60 s | about −16 dB | |
-| L1 | about 2 min | about −19 dB | |
-| L0 | about 4 min | about −22 dB | beacons, calls, headers |
+| Level | Tone length | Samples per tone | Lowest tone | Tone spacing | Highest tone |
+|---|---|---|---|---|---|
+| L0 | 0.4 s | 4800 | 1420.00 Hz | 5.000 Hz | 1575.00 Hz |
+| L1 | 0.135 s | 1620 | 1266.67 Hz | 14.815 Hz | 1725.93 Hz |
+| L2 | 0.09 s | 1080 | 1144.44 Hz | 22.222 Hz | 1833.33 Hz |
+| L3 | 0.045 s | 540 | 1155.56 Hz | 22.222 Hz | 1844.44 Hz |
+| L4 | 0.0225 s | 270 | 800.00 Hz | 44.444 Hz | 2177.78 Hz |
 
-A 100-character frame takes about half these times and a 50-character frame about a quarter, plus the fixed chirp and header. Frames longer than the airtime limits in Section 6.8 are not sent; at the slow levels a long message is split into shorter parts instead.
+Exact values: with N samples per tone, one bin is 12000 / N Hz. The tone spacing is 2 bins for L0 to L2 and 1 bin for L3 and L4. The lowest tone is at bin floor(1500 x N / 12000 + 0.5) minus 16 times the spacing in bins.
+
+Airtime of a whole frame, and the weakest signal at which every test frame decoded in simulation (noise only, SNR in 2.5 kHz):
+
+| Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR |
+|---|---|---|---|---|---|
+| L0 | 76 s | 136 s | 195 s | 255 s | -20 dB |
+| L1 | 27 s | 47 s | 67 s | 87 s | -16 dB |
+| L2 | 19 s | 32 s | 46 s | 59 s | -15 dB |
+| L3 | 10 s | 17 s | 24 s | 30 s | -12 dB |
+| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB |
+
+L1 and L2 are sized so that a full 200-character frame fits the 90-second and 60-second limits of Section 6.8. Frames longer than those limits are not sent; at the slow levels a long message is split into shorter parts instead. Fading raises the signal needed: at L0 in simulation, by about 8 dB in light and moderate fading and about 12 dB in heavy fading.
+
+A faster level (L5) is planned. It needs a different waveform, because tones this short would be too wide: **TBD**.
 
 ### 5.3 Error correction and interleaving
 
-- Forward error correction on every body: LDPC planned; code rates per level **TBD**.
-- Bits are interleaved across the whole frame in time and across tones, so a short fade or burst costs a little of everything rather than a whole section.
-- Impulse noise (static crashes) is detected and the affected symbols are marked as erasures instead of being trusted.
+**Body.** The body is protected by a rate-1/2 low-density parity-check (LDPC) code of the repeat-accumulate kind. For k body bits (k = 374, 724, 1074 or 1424) the codeword is the k body bits followed by k parity bits.
 
-### 5.4 Combining retries (HARQ)
+- There are k parity checks. Every body bit takes part in exactly three checks. Parity bit i takes part in check i and in check i + 1 (the last parity bit only in the last check).
+- So parity bit 0 equals the XOR of the body bits in check 0, and parity bit i equals parity bit i - 1 XOR the body bits in check i.
+- The three checks of each body bit are listed, for every k, in `tables/ldpc_checks_k<k>.txt`. They come from three pseudo-random shuffles of 0..k-1 made with the xorshift32 generator (shifts 13, 17, 5; start values 0x4B455301, 0x4B455302, 0x4B455303) and a Fisher-Yates shuffle, then repaired so that no body bit uses the same or neighbouring checks twice and no two body bits share more than one check. The reference program `modem/ldpc.py` is the exact definition; the table files are its output.
 
-When a frame fails its CRC, the receiver keeps what it received. The retransmission is combined with the stored copy, so the pair can decode below the level either copy could alone.
+**Interleaver.** The codeword is padded with zeros to a whole number of tones (750, 1450, 2150 or 2850 bits) and shuffled: bit i of the padded codeword is sent in position (step x i) mod n, where n is the padded length and step is the whole number nearest to n x 0.6180339887 that shares no factor with n (searching outwards, above before below). The steps are 463, 897, 1329 and 1763. The shuffled bits are then grouped in fives to make the data tones.
 
-### 5.5 Tracking
+**Receiver side.** Impulse noise (static crashes) is detected and blanked before decoding. The decoder is not specified; the reference uses normalised min-sum belief propagation.
 
-- The chirp gives the starting frequency offset and timing.
-- Pilot symbols through the body keep frequency, timing and fading estimates current.
-- Offset and drift measured on one frame carry forward to the next.
+### 5.4 Header
+
+The header carries 16 field bits followed by an 8-bit check value:
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Frame type | 3 | 0 = message or part of a message |
+| Speed level | 3 | 0 to 4 |
+| Size class | 2 | 0 to 3 (350, 700, 1050 or 1400 text bits) |
+| Part number | 3 | 0 for the first part |
+| Part count | 3 | number of parts minus one |
+| Compressed | 1 | 1 when the text is compressed |
+| Spare | 1 | always 0 |
+
+- **Header check value:** CRC-8 with polynomial 0x07 and start value 0x00 over the 16 field bits, most significant bit first.
+- **Header coding:** the 24 bits are followed by 6 zero bits and encoded with the rate-1/2, constraint-length-7 convolutional code with generators 171 and 133 (octal), giving 60 bits, sent as 12 tones. For each input bit the 7-bit register is the six previous input bits (oldest in the highest position) followed by the new bit; the first output bit is the parity of the register ANDed with 171 octal, the second with 133 octal.
+- The 12 tones are sent twice in a row (24 tones).
+- Addresses and message identifiers are not yet in the header: **TBD**.
+
+### 5.5 Pilots
+
+In the body, one pilot tone is sent before every 15 data tones (so body tones 0, 16, 32, ... are pilots). Pilot number g, counting from 0, uses tone (7 x g + 3) mod 32. The receiver uses the pilots to follow frequency drift through the frame and to measure the signal-to-noise ratio.
+
+### 5.6 Combining retries (HARQ)
+
+When a frame fails its check, the receiver keeps the soft values of the body. The retransmission is combined with the stored copy, so the pair can decode below the level either copy could alone.
+
+### 5.7 Tracking and channel measurement
+
+- The chirp pair gives the starting frequency offset and timing.
+- The pilots keep the frequency estimate current through the body.
 - Stations keep accurate clocks (NTP or GPS); this narrows the timing search but is not used to define time slots.
-
-### 5.6 Channel measurement
-
-Each received frame yields measurements of signal-to-noise ratio, Doppler spread (fading speed), delay spread (multipath) and frequency offset. These are reported back to the sender in every acknowledgment.
+- Each received frame yields a measurement of signal-to-noise ratio and frequency offset. Measurements of Doppler spread (fading speed) and delay spread (multipath) are planned. These are reported back to the sender in every acknowledgment.
 
 ## 6. Link
 
@@ -134,7 +187,7 @@ No single transmission should hold the frequency for long. The link applies thes
 1. **Fastest level first.** The link uses the fastest speed level the measured conditions support.
 2. **Default limit: 60 seconds per transmission.** The link does not choose a level that would make a message frame run longer than this.
 3. **Poor-conditions limit: 90 seconds.** When the measured conditions are too poor for the message to fit in 60 seconds, the link allows up to 90 seconds without operator action.
-4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. Each part carries the message ID, its part number and the number of parts; the message is delivered, and its receipt issued, when all parts have arrived. Part fields: **TBD**.
+4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. The header of each part carries its part number and the number of parts (Section 5.4), up to 8 parts; the message is delivered, and its receipt issued, when all parts have arrived. The message ID that ties the parts together: **TBD**.
 
 Both limits are operator settings; 60 and 90 seconds are the defaults.
 
@@ -168,18 +221,17 @@ Each station applies the same checks to every message it receives: deliver it if
 
 ## 9. Open items
 
-- Number of speed levels and the exact waveform of each.
-- Header fields and coding.
-- LDPC codes and rates; CRC length.
+- Speed level L5 (a faster waveform) and any further levels.
+- Level limits in fading, and measurement of Doppler spread and delay spread.
+- Addresses and message identifiers in the header; frame types other than a message (beacon, answer, acknowledgment).
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
 - Message lifetime; how long receipts stay listed.
-- Message splitting: part fields, and how parts are held and forwarded by holding partners.
+- Message splitting: how parts are held and forwarded by holding partners.
 - Beacon size: short hashed message IDs, caps on the held-mail and receipt lists, and which entries go first when a list is full.
 - Storage limits: how much mail a holder will carry in total and per originating station.
 - Confirm with ARRL that reply-on-mail-check delivery by unattended holders fits 97.221, and which band segments apply.
-- Audio passband position and occupied bandwidth of each level (all within 2.8 kHz).
 
 ## 10. Document history
 

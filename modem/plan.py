@@ -8,12 +8,10 @@ The rules (specification section 6.8):
      each sent and acknowledged as a frame of its own.
 """
 
-from math import ceil  # round up
-
 from .frame import build_frame, frame_seconds  # transmitter and airtime calculator
 from .levels import LEVELS, MIN_SNR_DB  # the speed levels and the SNR each one needs
 from .params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, MAX_PARTS, SIZE_CLASSES  # limits and sizes
-from .text import pick_size_class  # smallest size class that fits a text
+from .text import fits, pick_size_class  # which size class a text needs, and whether a text fits one
 
 
 def pick_level(snr_db, margin_db=2.0):  # rule 1
@@ -29,19 +27,25 @@ def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_
     seconds (airtime) and extended (True when the frame needs the 90-second allowance).
     """
     level = pick_level(snr_db, margin_db)  # rule 1: fastest level the conditions support
-    whole = frame_seconds(pick_size_class(len(text)), level)  # airtime if the message is sent whole
+    whole = frame_seconds(pick_size_class(text), level)  # airtime if the message is sent whole
     if whole <= poor_cap_s:  # rules 2 and 3: it fits in 60 seconds, or in 90 when conditions are poor
         return [{"text": text, "level": level, "part": 0, "parts": 1, "seconds": whole, "extended": whole > cap_s}]  # send it as one frame
     fitting = [c for c in range(len(SIZE_CLASSES)) if frame_seconds(c, level) <= poor_cap_s]  # size classes short enough at this level
-    chunk = SIZE_CLASSES[max(fitting)] if fitting else SIZE_CLASSES[0]  # rule 4: the largest piece that fits (smallest size if none does)
-    parts = ceil(len(text) / chunk)  # how many pieces that makes
-    if parts > MAX_PARTS:  # more pieces than the header can number
-        raise ValueError("message needs too many parts")  # refuse (cannot happen with 200 characters and 50-character pieces)
+    size_class = max(fitting) if fitting else 0  # rule 4: the largest frame that fits the limit (the smallest if none does)
+    pieces = []  # the text cut into pieces, each fitting one frame
+    rest = text  # the text still to be cut up
+    while rest:  # until nothing is left
+        take = len(rest)  # start by trying to take everything that remains
+        while not fits(rest[:take], size_class):  # too big for one frame?
+            take -= 1  # take one character fewer and try again
+        pieces.append(rest[:take])  # that is the next piece
+        rest = rest[take:]  # carry on with what is left
+    if len(pieces) > MAX_PARTS:  # more pieces than the header can number
+        raise ValueError("message needs too many parts")  # refuse (cannot happen with 200 characters and 50-character frames)
     plan = []  # the list of frames to send
-    for part in range(parts):  # one frame per piece
-        piece = text[part * chunk:(part + 1) * chunk]  # this piece of the text
-        seconds = frame_seconds(pick_size_class(len(piece)), level)  # its airtime
-        plan.append({"text": piece, "level": level, "part": part, "parts": parts, "seconds": seconds, "extended": seconds > cap_s})  # add it to the plan
+    for part, piece in enumerate(pieces):  # one frame per piece
+        seconds = frame_seconds(pick_size_class(piece), level)  # its airtime
+        plan.append({"text": piece, "level": level, "part": part, "parts": len(pieces), "seconds": seconds, "extended": seconds > cap_s})  # add it to the plan
     return plan  # all the frames, in order
 
 
