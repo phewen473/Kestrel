@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.3 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.4 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -87,7 +87,7 @@ Each received frame yields measurements of signal-to-noise ratio, Doppler spread
 
 ### 6.1 Beacon
 
-A station announces itself with a beacon at level L0. The beacon carries the callsign, Maidenhead grid locator, the speed levels the station supports, a flag saying whether it is accepting connections, a short heard list (stations it has heard recently and their SNR), the callsigns it is holding mail for, and the IDs of recent delivery receipts it knows of. After a beacon the station listens for a reply window. Window length: **TBD**.
+A station announces itself with a beacon at level L0. The beacon carries the callsign, Maidenhead grid locator, the speed levels the station supports, a flag saying whether it is accepting connections, a short heard list (stations it has heard recently and their SNR), the callsigns it is holding mail for, the IDs of recent delivery receipts it knows of, and a **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for a reply window. Window length: **TBD**.
 
 ### 6.2 Answer
 
@@ -140,7 +140,8 @@ Kestrel assumes no station is always on the air and no infrastructure exists. St
 - **Message ID:** every message has a unique ID so it is never delivered twice, however many stations hold a copy.
 - **Sender's outbox:** the sender keeps every message until a delivery receipt returns or the message expires. The sender is always the last-resort copy.
 - **Holding partners:** one or more stations may accept and store a copy of the same message. Each holding partner confirms to the sender that it holds the message, so the sender knows who is carrying it. Holders list the callsigns they hold mail for in their beacons.
-- **Automatic delivery:** delivery needs no operator action. When a holder hears the destination (its beacon, or the destination appearing in another station's heard list), it connects and delivers or passes the message on by itself.
+- **Automatic delivery, on request:** delivery needs no operator action, but it is always a reply. When a holder hears a beacon from the destination with the mail-check flag set, it answers in the reply window and delivers. When a holder hears a beacon with the mail-check flag from a station that can reach the destination (shown in that station's heard list), it passes the message on the same way. Holders never call a station unprompted to push mail. This keeps unattended holders replying to a station that asked, which is intended to fit the automatic-control rules (97.221), and saves airtime by sending mail only to stations that are listening.
+- **Accountability trail:** every stored copy records the originating callsign and the callsign of the station it was received from, so the forwarding path can always be traced (97.219).
 - **First to deliver wins:** a holder first offers the message ID. If the destination does not have it, the holder sends the message; if the destination already has it, it answers "already delivered" and the holder drops its copy without sending it again. The first holder to complete delivery wins.
 - **Hop limit:** each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating.
 - **Receipt to every holder:** when a message reaches its destination, the destination issues a delivery receipt carrying the message ID. The receipt travels back toward the sender like a small message, is passed to every known holding partner, and is listed in beacons for a time (recent-receipts list). Every holder that learns of the receipt drops its copy, and the sender marks the message delivered.
@@ -158,7 +159,10 @@ Each station applies the same checks to every message it receives: deliver it if
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
-- Message lifetime; how many held-mail callsigns and receipt IDs fit in a beacon; how long receipts stay listed.
+- Message lifetime; how long receipts stay listed.
+- Beacon size: short hashed message IDs, caps on the held-mail and receipt lists, and which entries go first when a list is full.
+- Storage limits: how much mail a holder will carry in total and per originating station.
+- Confirm with ARRL that reply-on-mail-check delivery by unattended holders fits 97.221, and which band segments apply.
 - Audio passband position and occupied bandwidth of each level (all within 2.8 kHz).
 
 ## 10. Document history

@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.4 (draft) - 18 November 2026
+
+- Beacons carry a mail-check flag. Holders deliver or pass on mail only in reply to a beacon with that flag; they never push mail unprompted.
+- Every stored copy records the originating callsign and the station it came from (accountability trail).
+- New open items: beacon size limits, holder storage limits, and confirming the automatic-control approach with ARRL.
+
 ## 0.3 (draft) - 18 November 2026
 
 - Holding partners: one or more stations may store the same message and confirm to the sender that they hold it.
