@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.5 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.6 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -41,7 +41,7 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 
 Every frame has three parts, in order:
 
-1. **Chirp:** a short frequency sweep across the Kestrel passband. Used to find the frame, measure frequency offset and set timing. Length and sweep width: **TBD**.
+1. **Chirp pair:** a linear frequency sweep up from 500 Hz to 2500 Hz lasting 1 second, followed at once by a linear sweep down from 2500 Hz to 500 Hz lasting 1 second (audio frequencies; 2 seconds in all). Each sweep fades in and out over 20 ms. The pair is used to find the frame and to measure its timing and frequency offset. Two sweeps are used because a single sweep cannot tell a timing error from a frequency error: a frequency error moves the two detection peaks in opposite directions, while a timing error moves them together.
 2. **Header:** a short block sent at the most robust level, whatever the level of the rest of the frame. It states the frame type, speed level, size class and the addresses needed to route it. Exact fields: **TBD**.
 3. **Body:** the payload at the negotiated speed level, with known pilot symbols spread through it so the receiver can keep tracking timing, frequency and fading to the end.
 
@@ -167,7 +167,7 @@ Each station applies the same checks to every message it receives: deliver it if
 ## 9. Open items
 
 - Number of speed levels and the exact waveform of each.
-- Chirp length and sweep width; header fields and coding.
+- Header fields and coding.
 - LDPC codes and rates; CRC length.
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.

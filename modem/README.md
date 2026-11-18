@@ -22,7 +22,7 @@ These are test values, not design decisions. The specification keeps them as TBD
 | Item | Value |
 |---|---|
 | Sample rate | 12,000 samples per second |
-| Chirp | 500-2500 Hz, 1 s up + 1 s down |
+| Chirp | 500-2500 Hz, 1 s up + 1 s down (agreed; in the spec since v0.6) |
 | L0 waveform | 32 tones (5 bits each), 0.4 s per tone, tones 5 Hz apart, 1420-1575 Hz |
 | Occupied bandwidth (L0 tones) | about 160 Hz |
 | Error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder (stand-in for the planned LDPC code) |

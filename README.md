@@ -9,7 +9,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 - **Short messages:** free text, up to 200 characters of 7-bit ASCII, control characters included, sent in 50-, 100- or 200-character frames.
 - **Adaptive speed:** a family of waveforms, from a slow, very robust level for weak signals up to a fast level for strong ones. The two stations negotiate the level automatically from measured noise, fading, multipath and band.
 - **Beacon, answer, lock:** a station beacons its presence; a listener answers; the pair negotiate a level and lock for messaging. Every frame is acknowledged, and failed frames are combined with their retries rather than thrown away.
-- **Self-describing frames:** every frame starts with a short frequency sweep (a chirp) and a robust header that states its speed level and size, so a receiver needs no shared clock slot to decode it.
+- **Self-describing frames:** every frame starts with a signature chirp pair (a one-second sweep up, then a one-second sweep down) and a robust header that states its speed level and size, so a receiver needs no shared clock slot to decode it.
 - **Nets:** optional nets with a net control station, turn-taking slots and an automatic backup net control.
 - **Store and forward for disconnected operation:** no always-on station or infrastructure is needed. Senders keep their messages, other stations carry copies, and mail moves whenever two stations hear each other, with message IDs, hop limits, expiry and delivery receipts.
 - **Plain text only:** no encryption, as Part 97 requires.

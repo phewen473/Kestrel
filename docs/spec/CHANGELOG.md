@@ -1,5 +1,9 @@
 # Kestrel specification changelog
 
+## 0.6 (draft) - 18 November 2026
+
+- Signature chirp fixed as a pair: 500 to 2500 Hz up in 1 second, then 2500 to 500 Hz down in 1 second, each with 20 ms fades. Chosen after simulator tests showed the pair separates timing error from frequency error.
+
 ## 0.5 (draft) - 18 November 2026
 
 - Airtime limits: 60 seconds per transmission by default, extended automatically to 90 seconds in poor conditions; both are operator settings.
