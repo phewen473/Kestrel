@@ -14,7 +14,7 @@ from scipy.signal import firwin, lfilter, resample_poly  # filter design, filter
 from modem.params import FS  # the modem's sample rate (12,000)
 
 FACTOR = 4  # sound card rate divided by modem rate
-LEAD_S = 0.1  # silence played before each transmission, so the start is not clipped
+LEAD_S = 0.3  # silence played before each transmission, so the sound card is running steadily before the chirp starts
 TAIL_S = 0.5  # silence played after each transmission: sound cards stop a little early, and without this the last tones are cut off
 CARD_RATE = FS * FACTOR  # the rate the sound card is opened at (48,000)
 
@@ -42,6 +42,15 @@ def find_device(wanted, kind):  # turn what the operator typed into a device num
     if not matches:  # none
         raise ValueError(f"no {kind} device has '{wanted}' in its name")  # say so
     return matches[0][0]  # the first match
+
+
+def device_named(name, kind):  # find a device by its exact name
+    """Return the index of the first input (or output) device called exactly `name`; raise ValueError if there is none."""
+    column = 2 if kind == "input" else 3  # which channel count to check
+    for device in list_devices():  # every device, in Windows' current numbering
+        if device[1] == name and device[column] > 0:  # the right name and able to do the job
+            return device[0]  # its number as of now
+    raise ValueError(f"the {kind} device '{name}' is not connected")  # it has gone away
 
 
 class Decimator:  # 48,000 samples per second down to 12,000, a chunk at a time
@@ -74,10 +83,13 @@ class AudioIn:  # the receiving side of the sound card
         import sounddevice as sd  # the sound-card library
         self.chunks = queue.Queue()  # audio waiting to be collected
         self.decimator = Decimator()  # the rate converter
-        self.stream = sd.InputStream(samplerate=CARD_RATE, channels=1, dtype="float32", device=device, callback=self._arrived)  # one channel, at the card's rate
+        self.lost = 0  # how many times the sound card reported that it had to drop audio
+        self.stream = sd.InputStream(samplerate=CARD_RATE, channels=1, dtype="float32", device=device, callback=self._arrived, latency="high")  # one channel, at the card's rate, with generous buffering so a busy program does not lose audio
         self.stream.start()  # begin recording
 
     def _arrived(self, data, frames, when, status):  # called by the sound card with each new block
+        if status.input_overflow:  # the sound card had to throw audio away because it was not collected in time
+            self.lost += 1  # count it, so the operator can be told
         self.chunks.put(data[:, 0].copy())  # keep the one channel
 
     def read(self):  # collect what has arrived
@@ -111,4 +123,4 @@ class AudioOut:  # the transmitting side of the sound card
         """Play `audio` (at 12,000 samples per second) and return when it has finished."""
         import sounddevice as sd  # the sound-card library
         padded = np.concatenate([np.zeros(int(LEAD_S * FS)), audio, np.zeros(int(TAIL_S * FS))])  # a little silence before, and more after
-        sd.play(to_card_rate(padded, self.gain), CARD_RATE, device=self.device, blocking=True)  # convert, play, wait for the end
+        sd.play(to_card_rate(padded, self.gain), CARD_RATE, device=self.device, blocking=True, latency="high")  # convert, play with generous buffering, wait for the end

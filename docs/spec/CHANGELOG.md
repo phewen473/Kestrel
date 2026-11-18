@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.15 (draft) - 18 November 2026
+
+- The transmitted signal is unchanged from 0.14.
+- Suggested meeting frequencies added for 40, 30 and 20 metres (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband). Each keeps the whole signal inside a 97.221(b) segment.
+
 ## 0.14 (draft) - 18 November 2026
 
 - Reply window defined. Slots are 39 seconds. A plain beacon is followed by one reply slot; a beacon with the new wide-window flag (the beacon's former spare bit) is followed by four, and answering stations pick one at random.

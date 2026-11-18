@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.14 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.15 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -334,6 +334,23 @@ No single transmission should hold the frequency for long. The link applies thes
 4. **Splitting.** When the message still does not fit, it is sent as two or more shorter parts. Each part is a frame of its own within the 90-second limit and is acknowledged separately, so a failed part is retried alone. The header of each part carries its part number and the number of parts (Section 5.4), up to 8 parts; the message is delivered, and its receipt issued, when all parts have arrived. Every part carries the same addressing and message number (Section 4.2), which ties the parts together.
 
 Both limits are operator settings; 60 and 90 seconds are the defaults.
+
+### 6.9 Suggested frequencies (United States)
+
+So that stations can find each other, one meeting frequency is suggested per band. Each is the dial frequency of an upper-sideband radio; the Kestrel signal occupies 500 Hz to 2500 Hz above it.
+
+| Band | Dial frequency (USB) | Signal occupies | Inside 97.221(b) segment |
+|---|---|---|---|
+| 40 m | 7101.5 kHz | 7102.0 to 7104.0 kHz | 7100 to 7105 kHz |
+| 30 m | 10144.0 kHz | 10144.5 to 10146.5 kHz | 10140 to 10150 kHz |
+| 20 m | 14108.5 kHz | 14109.0 to 14111.0 kHz | 14100.5 to 14112 kHz |
+
+- Every suggested frequency keeps the whole signal inside a segment that 97.221(b) allows for automatically controlled stations, so the same frequency serves attended stations and unattended mail holders (Section 2).
+- The 30 m choice stays above the FT4, WSPR and PSK activity at the bottom of that segment; the 20 m choice stays clear of the beacons on 14100 kHz.
+- These segments are shared with other data modes. A station listens before transmitting and moves if the frequency is in use.
+- On 30 m the amateur power limit is 200 W PEP.
+- These are first choices, to be confirmed by listening on the air. Other bands: **TBD**.
+- Operators may use other frequencies by agreement. A station with no operator present must keep its whole signal inside a 97.221(b) segment.
 
 ## 7. Nets (optional)
 

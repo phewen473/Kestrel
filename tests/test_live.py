@@ -115,3 +115,44 @@ def test_rig_control_speaks_rigctld():  # tuning and keying through Hamlib's rig
         raised = True  # as it should be
     assert raised  # a refused command is never silently ignored
     rig.close()  # hang up
+
+
+def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the band presets
+    from live.bands import PRESETS_KHZ, dial_khz, in_automatic_segment, signal_khz  # the presets and their checks
+
+    assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40"]  # one preset each for 20, 30 and 40 metres
+    for band in PRESETS_KHZ:  # every preset
+        assert in_automatic_segment(dial_khz(band))  # keeps the whole 2 kHz signal inside a 97.221(b) segment
+    assert dial_khz("20m") == dial_khz(20) == 14108.5  # "20m", 20 and "20" all mean the same band
+    assert signal_khz(14108.5) == (14109.0, 14111.0)  # the signal sits 500 to 2500 Hz above the dial
+    assert not in_automatic_segment(14098.0)  # a signal that would straddle the beacon frequency at 14100 is refused
+    assert not in_automatic_segment(7074.0)  # and so is one outside the segments altogether
+    try:  # a band with no preset
+        dial_khz("80")  # 80 metres has none yet
+        raised = False  # it should not get here
+    except ValueError:  # the lookup refuses
+        raised = True  # as it should
+    assert raised  # an unknown band is never silently accepted
+
+
+def test_operator_can_keep_frequencies_of_their_own(tmp_path):  # the list behind the frequency drop-down
+    from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies  # the frequency list
+
+    mine = str(tmp_path / "local" / "frequencies.json")  # a private list for this test (the folder does not exist yet)
+    assert [e["band"] for e in all_frequencies(mine)] == ["40 m", "30 m", "20 m"]  # with nothing saved, only the presets
+    add_user_frequency("17 m", 18106.0, note="evening net", path=mine)  # a frequency inside a 97.221(b) segment
+    add_user_frequency("40 m", "7110", mode="usb", path=mine)  # one outside, typed as text and in lower case
+    listed = all_frequencies(mine)  # presets first, then the operator's own
+    assert [e["builtin"] for e in listed] == [True, True, True, False, False]  # three presets, two of the operator's
+    assert (listed[4]["dial_khz"], listed[4]["mode"]) == (7110.0, "USB")  # the text became a number, the mode capitals
+    assert "97.221(b) segment" in describe_frequency(listed[3]) and "evening net" in describe_frequency(listed[3])  # the list says an unattended station may use it
+    assert "attended only" in describe_frequency(listed[4])  # and that the other needs an operator present
+    remove_user_frequency(0, mine)  # take the first of the operator's own away
+    assert [e["band"] for e in user_frequencies(mine)] == ["40 m"]  # the other is still there, and was saved
+    for bad in (("", 7100.0), ("40 m", "abc"), ("40 m", 5.0)):  # no band name, not a number, not a sensible frequency
+        try:  # each must be refused
+            add_user_frequency(bad[0], bad[1], path=mine)  # try to add it
+            raised = False  # it should not get here
+        except ValueError:  # refused
+            raised = True  # as it should be
+        assert raised  # nothing bad is ever saved

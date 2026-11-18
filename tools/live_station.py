@@ -26,6 +26,7 @@ from link import Station  # the link rules  # noqa: E402
 from live import run_station  # the live loop  # noqa: E402
 from live.audio import AudioIn, AudioOut, find_device  # sound-card input and output  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
+from live.bands import dial_khz, in_automatic_segment, signal_khz  # the preselected frequencies  # noqa: E402
 from live.rig import RigCtl  # rig control through Hamlib's rigctld  # noqa: E402
 
 
@@ -43,7 +44,8 @@ def main():  # the script itself
     parser.add_argument("--gain", type=float, default=0.5, help="transmit audio level, 0 to 1")  # how loud
     parser.add_argument("--ptt", default="none", choices=["none", "rig", "cat", "rts", "dtr"], help="how to key the transmitter (rig = through rigctld)")  # keying method
     parser.add_argument("--rig", default=None, help="address of Hamlib's rigctld, host:port (for example 127.0.0.1:4532)")  # rig control
-    parser.add_argument("--freq", type=float, default=None, help="dial frequency to tune the radio to, in kHz (needs --rig)")  # where to tune
+    parser.add_argument("--band", default=None, help="tune to Kestrel's preselected frequency for this band: 40, 30 or 20 (needs --rig)")  # a preset
+    parser.add_argument("--freq", type=float, default=None, help="dial frequency to tune the radio to, in kHz (needs --rig); overrides --band")  # where to tune
     parser.add_argument("--mode", default="PKTUSB", help="radio mode to select when --freq is given (default PKTUSB: upper sideband, data)")  # which mode
     parser.add_argument("--port", default=None, help="serial port for --ptt cat, rts or dtr")  # which port
     parser.add_argument("--baud", type=int, default=38400, help="serial speed for --ptt cat")  # port speed
@@ -58,10 +60,15 @@ def main():  # the script itself
     for text in args.send:  # the operator's messages
         station.queue(text)  # into the outbox
     rig = RigCtl(args.rig) if args.rig else None  # connect to rigctld when asked
-    if rig is not None and args.freq is not None:  # tune the radio
+    dial = args.freq if args.freq is not None else (dial_khz(args.band) if args.band else None)  # an exact frequency wins over a band preset
+    if dial is not None and rig is None:  # tuning was asked for but there is no rig control
+        parser.error("--band and --freq need --rig host:port")  # say so and stop
+    if dial is not None:  # tune the radio
         rig.set_mode(args.mode)  # the mode first
-        rig.set_frequency(args.freq * 1000.0)  # then the frequency, given in kHz
-        print(f"radio tuned to {rig.frequency() / 1000.0:.3f} kHz, {args.mode}", flush=True)  # confirm what the radio reports
+        rig.set_frequency(dial * 1000.0)  # then the frequency, given in kHz
+        low, high = signal_khz(rig.frequency() / 1000.0)  # where the signal will sit, from what the radio reports
+        note = "inside a 97.221(b) segment" if in_automatic_segment(rig.frequency() / 1000.0) else "NOT in a 97.221(b) segment: attended operation only"  # may an unattended station be here?
+        print(f"radio tuned to {rig.frequency() / 1000.0:.1f} kHz {args.mode}; signal {low:.1f} to {high:.1f} kHz ({note})", flush=True)  # confirm
     ptt = Ptt(args.ptt, args.port, args.baud, rig=rig)  # the transmit switch
     source = AudioIn(find_device(args.source, "input"))  # start recording
     sink = AudioOut(find_device(args.sink, "output"), args.gain)  # the playing side

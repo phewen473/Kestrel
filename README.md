@@ -59,6 +59,7 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 7 is done (18 November 2026):** the link rules (spec v0.13), run as two simulated stations. A contact goes beacon, answer, lock, messages both ways, close. Each direction runs at its own speed, set by the station that hears it. In simulation the link stepped from the fastest level to the slowest and back through a 19 dB slide without losing a frame, found its partner again after a 95-second gap, and delivered every message once in 36 fading contacts. See `link/README.md`.
 - **Milestone 8 is done (18 November 2026):** the reply window (spec v0.14). When several stations answer one beacon and collide, the next beacon opens four reply slots and each station picks one at random; the caller works the strongest and beacons again for the rest. In simulation, groups of two to five answering stations were all worked.
 - **Milestone 9 is done (18 November 2026):** Kestrel on real audio. A continuous receiver, sound-card input and output, transmitter keying, and rig control (frequency, mode, transmit) through Hamlib's rigctld, the rig-control engine WSJT-X uses. Two live stations on one PC, joined by virtual audio cables, completed a whole contact in real time. Not yet tried with a real radio. See `live/README.md`.
+- **Preselected frequencies (spec v0.15):** one meeting frequency each on 40, 30 and 20 metres (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband), all inside the 97.221(b) segments. A small control panel (`tools/kestrel_panel.py`) offers them in a drop-down list, and operators can add frequencies of their own.
 - Next: a first test with a real radio, then store-and-forward.
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
@@ -89,7 +90,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.14) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.15) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -115,11 +116,12 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.14 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done.
+- Spec version 0.15 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Spec v0.15: preselected frequencies for 40, 30 and 20 metres.
 - Milestone 9: live sound-card tools, continuous receiver, rig control through rigctld.
 - Milestone 8 and spec v0.14: reply window for several answering stations.
 - Milestone 7 and spec v0.13: link rules and the two-station simulation.
@@ -148,7 +150,7 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `link/` - link layer (`station.py`, `adapt.py`, `simulate.py`, `params.py`); `link/README.md` has the rules and what the simulation showed.
 - `live/` - real audio (`listener.py`, `audio.py`, `ptt.py`, `rig.py`, `runner.py`); `live/README.md` explains the live tools and the no-radio cable test.
 - `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`, `test_link.py`, `test_live.py`).
-- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `link_demo.py`, `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py`, `make_spec_tables.py`.
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `link_demo.py`, `kestrel_panel.py`, `live_devices.py`, `live_frequencies.py`, `live_monitor.py`, `live_send.py`, `live_station.py`, `make_spec_tables.py`.
 - `results/` - sweep CSVs and charts.
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 
