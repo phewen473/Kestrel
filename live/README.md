@@ -43,6 +43,10 @@ python tools/live_station.py --call W1AW --grid FN31 --listen --in <cable 1 out>
 python tools/live_station.py --call KO4WSC --grid EM92 --beacon --in <cable 2 out> --out <cable 1 in> --send "Hello from Kestrel"
 ```
 
+## Scripts for your own station
+
+Batch files or shell scripts that name your callsign, sound devices and serial port belong in a folder called `local/` at the top of the repository. Git ignores that folder, so station details never reach the public repository.
+
 ## What the first live test showed (18 November 2026)
 
 Two copies of `live_station.py` on one PC, joined by two virtual audio cables, made a complete contact in real time: beacon, answer, lock, two messages one way and one the other, and the closing identifications, in 2 minutes 17 seconds. Nothing was lost.

@@ -12,3 +12,5 @@ __pycache__/
 results/demo.wav
 # scratch files from live sound-card tests
 .livetest/
+# scripts and settings for one particular station (callsign, sound devices, serial ports)
+local/
