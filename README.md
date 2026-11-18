@@ -11,7 +11,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 - **Beacon, answer, lock:** a station beacons its presence; a listener answers; the pair negotiate a level and lock for messaging. Every frame is acknowledged, and failed frames are combined with their retries rather than thrown away.
 - **Self-describing frames:** every frame starts with a short frequency sweep (a chirp) and a robust header that states its speed level and size, so a receiver needs no shared clock slot to decode it.
 - **Nets:** optional nets with a net control station, turn-taking slots and an automatic backup net control.
-- **Store and forward:** mailboxes and relays between stations, with message IDs, hop limits and delivery receipts.
+- **Store and forward for disconnected operation:** no always-on station or infrastructure is needed. Senders keep their messages, other stations carry copies, and mail moves whenever two stations hear each other, with message IDs, hop limits, expiry and delivery receipts.
 - **Plain text only:** no encryption, as Part 97 requires.
 
 ## What is in this repository

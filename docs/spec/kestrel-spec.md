@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.1 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.2 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -87,7 +87,7 @@ Each received frame yields measurements of signal-to-noise ratio, Doppler spread
 
 ### 6.1 Beacon
 
-A station announces itself with a beacon at level L0. The beacon carries the callsign, Maidenhead grid locator, the speed levels the station supports, a flag saying whether it is accepting connections, and a short heard list (stations it has heard recently and their SNR). After a beacon the station listens for a reply window. Window length: **TBD**.
+A station announces itself with a beacon at level L0. The beacon carries the callsign, Maidenhead grid locator, the speed levels the station supports, a flag saying whether it is accepting connections, a short heard list (stations it has heard recently and their SNR), and the callsigns it is holding mail for. After a beacon the station listens for a reply window. Window length: **TBD**.
 
 ### 6.2 Answer
 
@@ -133,16 +133,20 @@ Beacons, calls and messages to no particular station are sent at a robust fixed 
 - **Net epoch:** the highest epoch wins. A former net control that returns after a takeover sees the higher epoch and rejoins as a member.
 - **Planned handoff:** net control can hand over to the backup immediately, without waiting for missed heartbeats.
 
-## 8. Messaging and store-and-forward
+## 8. Messaging and store-and-forward (disconnected operation)
 
-- **Message ID:** every message has a unique ID so it is never delivered twice.
-- **Mailbox:** a station may hold messages for a callsign it cannot reach now and deliver them when that station is heard or joins a net.
-- **Relay:** if the destination cannot be reached directly but a station that can reach it is in the heard lists, the message is passed to that station. Each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating.
-- **Receipt:** when a message reaches its destination, a delivery receipt returns to the sender.
-- **Duplicates:** a message whose ID has already been handled, or whose hop limit is reached, is dropped.
-- **Hubs:** an always-on station may act as a mailbox hub for others.
+Kestrel assumes no station is always on the air and no infrastructure exists. Stations come and go, and paths open and close with propagation. Messages move whenever two stations happen to hear each other.
 
-Each station applies the same checks to every message it receives: deliver it if it is addressed to this station; otherwise drop it if seen before or out of hops; otherwise relay it if the destination is reachable; otherwise hold it in the mailbox.
+- **Message ID:** every message has a unique ID so it is never delivered twice, however many stations hold a copy.
+- **Sender's outbox:** the sender keeps every message until a delivery receipt returns or the message expires. The sender is always the last-resort copy.
+- **Carry and forward:** a station may accept a message for relay and hold a copy. Holders list the callsigns they hold mail for in their beacons. Whichever holder first hears the destination (directly, or through a station in the heard lists) delivers or passes it on.
+- **Hop limit:** each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating.
+- **Receipt:** when a message reaches its destination, a delivery receipt goes back toward the sender. Any holder that hears the receipt drops its copy.
+- **Expiry:** every message carries a lifetime (48 hours planned, **TBD**). When it runs out, holders drop the message and the sender is told it was not delivered.
+- **Nets as temporary post offices:** while a net is running, net control holds the net's mail and copies it to the backup net control. When the net closes, undelivered mail stays with its holders and continues to be carried.
+- **Duplicates:** a message whose ID has already been handled, whose hop limit is reached, or whose lifetime has run out is dropped.
+
+Each station applies the same checks to every message it receives: deliver it if it is addressed to this station; otherwise drop it if seen before, out of hops or expired; otherwise relay it if the destination is reachable now; otherwise hold it and announce it in beacons until it is delivered, a receipt is heard or it expires.
 
 ## 9. Open items
 
@@ -152,6 +156,7 @@ Each station applies the same checks to every message it receives: deliver it if
 - Reply window length, timeouts, step-up count and other thresholds.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
+- Message lifetime; how many held-mail callsigns fit in a beacon.
 - Audio passband position and occupied bandwidth of each level (all within 2.8 kHz).
 
 ## 10. Document history
