@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.12 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.13 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -56,7 +56,8 @@ Every message frame starts its body with an address block. The frame type in the
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Link number | 12 | Identifies the pair of locked stations |
+| Link number | 9 | Identifies the pair of locked stations |
+| Wanted level | 3 | The speed level the sending station asks its partner to use |
 | Message number | 16 | The originating station's number for this message |
 
 **Fully addressed frame (frame type 1): 120 bits.** Used for traffic outside a lock and for mail that is being held, relayed or delivered for another station.
@@ -72,7 +73,7 @@ Every message frame starts its body with an address block. The frame type in the
 - **Address coding.** An address is 1 to 9 characters from this 39-character alphabet, numbered from 0: space, A to Z, 0 to 9, "/", "-". It is written in capitals, padded on the right with spaces to 9 characters, and read as a 9-digit number in base 40 with the first character as the most significant digit. That number is sent as 48 bits, most significant bit first. Digit value 39 is not used; spaces appear only as padding.
 - **Group names.** An address that contains no digit is a group or net name, not a station; every amateur callsign contains a digit. "ALL" addresses every station.
 - **Message number.** The originating station numbers its messages 0 to 65535 in turn and starts again at 0. The origin callsign and the message number together are the message ID. Every part of a split message carries the same message number.
-- **Link number.** The lowest 12 bits of the CRC-16 (Section 4) of the 96 address bits of the two stations: first the station that beaconed, then the station that answered. A station ignores link frames whose link number is not that of its own lock.
+- **Link number.** The lowest 9 bits of the CRC-16 (Section 4) of the 96 address bits of the two stations: first the station that beaconed, then the station that answered. A station ignores link frames whose link number is not that of its own lock.
 
 ## 5. Modem
 
@@ -195,8 +196,8 @@ Beacons, answers, acknowledgments and identifications are short frames with the 
 |---|---|---|---|---|
 | Beacon | 75 | 195 | 42 | 121 |
 | Answer | 124 | 295 | 63 | 182 |
-| Acknowledgment | 51 | 150 | 32 | 91 |
-| Identification | 64 | 175 | 38 | 108 |
+| Acknowledgment | 48 | 140 | 30 | 87 |
+| Identification | 61 | 170 | 37 | 107 |
 
 Airtime of a whole control frame:
 
@@ -204,8 +205,8 @@ Airtime of a whole control frame:
 |---|---|---|---|---|---|
 | Beacon | 28 s | 11 s | 8 s | 5 s | 3.5 s |
 | Answer | 37 s | 14 s | 10 s | 6 s | 4 s |
-| Acknowledgment | 24 s | 10 s | 7 s | 4.5 s | 3.3 s |
-| Identification | 27 s | 10 s | 8 s | 5 s | 3.4 s |
+| Acknowledgment | 24 s | 9 s | 7 s | 4.4 s | 3.2 s |
+| Identification | 26 s | 10 s | 7.5 s | 4.7 s | 3.4 s |
 
 **Beacon (type 2), 75 bits**
 
@@ -230,22 +231,22 @@ Airtime of a whole control frame:
 | Mail check | 1 | 1 asks the beaconing station to deliver any mail it holds for the origin |
 | Spare | 1 | always 0 |
 
-**Acknowledgment (type 4), 51 bits**
+**Acknowledgment (type 4), 48 bits**
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Link number | 12 | The lock this frame belongs to (Section 4.2) |
+| Link number | 9 | The lock this frame belongs to (Section 4.2) |
 | Message number | 16 | The message being acknowledged |
-| Part number | 3 | The part being acknowledged |
-| Status | 2 | 0 = received correctly; 1 = failed its check, send again; 2 = already received or delivered, do not send again; 3 = no message referred to (confirms or keeps alive the lock; message and part numbers are 0) |
+| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5) |
+| Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0) |
 | Channel report | 18 | How the frame being acknowledged was received |
 
-**Identification (type 5), 64 bits**
+**Identification (type 5), 61 bits**
 
 | Field | Bits | Meaning |
 |---|---|---|
 | Origin | 48 | Callsign of the sending station |
-| Link number | 12 | The lock this frame belongs to |
+| Link number | 9 | The lock this frame belongs to |
 | End of contact | 1 | 1 when this is the station's last transmission of the contact |
 | Spare | 3 | always 0 |
 
@@ -270,14 +271,16 @@ A longer beacon that also lists stations heard, the callsigns mail is held for a
 
 ### 6.2 Answer
 
-A station that wants to connect replies inside the window with an answer frame (Section 5.8). The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use. The answering station sends it at the level its own measurement of the beacon supports (Section 5.2), or slower. If several stations reply, each picks a random slot within the window to reduce collisions, and the beaconing station chooses one.
+A station that wants to connect replies inside the window with an answer frame (Section 5.8), sent at L0 because the answering station has no measurement yet of the path in its own direction. The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use. If several stations reply, each picks a random slot within the window to reduce collisions, and the beaconing station chooses one. Slot rules: **TBD**.
 
-### 6.3 Negotiation and lock
+### 6.3 Lock, speed and turns
 
-- The beaconing station completes the lock by sending an acknowledgment frame with status 3, carrying the link number (Section 4.2) and its report of how the answer was received. Both stations are then in the LOCKED state.
-- **Each direction has its own speed level.** A station sends at the level its partner most recently asked for in a channel report, or slower; it never sends faster. Because every frame states its own level, the two ends cannot fall out of step.
-- The receiving station decides the level it asks for from its own measurements, by the rule of Section 5.2, using the band's starting profile (Section 6.6) until it has measurements of its own.
-- From then on frames between the pair carry the link number and keep their own session timing, set by the handshake.
+- **Lock.** The beaconing station completes the lock by sending an acknowledgment frame with status 3 (part number 0), carrying the link number and its report of how the answer was received. Both stations are then in the LOCKED state. An answering station that misses this frame but hears any frame with its link number is locked all the same.
+- **Each direction has its own speed level.** A station sends at the level its partner most recently asked for, or slower; it never sends faster. The partner asks in the "wanted level" field of every channel report and of every link frame. Because every frame states its own level, the two ends cannot fall out of step.
+- **The receiving station decides** the level it asks for from its own measurements, by the rule of Section 5.2, guided by the weakest of its recent readings.
+- **Turns.** Only the station holding the turn starts an exchange. The beaconing station holds it first. A station with nothing left to send offers the turn with a status-3 acknowledgment, part number 1. The partner answers by sending a message frame, which takes the turn, or with a status-3 acknowledgment, part number 0, which declines it.
+- **If both stations find themselves sending** (after a lost frame), the station that beaconed carries on and the station that answered gives way.
+- Frames between the pair keep their own session timing, set by the handshake.
 
 ### 6.4 Lock states
 
@@ -285,19 +288,23 @@ A station that wants to connect replies inside the window with an answer frame (
 |---|---|---|
 | LOCKED | Link healthy | Conditions slip → DEGRADED; identification frame with the end-of-contact flag sent or received → RELEASED |
 | DEGRADED | Errors or SNR falling | Frames clean again → LOCKED; sustained loss → REACQUIRE |
-| REACQUIRE | Sending short sync bursts at L0 using the last known offset, timing and level | Sync regained → LOCKED; timeout → RELEASED |
+| REACQUIRE | Sending probes at L0 (Section 6.5) | Probe answered → LOCKED; 4 probes unanswered → RELEASED |
 | RELEASED | Session over | Station returns to beaconing or listening |
 
-A single bad frame never drops the lock. Timeouts and thresholds: **TBD**.
+A single bad frame never drops the lock.
 
-### 6.5 Acknowledgment and speed changes
+### 6.5 Acknowledgment, speed changes and recovery
 
-- Every message frame is answered with an acknowledgment frame (Section 5.8): received correctly, send again, or already have it. Each acknowledgment carries the receiver's channel report for that frame, including the level it wants next.
-- A frame that failed is sent again, and the receiver combines the copies (Section 5.6). An acknowledgment that is not heard is treated as a failure; the frame is sent again and a receiver that already has it answers "already have it".
-- The receiver asks for a faster level after several clean frames in a row. Count: **TBD**.
-- When its measurements show conditions slipping, the receiver asks for a slower level before frames start failing. After a failed frame it asks for a slower level.
-- An acknowledgment frame with status 3 serves as the keep-alive that holds the lock between messages.
-- Each station sends an identification frame at least every 10 minutes while locked, and as its last transmission of the contact with the end-of-contact flag set.
+The numbers in this section are starting values from simulation, to be tuned on the air.
+
+- Every message frame is answered with an acknowledgment frame (Section 5.8), carrying the receiver's channel report for that frame and the level it wants next.
+- **Asking for a slower level.** When its measurements support less than the current level, the receiver asks for the slower level at once. After a frame that fails its check it asks for one level slower still, and for the frame to be sent again; it combines the copies (Section 5.6).
+- **Asking for a faster level.** After 2 frames in a row received correctly, the receiver asks for a faster level, moving up at most 2 levels at a time.
+- **No reply.** A station that hears no reply sends its frame again one level slower. A receiver that already holds the whole message answers "already have it" (status 2). A station reports a message as delivered only when its acknowledgment has been heard.
+- **Reacquiring.** After 3 transmissions in a row with no reply, or 4 requests to resend the same frame, the station enters REACQUIRE and sends a status-3 acknowledgment with part number 2 at L0, asking for the reply at L0. The partner answers with a status-3 acknowledgment, part number 0. Both then start their measurements afresh and the interrupted exchange resumes. After 4 probes with no reply the lock is RELEASED and the operator is told which messages were not delivered.
+- **Splitting again.** If the level falls while a split message is being sent, so that the next part would exceed the airtime limit (Section 6.8), the sender splits the whole message again for the new level and starts it again under the same message number. A receiver that holds parts of a message and receives a part with a different part count discards the parts it held.
+- **Keep-alive.** When neither station has traffic and the lock is kept open, the station holding the turn offers it again after 120 seconds of silence.
+- **Identification.** Each station sends an identification frame before any other frame once 9 minutes have passed since it last sent its callsign, and as its last transmission of the contact with the end-of-contact flag set. A station that receives the closing identification sends its own in return.
 
 ### 6.6 Band starting profiles
 
@@ -351,7 +358,7 @@ Each station applies the same checks to every message it receives: deliver it if
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
 - The longer beacon carrying the heard list, held-mail list and delivery receipts.
-- Reply window length, timeouts, step-up count and other thresholds.
+- Reply window length and the slot rules when several stations answer one beacon.
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count; hop limit.
 - Message lifetime; how long receipts stay listed.

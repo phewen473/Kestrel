@@ -1,5 +1,15 @@
 # Kestrel specification changelog
 
+## 0.13 (draft) - 18 November 2026
+
+Changes that came out of simulating two stations through a whole contact.
+
+- Link frames now carry the speed level their sender wants from its partner (3 bits). The link number shrinks from 12 bits to 9 to make room, so frame lengths are unchanged. Without this, a station that only sent messages could not tell its partner to slow its acknowledgments.
+- Acknowledgment and identification frames are 3 bits shorter (the 9-bit link number): 48 and 61 field bits.
+- The answer to a beacon is sent at L0. Sent at the level the beacon was heard at, it was lost whenever the return path was the weaker one.
+- Status 2 in an acknowledgment now means the whole message is already held. With status 3, the part number says whether the frame is a plain reply, a turn offer or a probe.
+- Link rules written out with starting values: turns, asking for slower and faster levels, what to do with no reply, reacquiring, splitting a message again when the level falls, keep-alive and identification timing.
+
 ## 0.12 (draft) - 18 November 2026
 
 - Four control frames defined (frame types 2 to 5): beacon, answer, acknowledgment and identification. They use the same chirp pair, header, pilots and interleaver as message frames, with a short body protected by the header's convolutional code.

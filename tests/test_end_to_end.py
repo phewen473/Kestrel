@@ -162,10 +162,11 @@ def test_fading_makes_the_level_choice_more_careful():  # fading-aware limits
 def test_link_frame_carries_link_and_message_numbers():  # frames between two locked stations
     link = link_id("KO4WSC", "W1AW")  # the pair's short link number
     rng = np.random.default_rng(901)  # repeatable random source
-    heard = run_channel(build_frame(SHORT, 3, link=link, msg_id=4242), -6.0, rng, offset_hz=-5.0)  # send through noise
+    heard = run_channel(build_frame(SHORT, 3, link=link, msg_id=4242, want_level=2), -6.0, rng, offset_hz=-5.0)  # send through noise
     result = receive(heard)  # decode
     assert result.ok and result.text == SHORT  # the text arrives
-    assert (result.frame_type, result.link, result.msg_id) == (0, link, 4242)  # and so do the frame type, link number and message number
+    assert (result.frame_type, result.link, result.msg_id, result.want_level) == (0, link, 4242, 2)  # and so do the frame type, link number, message number and wanted level
+    assert 0 <= link < 512  # the link number is 9 bits
     assert link_id("W1AW", "KO4WSC") != link  # the number depends on who beaconed and who answered
 
 

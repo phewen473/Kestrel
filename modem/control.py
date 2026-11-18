@@ -19,7 +19,7 @@ from .params import (  # frame format numbers
 
 ACK_OK = 0  # acknowledgment status: frame received correctly
 ACK_RESEND = 1  # acknowledgment status: frame failed its check; send it again (the copies will be combined)
-ACK_HAVE_IT = 2  # acknowledgment status: this message was already received or delivered; do not send it again
+ACK_HAVE_IT = 2  # acknowledgment status: the whole of this message is already held or delivered here; stop sending it
 ACK_LINK = 3  # acknowledgment status: no message is referred to; the frame confirms or keeps alive the link and carries a fresh report
 FIELDS = "ABCDEFGHIJKLMNOPQR"  # the 18 letters used for the first two characters of a grid locator
 
@@ -107,14 +107,14 @@ def pack_answer(dest, origin, report, levels, mail_check=False):  # answer field
     return np.concatenate([call_to_bits(dest), call_to_bits(origin), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, report, levels, flags
 
 
-def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 51 bits
+def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 48 bits
     """Return the body bits of an acknowledgment for one frame of one message."""
     if not (0 <= link < (1 << LINK_ID_BITS) and 0 <= msg_id < (1 << MSG_ID_BITS) and 0 <= part < (1 << PART_BITS) and 0 <= status < (1 << ACK_STATUS_BITS)):  # every number must fit its field
         raise ValueError("acknowledgment field out of range")  # refuse nonsense
     return np.concatenate([int_to_bits(link, LINK_ID_BITS), int_to_bits(msg_id, MSG_ID_BITS), int_to_bits(part, PART_BITS), int_to_bits(status, ACK_STATUS_BITS), pack_report(report)])  # link, message, part, status, report
 
 
-def pack_ident(call, link, final=False):  # identification fields -> 64 bits
+def pack_ident(call, link, final=False):  # identification fields -> 61 bits
     """Return the body bits of a station identification; `final` marks the end of the contact."""
     if not 0 <= link < (1 << LINK_ID_BITS):  # the link number must fit its field
         raise ValueError("link number out of range")  # refuse nonsense

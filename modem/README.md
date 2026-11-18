@@ -37,7 +37,7 @@ Every frame's body starts with an address block. There are two kinds of frame:
 
 | Kind | Used for | Address block |
 |---|---|---|
-| Link frame | Messages between two stations that hold a lock | 28 bits: a 12-bit link number for the pair, and a 16-bit message number |
+| Link frame | Messages between two stations that hold a lock | 28 bits: a 9-bit link number for the pair, the speed level the sender wants from its partner, and a 16-bit message number |
 | Fully addressed frame | Traffic outside a lock, and mail being held, relayed or delivered | 120 bits: destination callsign, origin callsign, message number, relay count, remaining lifetime |
 
 - A callsign is up to 9 characters (letters, digits, `/` and `-`) packed into 48 bits, so `KO4WSC/MM` or `VP8/G4ABC` fit.
@@ -59,10 +59,10 @@ Four short frames set up and run a link. They look like message frames on the ai
 |---|---|---|---|---|
 | Beacon | "Here I am": callsign, grid locator, speed levels, whether it takes answers, mail-check flag, whether it holds mail | 28 s | 8 s | 3.5 s |
 | Answer | "I hear you": both callsigns, a report of how the beacon was received, the answerer's speed levels | 37 s | 10 s | 4 s |
-| Acknowledgment | "Got it", "send it again" or "already have it" for one frame of one message, with a channel report. With no message named it confirms or keeps alive the lock | 24 s | 7 s | 3.3 s |
-| Identification | The station's callsign, sent every 10 minutes in a lock and at the end of a contact | 27 s | 8 s | 3.4 s |
+| Acknowledgment | "Got it", "send it again" or "already have the whole message", with a channel report. With no message named it confirms the lock, offers the turn, or asks "are you still there?" | 24 s | 7 s | 3.2 s |
+| Identification | The station's callsign, sent every 10 minutes in a lock and at the end of a contact | 26 s | 7.5 s | 3.4 s |
 
-Every answer and acknowledgment carries a **channel report** (18 bits): the SNR, the fading index, the frequency offset, and the speed level the receiver wants the sender to use next. That last field is how the speed adapts: the station that hears the signal decides, and the sender follows.
+Every answer and acknowledgment carries a **channel report** (18 bits): the SNR, the fading index, the frequency offset, and the speed level the receiver wants the sender to use next. That last field is how the speed adapts: the station that hears the signal decides, and the sender follows. Message frames carry the wanted level too, so a station that is only sending can still slow its partner's acknowledgments.
 
 ```
 build_beacon("KO4WSC", "EM92", mail_check=True)                                    # level 0 unless told otherwise
@@ -130,7 +130,7 @@ All of these are now written into the specification (sections 4 and 5).
 | Interleaver | Golden-ratio step formula over the whole frame |
 | Checks | CRC-8 on the header, CRC-16 on the body |
 | Header fields | type (3 bits), level (3), size class (2), part number (3), part count (3), compressed (1), spare (1) |
-| Address block | link frame: link number (12 bits), message number (16); fully addressed frame: destination (48), origin (48), message number (16), relays (3), lifetime (5) |
+| Address block | link frame: link number (9 bits), wanted level (3), message number (16); fully addressed frame: destination (48), origin (48), message number (16), relays (3), lifetime (5) |
 
 ## Files
 
@@ -201,4 +201,4 @@ The steady column is where every test frame decoded. The fading columns are wher
 
 ## Not built yet
 
-A fifth, faster level (L5, which needs a different waveform), the link layer itself (the rules that use these frames: beacon and answer timing, lock states, speed adaptation), nets and store-and-forward.
+A fifth, faster level (L5, which needs a different waveform). The link rules that use these frames are in `link/`. Nets and store-and-forward are not built yet.

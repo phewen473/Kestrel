@@ -54,9 +54,9 @@ def is_group(call):  # callsign or group name?
 def link_id(first, second):  # the short number two locked stations put in every frame
     """Return the link number for the pair of stations: `first` is the one that beaconed, `second` the one that answered.
 
-    It is the lowest 12 bits of the CRC-16 of the two addresses' 96 bits.
+    It is the lowest 9 bits of the CRC-16 of the two addresses' 96 bits.
     The same pair always gets the same number, so nothing extra has to be
     agreed when the link is set up.
     """
     check = crc16(np.concatenate([call_to_bits(first), call_to_bits(second)]))  # 16 check bits over both addresses
-    return bits_to_int(check) & ((1 << LINK_ID_BITS) - 1)  # keep the lowest 12 bits
+    return bits_to_int(check) & ((1 << LINK_ID_BITS) - 1)  # keep the lowest 9 bits

@@ -24,8 +24,9 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 | `docs/spec/tables/` | Tables the spec refers to: the error-correction check lists and the compression codes |
 | `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
 | `modem/` | Modem prototype (Python reference): chirp, speed levels, header, LDPC error correction, text compression, receiver |
+| `link/` | Link layer (Python reference): the rules that make, run and close a contact, and a two-station simulation |
 | `tests/` | Automated tests |
-| `tools/` | Scripts to run by hand: a one-frame demo, the SNR sweeps and the spec table writer |
+| `tools/` | Scripts to run by hand: a one-frame demo, a two-station contact demo, the SNR sweeps and the spec table writer |
 | `results/` | Measured results: decode rate against SNR, and a picture of the signal |
 | `LICENSE`, `docs/LICENSE-CC-BY-4.0.txt`, `NOTICE` | License texts and the attribution notice |
 
@@ -40,6 +41,7 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt        (Windows: .venv\Scripts\pip install -r requirements.txt)
 .venv/bin/python -m pytest -q                    (runs the tests; takes a few seconds)
 .venv/bin/python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
+.venv/bin/python tools/link_demo.py --scenario slip      (two stations hold a contact while conditions fall away and return)
 ```
 
 The demo sends one message through the simulated channel, decodes it, and writes a sound file and a waterfall picture into `results/`.
@@ -53,7 +55,8 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 4 is done (18 November 2026):** the receiver now measures fading as well as signal strength, and the level choice has a second, more careful set of limits for fading signals (spec v0.9).
 - **Milestone 5 is done (18 November 2026):** addresses and message numbers (spec v0.10). Every frame now says who it is for and which message it belongs to. Frames grew slightly. On a steady signal 200 characters now go as one 16-second frame at -7 dB or better, 31 seconds down to -10 dB, 60 seconds down to -12 dB, 89 seconds down to -14 dB, and four 80-second parts below that. On a fading signal the same steps come at +1, -2, -7 and -8 dB.
 - **Milestone 6 is done (18 November 2026):** the control frames (spec v0.12): beacon, answer, acknowledgment and identification, with an 18-bit channel report that tells the sender which speed level to use next. An acknowledgment takes 3 seconds at the fastest level and 24 at the slowest.
-- Next: the link layer rules that use these frames (beacon and answer timing, lock states, speed adaptation), tested with two simulated stations.
+- **Milestone 7 is done (18 November 2026):** the link rules (spec v0.13), run as two simulated stations. A contact goes beacon, answer, lock, messages both ways, close. Each direction runs at its own speed, set by the station that hears it. In simulation the link stepped from the fastest level to the slowest and back through a 19 dB slide without losing a frame, found its partner again after a 95-second gap, and delivered every message once in 36 fading contacts. See `link/README.md`.
+- Next: several stations answering one beacon, then nets and store-and-forward.
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
@@ -83,7 +86,7 @@ Questions and comments are welcome through this repository's Issues.
 _README last updated 2026-11-18._ The sections above are the public description and were left as they were; the notes below are for the project owner.
 
 ## What it is
-Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.12) and a Python prototype of the modem and an HF channel simulator.
+Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per transmission, with the two stations negotiating speed automatically from noise, conditions and band. This repo holds the spec (draft v0.13) and a Python prototype of the modem and an HF channel simulator.
 
 ## Where it lives
 - Folder: the author's development PC.
@@ -109,11 +112,12 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.12 (draft), 18 November 2026. Milestones 1 to 6 of the prototype done.
+- Spec version 0.13 (draft), 18 November 2026. Milestones 1 to 7 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Milestone 7 and spec v0.13: link rules and the two-station simulation.
 - Milestone 6 and spec v0.12: control frames (beacon, answer, acknowledgment, identification).
 - Spec v0.11: unattended mail holders operate under 97.221(b).
 - Milestone 5 and spec v0.10: addresses and message numbers.
@@ -126,7 +130,7 @@ Last commits (all 2026-11-18):
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): the link layer (beacon, answer, negotiation, acknowledgments). Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): several stations answering one beacon, then nets and store-and-forward. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
@@ -136,8 +140,9 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `sim/channel.py` - HF channel simulator.
 - `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
 - `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `address.py`, `control.py`, `ldpc.py`, `compress.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
-- `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`).
-- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `make_spec_tables.py`.
+- `link/` - link layer (`station.py`, `adapt.py`, `simulate.py`, `params.py`); `link/README.md` has the rules and what the simulation showed.
+- `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`, `test_link.py`).
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `link_demo.py`, `make_spec_tables.py`.
 - `results/` - sweep CSVs and charts.
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 

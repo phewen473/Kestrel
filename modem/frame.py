@@ -30,7 +30,7 @@ from .mfsk import (  # tone waveform
 from .params import (  # frame format numbers
     ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CHIRP_SAMPLES, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
     FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS,  # (continued)
-    HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
+    HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LEVEL_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
     MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
 )  # end of the import list
 from .text import bits_to_text, choose_packing, text_to_bits  # message <-> bits
@@ -113,14 +113,14 @@ def _body_symbols(data_bits, layout, is_control=False):  # body bits -> the tone
     return body_syms  # pilots and data tones, in sending order
 
 
-def _address_block(frame_type, link, msg_id, dest, origin, hops, life_hours):  # the addressing at the start of the body
+def _address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours):  # the addressing at the start of the body
     """Return the address block bits: 28 for a link frame, 120 for a fully addressed frame."""
     if not 0 <= msg_id < (1 << MSG_ID_BITS):  # the message number must fit its field
         raise ValueError("message number out of range")  # refuse nonsense
     if frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
-        if not 0 <= link < (1 << LINK_ID_BITS):  # the link number must fit its field
-            raise ValueError("link number out of range")  # refuse nonsense
-        return np.concatenate([int_to_bits(link, LINK_ID_BITS), int_to_bits(msg_id, MSG_ID_BITS)])  # link number, then message number
+        if not 0 <= link < (1 << LINK_ID_BITS) or not 0 <= want_level < (1 << LEVEL_BITS):  # both numbers must fit their fields
+            raise ValueError("link number or wanted level out of range")  # refuse nonsense
+        return np.concatenate([int_to_bits(link, LINK_ID_BITS), int_to_bits(want_level, LEVEL_BITS), int_to_bits(msg_id, MSG_ID_BITS)])  # link number, wanted level, message number
     life = -(-int(life_hours) // LIFE_UNIT_HOURS)  # remaining lifetime in two-hour steps, rounded up
     if not 0 <= hops < (1 << HOP_BITS) or not 0 <= life < (1 << LIFE_BITS):  # both counters must fit their fields
         raise ValueError("hop count or lifetime out of range")  # refuse nonsense
@@ -133,13 +133,14 @@ def _address_block(frame_type, link, msg_id, dest, origin, hops, life_hours):  #
     ])  # end of the address block
 
 
-def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, origin=None, hops=0, life_hours=48):  # the transmitter
+def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, origin=None, hops=0, life_hours=48, want_level=0):  # the transmitter
     """Return the audio (floats between -1 and 1) of a frame carrying `text`.
 
     `part` and `parts` say which piece of a split message this frame is;
     leave them alone for a message sent whole. `msg_id` is the origin's
     number for the message. With no `dest`, the frame is a link frame and
-    carries the short `link` number of the two locked stations. With
+    carries the short `link` number of the two locked stations and
+    `want_level`, the speed level the sender asks its partner to use. With
     `dest` and `origin` (callsigns or group names), it is a fully
     addressed frame that also carries `hops` (relays so far) and
     `life_hours` (how long it may still be kept); its longer address
@@ -155,7 +156,7 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     layout = body_layout(size_class)  # shape of the body for that size
     header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, size_class, part, parts, compressed)))  # coded header as tones
     header_syms = np.tile(header_syms, HEADER_REPEAT)  # send the header twice
-    data_bits = np.concatenate([_address_block(frame_type, link, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
+    data_bits = np.concatenate([_address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
     return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # chirps, then all the tones
@@ -213,6 +214,7 @@ class RxResult:  # the receiver's report
     frame_type: int = -1  # kind of frame read from the header (0 = link frame, 1 = fully addressed)
     msg_id: int = -1  # the origin's number for the message
     link: int = -1  # short link number (link frames only)
+    want_level: int = -1  # the speed level the sender asks its partner to use (link frames only)
     dest: str = ""  # destination callsign or group name (fully addressed frames only)
     origin: str = ""  # originating callsign (fully addressed frames only)
     hops: int = 0  # relays so far (fully addressed frames only)
@@ -295,7 +297,8 @@ def _read_address_block(result, bits):  # unpack the addressing at the start of 
     """Put the address fields carried by `bits` into `result`; raise ValueError when an address is not valid."""
     if result.frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
         result.link = bits_to_int(bits[:LINK_ID_BITS])  # the short link number
-        result.msg_id = bits_to_int(bits[LINK_ID_BITS:])  # the message number
+        result.want_level = bits_to_int(bits[LINK_ID_BITS:LINK_ID_BITS + LEVEL_BITS])  # the level the sender asks its partner to use
+        result.msg_id = bits_to_int(bits[LINK_ID_BITS + LEVEL_BITS:])  # the message number
         return  # nothing more in a link frame
     result.dest = bits_to_call(bits[:CALL_BITS])  # who the message is for
     result.origin = bits_to_call(bits[CALL_BITS:2 * CALL_BITS])  # who wrote it

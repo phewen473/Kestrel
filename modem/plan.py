@@ -31,7 +31,7 @@ def pick_level(snr_db, margin_db=2.0, fading=False):  # rule 1
 
 
 def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_S, margin_db=2.0, fading=False, addressed=False):  # rules 1 to 4
-    """Return a list of transmissions for `text`, one dict per frame.
+    """Return a list of transmissions for `text`, one dict per frame, choosing the level from the SNR.
 
     Each dict has: text (what this frame carries), level, part, parts,
     seconds (airtime) and extended (True when the frame needs the 90-second allowance).
@@ -39,8 +39,12 @@ def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_
     `addressed` when the frames will carry full destination and origin
     addresses, which leaves a little less room for text in each frame.
     """
-    frame_type = FRAME_TYPE_ADDRESSED if addressed else FRAME_TYPE_LINK  # which kind of frame the airtime is worked out for
-    level = pick_level(snr_db, margin_db, fading)  # rule 1: fastest level the conditions support
+    return plan_at_level(text, pick_level(snr_db, margin_db, fading), cap_s, poor_cap_s, addressed)  # rule 1 picks the level; the rest is the same for any level
+
+
+def plan_at_level(text, level, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_S, addressed=False):  # rules 2 to 4, for a level already chosen
+    """Return a list of transmissions for `text` at speed level `level`, one dict per frame (see plan_message)."""
+    frame_type = FRAME_TYPE_ADDRESSED if addressed else FRAME_TYPE_LINK  # which kind of frame the text room is worked out for
     try:  # see whether the message fits one frame
         whole = frame_seconds(pick_size_class(text, frame_type), level)  # airtime if the message is sent whole
     except ValueError:  # it does not fit even the largest frame (a long, fully addressed message)
@@ -58,7 +62,7 @@ def plan_message(text, snr_db, cap_s=AIRTIME_CAP_S, poor_cap_s=AIRTIME_POOR_CAP_
         pieces.append(rest[:take])  # that is the next piece
         rest = rest[take:]  # carry on with what is left
     if len(pieces) > MAX_PARTS:  # more pieces than the header can number
-        raise ValueError("message needs too many parts")  # refuse (cannot happen with 200 characters and 50-character frames)
+        raise ValueError("message needs too many parts")  # refuse (cannot happen with 200 characters)
     plan = []  # the list of frames to send
     for part, piece in enumerate(pieces):  # one frame per piece
         seconds = frame_seconds(pick_size_class(piece, frame_type), level)  # its airtime

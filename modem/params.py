@@ -34,7 +34,7 @@ FRAME_TYPE_LINK = 0  # header value: a message between two locked stations, mark
 FRAME_TYPE_ADDRESSED = 1  # header value: a message carrying full destination and origin addresses
 CALL_CHARS = 9  # longest callsign or group name, in characters
 CALL_BITS = 48  # bits used to send one address
-LINK_ID_BITS = 12  # bits of the short link number shared by two locked stations
+LINK_ID_BITS = 9  # bits of the short link number shared by two locked stations
 MSG_ID_BITS = 16  # bits of the message number chosen by the originating station
 HOP_BITS = 3  # bits of the relay counter (how many stations have passed the message on)
 LIFE_BITS = 5  # bits of the remaining lifetime, counted in units of two hours
@@ -58,10 +58,10 @@ REPORT_BITS = SNR_BITS + FADE_BITS + OFFSET_BITS + LEVEL_BITS  # a whole channel
 CONTROL_BITS = {  # body length of each control frame, before its check value
     FRAME_TYPE_BEACON: CALL_BITS + GRID_BITS + LEVEL_MASK_BITS + 4,  # callsign, locator, levels, four flags: 75 bits
     FRAME_TYPE_ANSWER: 2 * CALL_BITS + REPORT_BITS + LEVEL_MASK_BITS + 2,  # two callsigns, report, levels, two flags: 124 bits
-    FRAME_TYPE_ACK: LINK_ID_BITS + MSG_ID_BITS + PART_BITS + ACK_STATUS_BITS + REPORT_BITS,  # link, message, part, verdict, report: 51 bits
-    FRAME_TYPE_IDENT: CALL_BITS + LINK_ID_BITS + 4,  # callsign, link number, four flags: 64 bits
+    FRAME_TYPE_ACK: LINK_ID_BITS + MSG_ID_BITS + PART_BITS + ACK_STATUS_BITS + REPORT_BITS,  # link, message, part, verdict, report: 48 bits
+    FRAME_TYPE_IDENT: CALL_BITS + LINK_ID_BITS + 4,  # callsign, link number, four flags: 61 bits
 }  # end of the table
-ADDRESS_BITS = {FRAME_TYPE_LINK: LINK_ID_BITS + MSG_ID_BITS, FRAME_TYPE_ADDRESSED: 2 * CALL_BITS + MSG_ID_BITS + HOP_BITS + LIFE_BITS}  # size of the address block at the start of the body: 28 or 120 bits
+ADDRESS_BITS = {FRAME_TYPE_LINK: LINK_ID_BITS + LEVEL_BITS + MSG_ID_BITS, FRAME_TYPE_ADDRESSED: 2 * CALL_BITS + MSG_ID_BITS + HOP_BITS + LIFE_BITS}  # size of the address block at the start of the body: 28 or 120 bits
 MAX_PARTS = 8  # a message can be split into at most this many parts (3 bits)
 
 AIRTIME_CAP_S = 60.0  # default longest transmission, in seconds

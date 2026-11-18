@@ -5,4 +5,4 @@ from .control import ACK_HAVE_IT, ACK_LINK, ACK_OK, ACK_RESEND, ChannelReport  #
 
 from .frame import RxResult, body_layout, build_ack, build_answer, build_beacon, build_control, build_frame, build_ident, control_layout, control_seconds, frame_seconds, receive  # transmitter, receiver and frame facts
 from .levels import FADE_INDEX_LIMIT, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB  # the speed levels and their limits
-from .plan import build_plan, is_fading, join_parts, pick_level, plan_message  # level choice, airtime limits and splitting
+from .plan import build_plan, is_fading, join_parts, pick_level, plan_at_level, plan_message  # level choice, airtime limits and splitting
