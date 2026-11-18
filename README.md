@@ -25,8 +25,9 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 | `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
 | `modem/` | Modem prototype (Python reference): chirp, speed levels, header, LDPC error correction, text compression, receiver |
 | `link/` | Link layer (Python reference): the rules that make, run and close a contact, and a two-station simulation |
+| `live/` | Kestrel on real audio: a continuous receiver, sound-card input and output, rig control through Hamlib's rigctld, and a live station |
 | `tests/` | Automated tests |
-| `tools/` | Scripts to run by hand: a one-frame demo, a two-station contact demo, the SNR sweeps and the spec table writer |
+| `tools/` | Scripts to run by hand: a one-frame demo, a two-station contact demo, the live sound-card tools, the SNR sweeps and the spec table writer |
 | `results/` | Measured results: decode rate against SNR, and a picture of the signal |
 | `LICENSE`, `docs/LICENSE-CC-BY-4.0.txt`, `NOTICE` | License texts and the attribution notice |
 
@@ -57,7 +58,8 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 6 is done (18 November 2026):** the control frames (spec v0.12): beacon, answer, acknowledgment and identification, with an 18-bit channel report that tells the sender which speed level to use next. An acknowledgment takes 3 seconds at the fastest level and 24 at the slowest.
 - **Milestone 7 is done (18 November 2026):** the link rules (spec v0.13), run as two simulated stations. A contact goes beacon, answer, lock, messages both ways, close. Each direction runs at its own speed, set by the station that hears it. In simulation the link stepped from the fastest level to the slowest and back through a 19 dB slide without losing a frame, found its partner again after a 95-second gap, and delivered every message once in 36 fading contacts. See `link/README.md`.
 - **Milestone 8 is done (18 November 2026):** the reply window (spec v0.14). When several stations answer one beacon and collide, the next beacon opens four reply slots and each station picks one at random; the caller works the strongest and beacons again for the rest. In simulation, groups of two to five answering stations were all worked.
-- Next: store-and-forward, then a sound-card version for the first on-air test.
+- **Milestone 9 is done (18 November 2026):** Kestrel on real audio. A continuous receiver, sound-card input and output, transmitter keying, and rig control (frequency, mode, transmit) through Hamlib's rigctld, the rig-control engine WSJT-X uses. Two live stations on one PC, joined by virtual audio cables, completed a whole contact in real time. Not yet tried with a real radio. See `live/README.md`.
+- Next: a first test with a real radio, then store-and-forward.
 - No on-air testing will happen until the spec describing that version of the signal is published here.
 
 ## Development
@@ -99,7 +101,7 @@ Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per t
 
 ## Language and tools
 - Python 3.10 or newer; the local `.venv` uses Python 3.12.10.
-- Packages (`requirements.txt`): numpy >= 1.26, scipy >= 1.11, matplotlib >= 3.8, pytest >= 8.0.
+- Packages (`requirements.txt`): numpy >= 1.26, scipy >= 1.11, matplotlib >= 3.8, pytest >= 8.0; for the live tools also sounddevice >= 0.4 and pyserial >= 3.5.
 - Planned, not started: C++ modem core with CMake and a C interface, Qt operator program, Hamlib, PortAudio (see Development above).
 
 ## How to build
@@ -113,11 +115,12 @@ Nothing to compile yet. Create the environment once:
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.14 (draft), 18 November 2026. Milestones 1 to 8 of the prototype done.
+- Spec version 0.14 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Milestone 9: live sound-card tools, continuous receiver, rig control through rigctld.
 - Milestone 8 and spec v0.14: reply window for several answering stations.
 - Milestone 7 and spec v0.13: link rules and the two-station simulation.
 - Milestone 6 and spec v0.12: control frames (beacon, answer, acknowledgment, identification).
@@ -132,7 +135,7 @@ Last commits (all 2026-11-18):
 - Milestone 1: HF channel simulator and first modem slice (L0).
 - Credit P. H. Ewen (KO4WSC) as original author; licences (Apache-2.0 code, CC BY 4.0 docs), NOTICE and toolchain added.
 
-Next steps (from "Where things stand" above): store-and-forward, then a sound-card version for the first on-air test; nets and L5 after that. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
+Next steps (from "Where things stand" above): first test with a real radio, then store-and-forward; nets and L5 after that. Values marked TBD in the spec still need agreeing. Open items are also listed in `docs/spec/kestrel-spec.md`.
 
 Design wishes: beacon announces presence, a listener chooses to answer, then the pair negotiate and lock; nets are optional, with a backup net control "partner" that takes over; store-and-forward considered; must keep a good lock in poor conditions.
 
@@ -143,8 +146,9 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
 - `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `address.py`, `control.py`, `ldpc.py`, `compress.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
 - `link/` - link layer (`station.py`, `adapt.py`, `simulate.py`, `params.py`); `link/README.md` has the rules and what the simulation showed.
-- `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`, `test_link.py`).
-- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `link_demo.py`, `make_spec_tables.py`.
+- `live/` - real audio (`listener.py`, `audio.py`, `ptt.py`, `rig.py`, `runner.py`); `live/README.md` explains the live tools and the no-radio cable test.
+- `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`, `test_link.py`, `test_live.py`).
+- `tools/` - `demo.py`, `snr_sweep.py`, `level_sweep.py`, `fading_sweep.py`, `link_demo.py`, `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py`, `make_spec_tables.py`.
 - `results/` - sweep CSVs and charts.
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 

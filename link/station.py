@@ -100,6 +100,7 @@ class Station:  # the link rules for one station
         self.last_ident = -1e9  # when this station last sent its callsign
         self.last_activity = 0.0  # when this station last sent or heard a frame
         self.log = []  # plain-English notes on what happened, for the operator and for tests
+        self.reply_margin = REPLY_MARGIN_S  # extra time to wait for a reply beyond its own length (a live station allows more)
 
     # ---- starting up ----
 
@@ -174,7 +175,7 @@ class Station:  # the link rules for one station
     def _send(self, now, audio, kind, level, expects=None, reply_s=0.0, note=""):  # prepare one transmission
         tx = Transmission(audio, kind, level, note)  # the frame and its description
         self.pending = expects  # what reply to wait for, if any
-        self.deadline = now + tx.seconds + TURNAROUND_S + reply_s + REPLY_MARGIN_S  # how long to wait for it
+        self.deadline = now + tx.seconds + TURNAROUND_S + reply_s + self.reply_margin  # how long to wait for it
         self.last_activity = now + tx.seconds  # this station was last active when the frame ends
         return tx  # hand it to whoever runs the radio
 
@@ -483,7 +484,7 @@ class Station:  # the link rules for one station
         self.candidates = []  # a new reply window starts empty
         audio = build_beacon(self.call, self.grid, self.levels, level=0, wide=self.wide)  # at the slowest level, to reach the furthest
         window = (WIDE_SLOTS if self.wide else 1) * REPLY_SLOT_S  # how long to listen for answers
-        return self._send(now, audio, "beacon", 0, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window
+        return self._send(now, audio, "beacon", 0, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window (plus any extra margin a live station allows)
 
     def _timed_out(self, now):  # the reply being waited for did not come
         waited_for = self.pending  # what was expected

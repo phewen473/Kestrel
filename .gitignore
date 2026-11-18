@@ -10,3 +10,5 @@ __pycache__/
 .pytest_cache/
 # Demo sound file (recreate with tools/demo.py)
 results/demo.wav
+# scratch files from live sound-card tests
+.livetest/

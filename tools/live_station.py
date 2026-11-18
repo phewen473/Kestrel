@@ -1,0 +1,81 @@
+"""Run a live Kestrel station on a sound device: beacon or listen, lock, pass messages, close.
+
+Run from the repository root:
+
+    python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello from Kestrel"
+    python tools/live_station.py --call W1AW --grid FN31 --listen
+
+--beacon calls for a partner; --listen waits for a beacon and answers it.
+--send (may be repeated) queues messages for the partner.
+--in and --out name the sound devices (a number, or part of a name; see tools/live_devices.py).
+--ptt none|rig|cat|rts|dtr keys the transmitter; --rig host:port with --freq (kHz) and --mode tunes the
+radio through Hamlib's rigctld; --port and --baud are for the serial methods.
+--stay-on keeps a listening station running for further contacts.
+
+Only transmit where your licence allows, with the published specification matching this program.
+"""
+
+import argparse  # reads the command-line options
+import os  # file paths
+import sys  # lets us add the repository root to the import path
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repository root (one level above tools/)
+sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run as a script
+
+from link import Station  # the link rules  # noqa: E402
+from live import run_station  # the live loop  # noqa: E402
+from live.audio import AudioIn, AudioOut, find_device  # sound-card input and output  # noqa: E402
+from live.ptt import Ptt  # transmitter keying  # noqa: E402
+from live.rig import RigCtl  # rig control through Hamlib's rigctld  # noqa: E402
+
+
+def main():  # the script itself
+    """Set up the station and run it."""
+    parser = argparse.ArgumentParser(description="Kestrel live station")  # describe the tool
+    parser.add_argument("--call", required=True, help="your callsign")  # who you are
+    parser.add_argument("--grid", required=True, help="your four-character grid locator")  # where you are
+    role = parser.add_mutually_exclusive_group(required=True)  # exactly one of the two roles
+    role.add_argument("--beacon", action="store_true", help="call for a partner")  # the calling station
+    role.add_argument("--listen", action="store_true", help="wait for a beacon and answer it")  # the answering station
+    parser.add_argument("--send", action="append", default=[], help="a message for the partner (may be repeated)")  # traffic
+    parser.add_argument("--in", dest="source", default=None, help="input device: a number, or part of its name")  # where to listen
+    parser.add_argument("--out", dest="sink", default=None, help="output device: a number, or part of its name")  # where to play
+    parser.add_argument("--gain", type=float, default=0.5, help="transmit audio level, 0 to 1")  # how loud
+    parser.add_argument("--ptt", default="none", choices=["none", "rig", "cat", "rts", "dtr"], help="how to key the transmitter (rig = through rigctld)")  # keying method
+    parser.add_argument("--rig", default=None, help="address of Hamlib's rigctld, host:port (for example 127.0.0.1:4532)")  # rig control
+    parser.add_argument("--freq", type=float, default=None, help="dial frequency to tune the radio to, in kHz (needs --rig)")  # where to tune
+    parser.add_argument("--mode", default="PKTUSB", help="radio mode to select when --freq is given (default PKTUSB: upper sideband, data)")  # which mode
+    parser.add_argument("--port", default=None, help="serial port for --ptt cat, rts or dtr")  # which port
+    parser.add_argument("--baud", type=int, default=38400, help="serial speed for --ptt cat")  # port speed
+    parser.add_argument("--stay-on", action="store_true", help="after a contact, go back to listening")  # keep running
+    parser.add_argument("--seconds", type=float, default=None, help="stop after this many seconds")  # optional time limit
+    args = parser.parse_args()  # read the options
+    station = Station(args.call, args.grid)  # the link rules for this station
+    if args.beacon:  # the calling station
+        station.beacon()  # it beacons
+    else:  # the answering station
+        station.listen()  # it listens
+    for text in args.send:  # the operator's messages
+        station.queue(text)  # into the outbox
+    rig = RigCtl(args.rig) if args.rig else None  # connect to rigctld when asked
+    if rig is not None and args.freq is not None:  # tune the radio
+        rig.set_mode(args.mode)  # the mode first
+        rig.set_frequency(args.freq * 1000.0)  # then the frequency, given in kHz
+        print(f"radio tuned to {rig.frequency() / 1000.0:.3f} kHz, {args.mode}", flush=True)  # confirm what the radio reports
+    ptt = Ptt(args.ptt, args.port, args.baud, rig=rig)  # the transmit switch
+    source = AudioIn(find_device(args.source, "input"))  # start recording
+    sink = AudioOut(find_device(args.sink, "output"), args.gain)  # the playing side
+    try:  # until the contact ends or Ctrl+C
+        run_station(station, source, sink, ptt, say=lambda line: print(line, flush=True), limit_s=args.seconds, stay_on=args.stay_on)  # the live loop
+    except KeyboardInterrupt:  # Ctrl+C
+        print("stopped by operator", flush=True)  # say so
+    finally:  # always
+        ptt.close()  # make sure the transmitter is off
+        source.close()  # release the sound device
+    print(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting", flush=True)  # the outcome for sent traffic
+    for text in station.inbox:  # everything received
+        print(f"received: {text}", flush=True)  # show it
+
+
+if __name__ == "__main__":  # only when run as a script
+    main()  # go

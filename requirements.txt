@@ -3,3 +3,5 @@ numpy>=1.26  # arrays and FFTs
 scipy>=1.11  # signal-processing helpers and WAV files
 matplotlib>=3.8  # charts and waterfall pictures
 pytest>=8.0  # test runner
+sounddevice>=0.4  # sound-card input and output (live tools only)
+pyserial>=3.5  # keying the transmitter over a serial port (live tools only)

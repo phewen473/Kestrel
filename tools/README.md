@@ -47,6 +47,19 @@ python tools/link_demo.py --scenario slip
 
 Runs two simulated stations through a whole contact (beacon, answer, lock, messages both ways, close) while the radio path changes, prints every transmission and each station's decisions, and writes `results/link_<scenario>.png`. Scenarios: `steady`, `asymmetric` (one direction strong, one weak), `slip` (conditions fall away and come back), `dropout` (the path vanishes for a minute and a half), `fading`, `dead` (the path dies for good), and `group` (three stations answer one beacon and the caller works each in turn).
 
+## live_devices.py, live_monitor.py, live_send.py, live_station.py - Kestrel on a sound card
+
+These four work with real audio and need the `sounddevice` package (and `pyserial` for serial-port keying); both are in `requirements.txt`. See `live/README.md` for how they fit together, rig control, and a no-radio test with audio cables.
+
+```
+python tools/live_devices.py                                           (list the sound devices and their numbers)
+python tools/live_monitor.py --in "USB Audio"                          (receive only: print every Kestrel frame heard)
+python tools/live_send.py --call KO4WSC --grid EM92 --out "USB Audio"  (transmit one beacon)
+python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello"   (a whole contact, in real time)
+```
+
+`live_send.py` and `live_station.py` take `--ptt none|rig|cat|rts|dtr`, `--rig host:port`, `--freq` (kHz), `--mode`, `--port`, `--baud` and `--gain`. Only transmit where your licence allows, with the published specification matching the program.
+
 ## make_spec_tables.py - write the specification's tables
 
 ```
