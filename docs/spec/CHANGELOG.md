@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.3 (draft) - 18 November 2026
+
+- Holding partners: one or more stations may store the same message and confirm to the sender that they hold it.
+- Delivery is fully automatic when a holder hears the destination.
+- First to deliver wins: holders offer the message ID first; a destination that already has it answers "already delivered".
+- Delivery receipts are passed to every holding partner and listed in beacons, so all copies are dropped.
+
 ## 0.2 (draft) - 18 November 2026
 
 - Store-and-forward redesigned for disconnected operation: no always-on station is assumed.
