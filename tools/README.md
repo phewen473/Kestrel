@@ -60,6 +60,7 @@ python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello"  
 
 ```
 python tools/kestrel_panel.py                                          (a small control panel: the same things, with drop-down lists)
+python tools/kestrel_panel.py --profile second                         (a second panel with its own settings, for a second radio on the same computer)
 python tools/live_frequencies.py                                       (show the frequency list; --add and --remove your own)
 ```
 

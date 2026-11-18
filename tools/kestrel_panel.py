@@ -3,6 +3,7 @@
 Run from the repository root:
 
     python tools/kestrel_panel.py
+    python tools/kestrel_panel.py --profile second    (a second panel with its own remembered settings, for a second radio)
 
 Pick a frequency from the drop-down list (Kestrel's meeting frequencies,
 plus any of your own that you add), choose the sound devices, and press
@@ -13,6 +14,7 @@ folder, which Git ignores.
 Only transmit where your licence allows, with the published specification matching this program.
 """
 
+import argparse  # reads the command-line options
 import json  # settings are kept in a small JSON file
 import os  # file paths
 import queue  # carries log lines from the working thread to the window
@@ -273,8 +275,16 @@ class Panel:  # the control panel window
 
 def main():  # the script itself
     """Open the panel."""
+    global SETTINGS_FILE  # a named profile keeps its settings in a file of its own
+    parser = argparse.ArgumentParser(description="Kestrel control panel")  # the command-line reader
+    parser.add_argument("--profile", default="", help="a name for a second set of remembered settings, for running one panel per radio")  # optional profile name
+    profile = "".join(c for c in parser.parse_args().profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
+    if profile:  # a profile was named
+        SETTINGS_FILE = os.path.join(ROOT, "local", f"panel_{profile}.json")  # its own settings file
     root = tk.Tk()  # the window
     Panel(root)  # its contents
+    if profile:  # a profile was named
+        root.title(f"Kestrel - {profile}")  # show which panel this is
     root.mainloop()  # run until closed
 
 
