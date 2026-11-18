@@ -16,7 +16,7 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 - **Bandwidth:** every Kestrel waveform stays within 2.8 kHz on HF.
 - **Content:** plain text. Kestrel never encrypts or obscures message meaning (97.113). Message signing to prove the sender may be added later; it does not hide content.
 - **Identification:** every beacon, connection frame and fully addressed message frame carries the sending or originating station's callsign in plain form (Section 4.2). Frames exchanged inside a lock carry only a short link number, so a locked station also sends its callsign at least every 10 minutes and at the end of the contact (97.119); the frame used for this: **TBD**.
-- **Automatic operation:** unattended relays and mail holders are subject to the message-forwarding and automatic-control rules (97.219, 97.221). A station that holds and delivers mail with no operator present operates under 97.221(b): on HF it stays within the segments that paragraph lists (28.120-28.189, 24.925-24.930, 21.090-21.100, 18.105-18.110, 14.0950-14.0995, 14.1005-14.112, 10.140-10.150, 7.100-7.105 and 3.585-3.600 MHz), or it uses the 6 m and shorter bands. Paragraph (c), which allows unattended replies elsewhere, is limited to 500 Hz and does not fit Kestrel, because every frame's chirp pair is about 2 kHz wide. A station with an operator at the controls is not limited to those segments. This is the author's reading of the rule as published at ecfr.gov; ARRL will be asked to review it.
+- **Automatic operation:** unattended relays and mail holders are subject to the message-forwarding and automatic-control rules (97.219, 97.221). A station that holds and delivers mail with no operator present operates under 97.221(b): on HF it stays within the segments that paragraph lists (28.120-28.189, 24.925-24.930, 21.090-21.100, 18.105-18.110, 14.0950-14.0995, 14.1005-14.112, 10.140-10.150, 7.100-7.105 and 3.585-3.600 MHz), or it uses the 6 m and shorter bands. Paragraph (c), which allows unattended replies elsewhere, is limited to 500 Hz and does not fit Kestrel, because every frame's chirp pair is about 2 kHz wide. A station with an operator at the controls is not limited to those segments. This is the author's reading of the rule as published at ecfr.gov; ARRL has been asked to review it and has not yet replied.
 
 ## 3. Layers
 
@@ -274,7 +274,7 @@ Each station applies the same checks to every message it receives: deliver it if
 - Message splitting: how parts are held and forwarded by holding partners.
 - Beacon size: short hashed message IDs, caps on the held-mail and receipt lists, and which entries go first when a list is full.
 - Storage limits: how much mail a holder will carry in total and per originating station.
-- ARRL review of the 97.221(b) reading in Section 2 for unattended mail holders.
+- ARRL review of the 97.221(b) reading in Section 2 for unattended mail holders (asked; awaiting a reply).
 
 ## 10. Document history
 
