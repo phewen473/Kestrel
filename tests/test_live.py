@@ -107,7 +107,7 @@ def test_rig_control_speaks_rigctld():  # tuning and keying through Hamlib's rig
     assert radio["tx"] == 1  # the radio is keyed
     ptt.unkey()  # receive
     assert radio["tx"] == 0  # the radio is unkeyed
-    assert seen[:5] == ["M PKTUSB 0", "F 14108500", "f", "T 1", "T 0"]  # exactly the commands rigctld expects
+    assert seen[:5] == ["M PKTUSB 3000", "F 14108500", "f", "T 1", "T 0"]  # exactly the commands rigctld expects, with the wide receive filter Kestrel needs
     try:  # a command the radio refuses
         rig._set("X 1")  # nonsense
         raised = False  # it should not get here

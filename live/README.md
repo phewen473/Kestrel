@@ -71,10 +71,11 @@ Two things were found and fixed:
 - **The sound card cut off the last fifth of a second of every transmission.** Frames still decoded, because the error correction covered the loss, but the receiver read the missing tones as fading. Each transmission is now followed by half a second of silence.
 - **The static-crash blanker silenced strong signals.** It judged "loud" against the whole recording, so a strong frame in a mostly quiet recording looked like one long crash. It now judges each tenth of a second against its own surroundings.
 
-Three lessons from testing, now built in:
+Four lessons from testing, now built in:
 
 - **Name sound devices, never number them.** Windows renumbers its sound devices whenever one is plugged in or removed (a Bluetooth headset connecting is enough), and a station given numbers then plays into the wrong device. The tools accept part of a device's name, and the control panel stores names.
 - **A station leaves a full second between its own transmissions,** and starts each with a third of a second of silence, so the radio and sound card are settled before the chirp.
+- **Ask the radio for a wide receive filter.** In the first two-radio test the tuned radio heard nothing: rig control had left it on its narrow data filter (600 Hz), which removed the signal. Tuning now asks for a 3000 Hz filter, which Kestrel's 500 to 2500 Hz chirp needs.
 - **A busy computer can lose received audio.** With the control panel and the decoder sharing one computer, the sound card occasionally threw away a little audio that was not collected in time, and one acknowledgment failed its check. The sound card is now opened with generous buffering, and if it still loses audio the station says so in its log.
 
 ## Not done yet

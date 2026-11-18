@@ -51,8 +51,14 @@ class RigCtl:  # a connection to rigctld
         """Tune the radio to `hz` (the dial frequency, in Hz)."""
         self._set(f"F {int(round(hz))}")  # whole hertz
 
-    def set_mode(self, mode="PKTUSB", passband_hz=0):  # choose the radio's mode
-        """Put the radio in `mode` (PKTUSB is upper sideband for data); a passband of 0 leaves the radio's own filter choice."""
+    def set_mode(self, mode="PKTUSB", passband_hz=3000):  # choose the radio's mode
+        """Put the radio in `mode` (PKTUSB is upper sideband for data) with a receive filter `passband_hz` wide.
+
+        Kestrel's chirp spans 500 to 2500 Hz of audio, so the filter must be
+        about 3000 Hz wide. A passband of 0 asks Hamlib for its usual width
+        for the mode, which on some radios is a narrow data filter (600 Hz on
+        an FTDX10) that removes the signal altogether.
+        """
         self._set(f"M {mode} {int(passband_hz)}")  # mode and filter width
 
     def ptt(self, on):  # key or unkey the transmitter
