@@ -64,7 +64,15 @@ python tools/kestrel_panel.py --profile second                         (a second
 python tools/live_frequencies.py                                       (show the frequency list; --add and --remove your own)
 ```
 
-`kestrel_panel.py` keeps a copy of its log in `local/panel.log` (or `local/panel_NAME.log` for a named profile). It shows the station's state in large letters above its log (LISTENING, CALLING, ANSWERING, LOCKED with the partner's callsign and the two speed levels, CONTACT CLOSED). It opens a window with a frequency drop-down list (Kestrel's meeting frequencies plus your own), drop-down lists for the sound devices and keying method, a message box, and buttons for Monitor, Listen, Beacon and Stop. "Add..." puts a frequency of your own on the list. Your settings and frequencies are kept in `local/`, which Git ignores.
+`kestrel_panel.py` is the control panel. How it is laid out:
+
+- **Settings > Rig Information** (menu): callsign and grid locator; the radio type (from Hamlib's list of several hundred), the CAT serial port, its speed and handshake; how the transmitter is keyed (CAT, RTS, DTR or none) and the serial port for RTS or DTR; the sound devices to and from the radio and the transmit audio level. The panel starts and stops Hamlib's `rigctld` itself for the radio chosen, so there is nothing else to run. It looks for `rigctld` on the search path and in a WSJT-X installation; the dialog can also be pointed at the file, or at a rigctld already running.
+- **Frequency list:** Kestrel's meeting frequencies plus your own ("Add..." and "Remove"). Choosing a frequency tunes the radio to it at once, with a 3000 Hz receive filter. A change is refused while a station is on the air.
+- **Status band:** the station's state in large letters. A lock shows as a solid green band naming the partner; trouble holding the link turns it amber, a failure red. Under it, one line gives the partner's signal strength, whether it is steady or fading, the speed level in each direction, and how many messages are waiting and received.
+- **Messages to send / Messages received:** two lists. A message to send shows as waiting, sending, then delivered with the time. A message typed while the station is running goes into the contact in progress.
+- **Activity:** the log in plain words; "Show technical details" shows every measurement and field. The full log is also kept in `local/panel.log` (or `local/panel_NAME.log` for a named profile).
+
+Settings, your own frequencies and the log are kept in `local/`, which Git ignores.
 
 `live_send.py` and `live_station.py` take `--ptt none|rig|cat|rts|dtr`, `--rig host:port`, `--band 40|30|20` (Kestrel's preselected frequency for that band), `--freq` (kHz), `--mode`, `--port`, `--baud` and `--gain`. Only transmit where your licence allows, with the published specification matching the program.
 

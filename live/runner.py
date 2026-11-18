@@ -52,6 +52,23 @@ def status_for(line):  # the station's state, as far as one log line shows it
     return None  # this line changes nothing
 
 
+def plain_line(line):  # a log line as an operator wants to read it
+    """Return `line` without its technical detail, or None if it is detail only.
+
+    The control panel shows these by default and the full lines on request.
+    The seconds-since-start stamp, the field list of a control frame and the
+    frequency offset are dropped; a false frame start is left out altogether.
+    """
+    if "noise briefly looked like" in line:  # a false alarm
+        return None  # of no interest in the plain view
+    text = re.sub(r"^\s*\d+\.\ds\s+", "", line)  # drop the seconds-since-start stamp
+    text = re.sub(r"^[A-Z0-9/-]+: ", "", text)  # drop this station's own callsign in front of a note
+    text = re.sub(r"\s+\{.*\}\s*$", "", text)  # drop the list of fields after a control frame
+    text = re.sub(r", offset [+-]?\d+\.\d Hz", "", text)  # drop the frequency offset
+    text = re.sub(r"\s+(slot \d, )?wants L\d\s*$", "", text)  # drop the reply slot and wanted level after a transmission
+    return text.strip() or None  # the plain words, or nothing if none are left
+
+
 def describe(result):  # one line about a received frame
     """Return a readable line describing the receiver's report `result`."""
     name = KIND.get(result.frame_type, "frame")  # what kind of frame

@@ -47,7 +47,7 @@ python -m venv .venv
 
 The demo sends one message through the simulated channel, decodes it, and writes a sound file and a waterfall picture into `results/`.
 
-**Windows, the short way:** copy the folder to the computer, double-click `setup_windows.bat` once (it needs Python from python.org and the internet), then double-click `kestrel_panel.bat` to open the control panel. In the panel choose the sound devices that lead to and from the radio; **Monitor** only listens and never transmits.
+**Windows, the short way:** copy the folder to the computer, double-click `setup_windows.bat` once (it needs Python from python.org and the internet), then double-click `kestrel_panel.bat` to open the control panel. In the panel open **Settings > Rig Information** and choose your radio type, its serial port and the sound devices that lead to and from the radio; **Monitor** only listens and never transmits.
 
 ## Where things stand
 

@@ -168,3 +168,18 @@ def test_status_from_log_lines():  # the panel's status display reads the statio
     assert status_for("    0.0s  sending beacon at L0, 28.4 s")[0].startswith("CALLING")  # calling
     assert status_for("  126.7s  finished")[0] == "STOPPED"  # the run has ended
     assert status_for("   91.2s  heard acknowledgment at L4, +14.4 dB") is None  # an ordinary line changes nothing
+
+
+def test_plain_log_lines():  # the panel's plain view drops the technical detail from a log line
+    from live import plain_line  # the function under test
+    assert plain_line("   73.0s  heard answer at L0, +33.0 dB, offset +4.3 Hz, fading 0.00  {'dest': 'KO4WSC', 'levels': (0, 1)}") == "heard answer at L0, +33.0 dB, fading 0.00"  # a control frame loses its stamp, offset and fields
+    assert plain_line("             73.0s KO4WSC: locked with W1AW; told to send at L4, asking for L4") == "locked with W1AW; told to send at L4, asking for L4"  # a station note loses its stamp and callsign
+    assert plain_line("   36.5s  sending answer at L0, 36.8 s  slot 0, wants L4") == "sending answer at L0, 36.8 s"  # a transmission loses its slot and wanted level
+    assert plain_line(" 1224.1s  noise briefly looked like the start of a frame; nothing decoded") is None  # a false alarm is left out
+    assert plain_line("radio tuned to 10144.0 kHz PKTUSB  (30 m)") == "radio tuned to 10144.0 kHz PKTUSB  (30 m)"  # an ordinary line is unchanged
+
+
+def test_rigctld_model_list_is_read():  # the list of radios rigctld prints is turned into numbers and names
+    from live.rig import parse_models  # the function under test
+    listing = " Rig #  Mfg                    Model                   Version         Status      Macro\n  1042  Yaesu                  FTDX-10                 20230101.0      Stable      RIG_MODEL_FTDX10\n     1  Hamlib                 Dummy                   20221128.0      Stable      RIG_MODEL_DUMMY\n"  # a short sample of the listing
+    assert parse_models(listing) == [(1, "Hamlib Dummy"), (1042, "Yaesu FTDX-10")]  # numbers and names, in name order, without the heading line

@@ -6,10 +6,111 @@ radios. Kestrel talks to it over a network socket, so any radio Hamlib
 supports can be tuned and keyed, on this computer or another one.
 
 Start rigctld yourself (for example: rigctld -m <model> -r <port> -s <baud>),
-or point Kestrel at one that is already running (default 127.0.0.1:4532).
+point Kestrel at one that is already running (default 127.0.0.1:4532), or let
+RigServer start one for a chosen radio type and serial port, the way the
+control panel does.
 """
 
+import os  # file paths, for finding the rigctld program
+import shutil  # looks for a program on the search path
 import socket  # the network connection to rigctld
+import subprocess  # starts the rigctld program
+import sys  # tells Windows from other systems
+import time  # short waits while rigctld starts
+
+RIGCTLD_NAMES = ("rigctld", "rigctld-wsjtx", "rigctld.exe", "rigctld-wsjtx.exe")  # names the rigctld program goes by (WSJT-X ships its own copy)
+HIDDEN = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # on Windows, start helper programs without a console window
+
+
+def find_rigctld(extra_folders=()):  # look for the rigctld program
+    """Return the path of a rigctld program, or "" if none is found.
+
+    The search path is tried first, then any `extra_folders`, then the bin
+    folder of any WSJT-X installed in the usual place on Windows.
+    """
+    for name in RIGCTLD_NAMES:  # each name it goes by
+        found = shutil.which(name)  # on the search path?
+        if found:  # yes
+            return found  # use it
+    folders = list(extra_folders)  # folders suggested by the caller
+    if sys.platform == "win32":  # on Windows, look where WSJT-X is usually installed
+        for top in (os.path.join(os.environ.get("SystemDrive", "") + os.sep, "WSJT"), os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):  # the usual parent folders: the WSJT-X installer's own default, then the program folders
+            if top and os.path.isdir(top):  # the folder exists
+                folders += [os.path.join(top, name, "bin") for name in sorted(os.listdir(top), reverse=True) if "wsjt" in name.lower()]  # every WSJT-X folder's bin, newest name first
+    for folder in folders:  # each candidate folder
+        for name in RIGCTLD_NAMES:  # each name
+            path = os.path.join(folder, name)  # the full path
+            if os.path.isfile(path):  # it is there
+                return path  # use it
+    return ""  # not found
+
+
+def parse_models(listing):  # read rigctld's list of radios
+    """Return [(model number, "Maker Model")] from the text `rigctld -l` prints, sorted by name."""
+    models = []  # the radios found
+    for line in listing.splitlines():  # each line of the listing
+        words = [word.strip() for word in line.strip().split("  ") if word.strip()]  # its columns (separated by two or more spaces)
+        if len(words) >= 3 and words[0].isdigit():  # a radio line: number, maker, model, ...
+            models.append((int(words[0]), f"{words[1]} {words[2]}"))  # keep the number and the name
+    return sorted(models, key=lambda model: model[1].lower())  # in name order
+
+
+def list_models(program):  # ask rigctld which radios it knows
+    """Return [(model number, name)] for the rigctld at `program`, or [] if it cannot be run."""
+    try:  # the program may be missing or refuse to run
+        done = subprocess.run([program, "-l"], capture_output=True, text=True, timeout=20, cwd=os.path.dirname(program) or None, **HIDDEN)  # ask for the list
+    except (OSError, subprocess.SubprocessError):  # it could not be run
+        return []  # no list
+    return parse_models(done.stdout + "\n" + done.stderr)  # the list may come on either output
+
+
+class RigServer:  # a rigctld started and stopped by Kestrel
+    """Runs rigctld for one radio, so the operator only has to choose the radio type and its serial port."""
+
+    def __init__(self):  # nothing running yet
+        self.process = None  # the rigctld process, when one is running
+        self.config = None  # the settings it was started with
+        self.address = ""  # where it is listening, as host:port
+
+    def ensure(self, program, model, port, baud, handshake="none"):  # make sure rigctld is running with these settings
+        """Start rigctld if needed and return its address. Raise RuntimeError with the reason if it will not start."""
+        config = (program, int(model), port, int(baud), handshake)  # the settings asked for
+        if self.process is not None and self.process.poll() is None and config == self.config:  # already running with the same settings
+            return self.address  # use it as it is
+        self.stop()  # stop any rigctld running with other settings
+        with socket.socket() as probe:  # find a free network port on this computer
+            probe.bind(("127.0.0.1", 0))  # let the system choose one
+            tcp = probe.getsockname()[1]  # the port it chose
+        command = [program, "-m", str(config[1]), "-r", port, "-s", str(config[3]), "-T", "127.0.0.1", "-t", str(tcp)]  # radio type, serial port, speed, and where to listen
+        if handshake == "hardware":  # the radio wants RTS/CTS handshaking
+            command += ["-C", "serial_handshake=Hardware"]  # say so
+        try:  # the program may be missing
+            self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, cwd=os.path.dirname(program) or None, **HIDDEN)  # start rigctld
+        except OSError as problem:  # it could not be started
+            raise RuntimeError(f"could not start the rig control program: {problem}")  # say why
+        self.config, self.address = config, f"127.0.0.1:{tcp}"  # remember what is running and where
+        for _ in range(60):  # give it up to six seconds to open the radio
+            if self.process.poll() is not None:  # it has already given up
+                reason = (self.process.stderr.read() or "").strip().splitlines()[-1:]  # the last thing it said
+                self.process = None  # nothing is running
+                raise RuntimeError("rig control could not open the radio" + (f": {reason[0]}" if reason else "") + f" (check the radio type, that {port} is the right port and that no other program is using it)")  # say why
+            try:  # is it listening yet?
+                socket.create_connection(("127.0.0.1", tcp), timeout=0.2).close()  # try to connect
+                return self.address  # yes: ready
+            except OSError:  # not yet
+                time.sleep(0.1)  # wait a moment
+        self.stop()  # it never started listening
+        raise RuntimeError("rig control did not start in time")  # say so
+
+    def stop(self):  # stop rigctld
+        """Stop the rigctld this object started, if any."""
+        if self.process is not None and self.process.poll() is None:  # one is running
+            self.process.terminate()  # ask it to stop
+            try:  # give it a moment
+                self.process.wait(timeout=3)  # wait for it to go
+            except subprocess.TimeoutExpired:  # it did not
+                self.process.kill()  # insist
+        self.process = None  # nothing is running now
 
 
 class RigCtl:  # a connection to rigctld
