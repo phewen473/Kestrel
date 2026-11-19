@@ -84,3 +84,9 @@ Two faults in the first design were found this way and fixed:
 | `adapt.py` | How a receiver chooses the level to ask for |
 | `simulate.py` | Stations joined by the channel simulator: `run_link` (two stations), `run_group` (one caller, several answering stations), `Path`, `describe` |
 | `params.py` | The starting values above |
+
+## Added with spec v0.16
+
+- **Keeping the lock open.** `Station(..., close_when_done=False)` holds the lock after the traffic is done; `station.end()` closes it. A station without the turn in an idle lock takes the turn when it gets a message, after waiting long enough for a goodbye from its partner to arrive.
+- **Working frequencies.** Set `station.move_to_hz` (an offset from the calling frequency) and `station.can_move = True`. Once locked, the station proposes the move; a partner that can move agrees and retunes, one that cannot declines. `station.tuning(now)` says where the radio should be at any moment; the simulation uses it to make a frame inaudible when the two stations are on different frequencies.
+- Three new tests cover the move, the refusal, and a lock kept open that carries later traffic and closes on request.

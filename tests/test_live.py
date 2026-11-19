@@ -183,3 +183,15 @@ def test_rigctld_model_list_is_read():  # the list of radios rigctld prints is t
     from live.rig import parse_models  # the function under test
     listing = " Rig #  Mfg                    Model                   Version         Status      Macro\n  1042  Yaesu                  FTDX-10                 20230101.0      Stable      RIG_MODEL_FTDX10\n     1  Hamlib                 Dummy                   20221128.0      Stable      RIG_MODEL_DUMMY\n"  # a short sample of the listing
     assert parse_models(listing) == [(1, "Hamlib Dummy"), (1042, "Yaesu FTDX-10")]  # numbers and names, in name order, without the heading line
+
+
+def test_working_frequencies_for_a_calling_frequency():  # the working frequencies offered after a lock
+    from live.bands import builtin_frequencies, signal_khz, working_offsets_hz  # the functions under test
+    for entry in builtin_frequencies():  # each meeting frequency
+        offsets = working_offsets_hz(entry)  # its working frequencies, as offsets in hertz
+        assert offsets and all(offset % 100 == 0 for offset in offsets)  # there are some, and each fits the 100 Hz steps the move uses
+        calling = signal_khz(entry["dial_khz"])  # where the calling signal sits
+        for offset in offsets:  # each working frequency
+            working = signal_khz(entry["dial_khz"] + offset / 1000.0)  # where its signal sits
+            assert working[1] <= calling[0] or working[0] >= calling[1]  # it does not overlap the calling frequency
+    assert working_offsets_hz({"band": "17 m", "dial_khz": 18106.0, "builtin": False}) == [2500, -2500]  # an operator's own frequency gets the next channel up and down

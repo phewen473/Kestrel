@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.16 (draft) - 18 November 2026
+
+- No frame format is changed from 0.15. One value is newly defined: in an acknowledgment with status 3, part number 3 means "move to a working frequency", with the offset in the message-number field (signed, 100 Hz steps).
+- Working frequencies (Section 6.10): once locked, a pair may agree to leave the meeting frequency, meet again by a probe on the working frequency, and return when the contact ends. Suggested working frequencies added for 40, 30 and 20 metres.
+- Keeping the lock open, closing it on request, and taking the turn in an idle lock are now described (Section 6.3). A station without the turn in an idle lock still identifies every 9 minutes.
+- The description is now marked as in first on-air tests.
+
 ## 0.15 (draft) - 18 November 2026
 
 - The transmitted signal is unchanged from 0.14.

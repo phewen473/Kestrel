@@ -109,3 +109,52 @@ def test_three_stations_answering_one_beacon_are_each_worked():  # the reply win
     later = [e for e in events if e["kind"] == "answer" and e["t"] > beacons[1]["t"]]  # answers to the wide beacons
     assert len({e["note"].split(",")[0] for e in later}) > 1  # which were spread over different slots
     assert caller.worked == set(calls)  # the caller knows it has worked all three
+
+
+def pair(keep_open=False):  # two fresh stations, ready to meet
+    """Return (calling station, answering station); with `keep_open` neither closes the contact when the traffic runs out."""
+    a = Station("KO4WSC", "EM92", close_when_done=not keep_open)  # the station that calls
+    b = Station("W1AW", "FN31", close_when_done=not keep_open)  # the station that answers
+    a.beacon()  # A beacons
+    b.listen()  # B listens
+    return a, b  # the pair
+
+
+def test_contact_moves_to_a_working_frequency_and_returns():  # the pair leave the calling frequency once locked
+    a, b = pair()  # two stations
+    a.can_move = b.can_move = True  # both radios can be retuned
+    a.move_to_hz = 2500  # the calling station wants to work 2.5 kHz higher
+    a.queue("Message on the working frequency.")  # A's traffic
+    b.queue("And one back.")  # B's traffic
+    events = run_link(a, b, Path(5.0), Path(5.0), seed=3)  # run the contact
+    kinds = [e["kind"] for e in events]  # what was sent, in order
+    assert kinds.index("move") < kinds.index("move-ok") < kinds.index("probe") < kinds.index("message")  # proposal, agreement, a probe on the new frequency, then the traffic
+    assert a.delivered == ["Message on the working frequency."] and b.delivered == ["And one back."]  # both messages got through after the move
+    assert a.state == b.state == "RELEASED"  # the contact closed properly
+    assert a.tuning(1e9) == 0 and b.tuning(1e9) == 0  # and both radios are back on the calling frequency
+    assert any("moving +2.5 kHz" in line for line in a.log) and any("moving +2.5 kHz" in line for line in b.log)  # each side says where it went
+
+
+def test_partner_that_cannot_move_keeps_the_contact_where_it_is():  # one radio has no rig control
+    a, b = pair()  # two stations
+    a.can_move, a.move_to_hz = True, -2500  # the calling station wants to move
+    a.queue("Staying put.")  # A's traffic
+    events = run_link(a, b, Path(5.0), Path(5.0), seed=4)  # run the contact (B cannot retune)
+    assert all(e["heard"] for e in events)  # nothing was lost: the stations never parted
+    assert a.delivered == ["Staying put."] and a.tuning(1e9) == 0 and b.tuning(1e9) == 0  # the message went through on the calling frequency
+    assert any("cannot change frequency" in line for line in a.log)  # and the calling station says why it stayed
+
+
+def test_lock_kept_open_carries_later_traffic_and_closes_on_request():  # a conversation that goes on
+    a, b = pair(keep_open=True)  # neither closes when the traffic runs out
+    a.queue("First message.")  # A's opening traffic
+    run_link(a, b, Path(5.0), Path(5.0), seed=5, limit_s=400.0)  # the contact, then some idle time
+    assert a.delivered == ["First message."] and a.state == b.state == "LOCKED"  # delivered, and the lock is still held
+    b.queue("A later thought from the answering station.")  # the station without the turn gets something to say
+    run_link(a, b, Path(5.0), Path(5.0), seed=6, limit_s=800.0, start_s=400.0)  # carry on
+    assert b.delivered == ["A later thought from the answering station."] and a.inbox[-1].startswith("A later thought")  # it took the turn and delivered it
+    assert a.state == b.state == "LOCKED"  # still locked
+    b.end()  # the answering station's operator ends the contact
+    run_link(a, b, Path(5.0), Path(5.0), seed=7, limit_s=1300.0, start_s=800.0)  # carry on
+    assert a.state == b.state == "RELEASED"  # both sides closed
+    assert any("contact closed" in line for line in a.log) and any("contact closed" in line for line in b.log)  # with a proper goodbye

@@ -15,6 +15,7 @@ radio through Hamlib's rigctld; --port and --baud are for the serial methods.
 Only transmit where your licence allows, with the published specification matching this program.
 """
 
+import time  # the clock, for --end-after
 import argparse  # reads the command-line options
 import os  # file paths
 import sys  # lets us add the repository root to the import path
@@ -51,8 +52,11 @@ def main():  # the script itself
     parser.add_argument("--baud", type=int, default=38400, help="serial speed for --ptt cat")  # port speed
     parser.add_argument("--stay-on", action="store_true", help="after a contact, go back to listening")  # keep running
     parser.add_argument("--seconds", type=float, default=None, help="stop after this many seconds")  # optional time limit
+    parser.add_argument("--keep-open", action="store_true", help="hold the lock after the traffic is done (stop with Ctrl+C or --end-after)")  # a conversation that goes on
+    parser.add_argument("--end-after", type=float, default=None, help="with --keep-open: close the contact properly this many seconds after starting")  # when to say goodbye
+    parser.add_argument("--move", type=float, default=None, help="once locked, propose moving this many kHz from the calling frequency to a working frequency (needs --rig)")  # leave the calling frequency
     args = parser.parse_args()  # read the options
-    station = Station(args.call, args.grid)  # the link rules for this station
+    station = Station(args.call, args.grid, close_when_done=not args.keep_open)  # the link rules for this station, holding the lock open if asked
     if args.beacon:  # the calling station
         station.beacon()  # it beacons
     else:  # the answering station
@@ -72,8 +76,16 @@ def main():  # the script itself
     ptt = Ptt(args.ptt, args.port, args.baud, rig=rig)  # the transmit switch
     source = AudioIn(find_device(args.source, "input"))  # start recording
     sink = AudioOut(find_device(args.sink, "output"), args.gain)  # the playing side
+    base_hz = rig.frequency() if rig is not None else 0.0  # the calling frequency, as the radio reports it
+    retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move to a working frequency and back
+    station.move_to_hz = int(round(args.move * 1000.0)) if args.move and rig is not None else None  # the working frequency to propose, as an offset in hertz
+    began = time.monotonic()  # when the station started
+    def should_stop():  # looked at ten times a second by the live loop
+        if args.end_after is not None and time.monotonic() - began >= args.end_after:  # time to say goodbye
+            station.end()  # close the contact once the current exchange is done
+        return False  # never stop the loop itself; it ends when the contact does
     try:  # until the contact ends or Ctrl+C
-        run_station(station, source, sink, ptt, say=lambda line: print(line, flush=True), limit_s=args.seconds, stay_on=args.stay_on)  # the live loop
+        run_station(station, source, sink, ptt, say=lambda line: print(line, flush=True), limit_s=args.seconds, stay_on=args.stay_on, should_stop=should_stop, retune=retune)  # the live loop
     except KeyboardInterrupt:  # Ctrl+C
         print("stopped by operator", flush=True)  # say so
     finally:  # always

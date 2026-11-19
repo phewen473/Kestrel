@@ -9,6 +9,11 @@ The life of a contact:
     beacon -> answer -> acknowledgment (lock confirmed)
     message frame -> acknowledgment, repeated; the turn passes when a station has nothing left
     identification with the end-of-contact flag, from each side
+
+Two optional extras: a station may keep the lock open after the traffic
+is done (close_when_done=False, ended later with end()), and the pair
+may agree to leave the calling frequency for a working frequency once
+locked, returning when the contact ends.
 """
 
 import zlib  # gives each station its own repeatable random numbers, from its callsign
@@ -29,7 +34,7 @@ from modem.text import pick_size_class  # which frame size a piece of text needs
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
 from .params import (  # timing and retry settings
     BEACON_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
-    OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
+    MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
     REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S,  # (continued)
 )  # end of the import list
 
@@ -64,6 +69,7 @@ class Station:  # the link rules for one station
         self.grid = grid  # its grid locator
         self.levels = tuple(levels) if levels is not None else tuple(spec.number for spec in LEVELS)  # the speed levels it can use
         self.close_when_done = close_when_done  # end the contact once neither side has anything left to send
+        self.keep_open = not close_when_done  # the operator's standing choice, restored for each new contact after end() has been used
         self.state = "IDLE"  # lock state: IDLE, LOCKED, DEGRADED, REACQUIRE or RELEASED
         self.role = None  # "beaconer" or "answerer"
         self.partner = ""  # the other station's callsign
@@ -101,6 +107,18 @@ class Station:  # the link rules for one station
         self.last_activity = 0.0  # when this station last sent or heard a frame
         self.log = []  # plain-English notes on what happened, for the operator and for tests
         self.reply_margin = REPLY_MARGIN_S  # extra time to wait for a reply beyond its own length (a live station allows more)
+        self.quiet = False  # True while the lock is idle and the partner holds the turn (this station may then take the turn if it gets something to send)
+        self.idle_told = False  # True once the partner has been offered the turn since the last message went either way (so it knows the lock is idle)
+        self.can_move = False  # True when whoever runs the radio can retune it, so a move to a working frequency is possible
+        self.move_to_hz = None  # the working frequency this station will propose once locked, as an offset in hertz from the calling frequency (None: stay)
+        self.offset_hz = 0  # where the radio should be now, as an offset in hertz from the calling frequency
+        self.tune_at = None  # when a retune that has been decided takes effect (after the frame that announces it has been sent)
+        self.tune_next = 0  # the offset that retune goes to
+        self.moved = False  # True once a move has been agreed, refused or given up in this contact (it is proposed only once)
+        self.move_tries = 0  # times the move has been proposed without a reply
+        self.settle_until = None  # after an agreed move: when to probe for the partner on the working frequency
+        self.arriving = False  # True while that first probe on the working frequency is unanswered
+        self.await_since = None  # after moving at the partner's request: when this station began waiting for it on the working frequency
 
     # ---- starting up ----
 
@@ -115,6 +133,19 @@ class Station:  # the link rules for one station
     def queue(self, text):  # hand the station a message to send
         """Add a message to the outbox."""
         self.outbox.append(text)  # oldest first
+
+    def end(self):  # the operator wants the contact closed
+        """Close the contact once any traffic under way is finished (for a lock that was being kept open)."""
+        self.close_when_done = True  # from now on, close as soon as neither side has anything to send
+
+    def tuning(self, now):  # where should the radio be tuned at this moment?
+        """Return the offset from the calling frequency, in hertz, that the radio should be on at time `now`."""
+        if self.tune_at is not None and now >= self.tune_at:  # a retune that was decided earlier is now due
+            self.offset_hz, self.tune_at = self.tune_next, None  # it takes effect
+        return self.offset_hz  # the frequency in force
+
+    def _retune(self, when, offset_hz):  # decide to change frequency at a given time
+        self.tune_at, self.tune_next = when, offset_hz  # whoever runs the radio sees it through tuning()
 
     # ---- hearing ----
 
@@ -214,21 +245,35 @@ class Station:  # the link rules for one station
             item = self.plan[0]  # the frame that is now due
         audio = build_frame(item["text"], self.tx_level, item["part"], item["parts"], link=self.link, msg_id=self.current_id, want_level=self.want)  # the message frame, carrying the level this station wants from its partner
         note = f"msg {self.current_id} part {item['part'] + 1}/{item['parts']}"  # which frame this is
+        self.idle_told = False  # traffic is moving, so the lock is not idle
         return self._send(now, audio, "message", self.tx_level, "ack", control_seconds(FRAME_TYPE_ACK, self.want), note)  # wait for its acknowledgment
 
     def _next(self, now):  # decide what to send when the turn is this station's
         if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since the callsign went out
             return self._ident(now, final=False)  # identify first
+        if self.move_to_hz and self.can_move and not self.moved:  # a working frequency is wanted and has not been dealt with yet
+            return self._propose_move(now)  # ask the partner to move before any traffic
         if self.plan and self.part_index < len(self.plan):  # a message is under way
             return self._send_part(now)  # send its next frame
         if self.outbox:  # another message is waiting
             self._start_message(self.outbox[0])  # plan it
             return self._send_part(now)  # send its first frame
         if not self.peer_empty:  # nothing to send, and the partner has not said the same
+            self.idle_told = True  # this offer also tells the partner that this station is idle
             return self._ack(now, 0, OFFER_TURN, ACK_LINK, "offer", "offer", self._longest_reply())  # offer the partner the turn
         if self.close_when_done:  # both sides are finished
             return self._ident(now, final=True)  # close the contact
+        if not self.idle_told:  # the lock is being kept open, and the partner has not been told that the traffic is over
+            self.idle_told = True  # tell it once
+            return self._ack(now, 0, OFFER_TURN, ACK_LINK, "offer", "offer", self._longest_reply())  # an offer of the turn: the partner may now send whenever it has something
         return None  # stay locked and quiet
+
+    def _propose_move(self, now):  # ask the partner to change to the working frequency
+        self.move_tries += 1  # count the proposal
+        steps = int(round(self.move_to_hz / MOVE_STEP_HZ)) & 0xFFFF  # the offset as a signed 16-bit count of 100 Hz steps
+        if self.move_tries == 1:  # the first time
+            self._say(now, f"proposing a move to the working frequency ({self.move_to_hz / 1000.0:+.1f} kHz)")  # explain
+        return self._ack(now, steps, OFFER_MOVE, ACK_LINK, "move", "move", control_seconds(FRAME_TYPE_ACK, self.want))  # the proposal travels in the message-number field
 
     def _reacquire(self, now):  # the partner has gone quiet: try to find it again
         if self.state != "REACQUIRE":  # just entering this state
@@ -246,12 +291,18 @@ class Station:  # the link rules for one station
         self.plan, self.part_index, self.misses, self.resends, self.probes, self.finals, self.beacons = [], 0, 0, 0, 0, 0, 0  # nothing under way, no counts
         self.my_turn = self.peer_empty = self.sent_final = False  # no turn, no goodbyes
         self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
+        self.quiet, self.moved, self.move_tries, self.settle_until, self.arriving, self.await_since = False, False, 0, None, False, None  # no idle lock, no move under way
+        self.idle_told = False  # nothing has been said about being idle
+        self.close_when_done = not self.keep_open  # an earlier end() applied to that contact only
 
     def _release(self, now, why):  # the contact is over
         if self.partner:  # there was a partner
             self.worked.add(self.partner)  # remember it has been worked
         self.state = "RELEASED"  # final state
         self.pending = None  # nothing more is expected
+        self.quiet, self.settle_until, self.await_since = False, None, None  # no idle lock and no move under way any more
+        if self.offset_hz or self.tune_at is not None:  # the contact was on, or on its way to, a working frequency
+            self._retune(now, 0)  # go back to the calling frequency
         self._say(now, why)  # say why
 
     # ---- acting on what was heard ----
@@ -276,6 +327,7 @@ class Station:  # the link rules for one station
             return None  # ignore it
         if result.link != self.link:  # a frame from somebody else's lock
             return None  # ignore it
+        self.await_since = None  # the partner has been heard, so any wait for it on a working frequency is over
         if kind == FRAME_TYPE_ACK:  # an acknowledgment
             return self._on_ack(result, now)  # act on it
         if kind == FRAME_TYPE_LINK:  # a message frame
@@ -361,7 +413,7 @@ class Station:  # the link rules for one station
         for the other. The beaconing station keeps the turn and ignores
         the frame; the answering station gives way and answers it.
         """
-        if self.pending not in ("ack", "offer", "probe"):  # not in the middle of an exchange of its own
+        if self.pending not in ("ack", "offer", "probe", "move"):  # not in the middle of an exchange of its own
             return True  # no clash
         if self.role == "beaconer":  # the beaconing station keeps the turn
             return False  # ignore the frame; its own retry will follow
@@ -372,6 +424,8 @@ class Station:  # the link rules for one station
         return True  # now answer the partner's frame
 
     def _on_link_ack(self, result, code, now):  # a status-3 acknowledgment: lock confirmed, turn offered, probe, or a reply to one of those
+        if code == OFFER_MOVE:  # a move to a working frequency: the partner's proposal, or its agreement to this station's
+            return self._on_move(result, now)  # deal with it
         if code in (OFFER_PROBE, OFFER_TURN) and not self._gives_way(now):  # the partner is asking something while this station is mid-exchange
             return None  # the beaconing station carries on with its own exchange
         if code == OFFER_PROBE:  # the partner lost this station and is probing
@@ -388,6 +442,7 @@ class Station:  # the link rules for one station
                 self.my_turn = True  # take the turn
                 return self._next(now)  # and use it
             self.my_turn = False  # nothing here either: the partner keeps the turn
+            self.quiet = True  # the lock is idle; this station may take the turn later if it gets something to send
             return self._ack(now, 0, OFFER_REPLY, ACK_LINK, "reply")  # say so
         if self.pending == "probe":  # the partner answered a probe
             self._fresh_start(result)  # start measuring afresh
@@ -395,8 +450,18 @@ class Station:  # the link rules for one station
             self.pending = None  # the wait is over
             self.misses = self.probes = self.resends = 0  # clean slate
             self.my_turn = True  # carry on where things stopped
-            self._say(now, f"reacquired; told to send at L{self.tx_level}, asking for L{self.want}")  # explain
+            if self.arriving:  # this was the first probe after a move
+                self.arriving = False  # the partner has arrived too
+                self._say(now, f"partner found on the working frequency; told to send at L{self.tx_level}, asking for L{self.want}")  # explain
+            else:  # an ordinary recovery
+                self._say(now, f"reacquired; told to send at L{self.tx_level}, asking for L{self.want}")  # explain
             return self._next(now)  # resume
+        if self.pending == "move":  # the partner answered a move proposal with a plain reply: it cannot change frequency
+            self.pending = None  # the wait is over
+            self.misses = 0  # the partner is answering
+            self.moved = True  # do not ask again in this contact
+            self._say(now, "partner cannot change frequency; staying on the calling frequency")  # explain
+            return self._next(now)  # carry on here
         if self.pending == "offer":  # the partner declined the turn: it is empty too
             self.pending = None  # the wait is over
             self.misses = 0  # the partner is answering
@@ -405,6 +470,33 @@ class Station:  # the link rules for one station
         if self.pending == "confirm":  # the beaconing station confirmed the lock
             self.pending = None  # the wait is over
         return None  # nothing to send
+
+    def _on_move(self, result, now):  # a status-3 acknowledgment about moving to a working frequency
+        steps = result.fields["msg_id"]  # the offset, as an unsigned 16-bit count
+        offset_hz = (steps - 0x10000 if steps >= 0x8000 else steps) * MOVE_STEP_HZ  # back to a signed offset in hertz
+        self._note(result, failed=False)  # a clean frame from the partner
+        if self.pending == "move" and (offset_hz == self.move_to_hz or self.role == "beaconer"):  # the partner agrees (or both proposed at once and the beaconing station's proposal stands)
+            if offset_hz != self.move_to_hz:  # the partner proposed somewhere else at the same moment
+                return None  # ignore it; this station's own proposal will be repeated
+            self.pending = None  # the wait is over
+            self.misses = 0  # the partner is answering
+            self.moved = True  # the move is agreed
+            self._retune(now, offset_hz)  # change frequency now
+            self.settle_until = now + MOVE_SETTLE_S  # then give both radios a moment before probing
+            self.my_turn = True  # this station speaks first on the new frequency
+            self._say(now, f"partner agreed; moving {offset_hz / 1000.0:+.1f} kHz to the working frequency")  # explain
+            return None  # nothing to send until the radios have settled
+        self.pending = None  # a proposal from the partner ends any wait of this station's own
+        self.my_turn = False  # the partner speaks first after the move
+        self.moved = True  # one move per contact, whoever asked
+        if not self.can_move:  # this station's radio cannot be retuned by the program
+            self._say(now, "partner proposed a working frequency; this station cannot change frequency, staying")  # explain
+            return self._ack(now, 0, OFFER_REPLY, ACK_LINK, "reply")  # a plain reply means "no"
+        reply = self._ack(now, steps, OFFER_MOVE, ACK_LINK, "move-ok")  # the same value sent back means "agreed"
+        self._retune(now + reply.seconds + 0.5, offset_hz)  # change frequency once the agreement has been sent
+        self.await_since = now + reply.seconds  # and wait there for the partner
+        self._say(now, f"partner proposed a working frequency; agreeing and moving {offset_hz / 1000.0:+.1f} kHz")  # explain
+        return reply  # the agreement
 
     def _on_message(self, result, now):  # a message frame was heard
         if self.state == "IDLE":  # the confirmation was missed, but a frame with this link number proves the lock
@@ -416,6 +508,8 @@ class Station:  # the link rules for one station
             return None  # the beaconing station carries on with its own exchange
         self.my_turn = False  # the partner has the turn
         self.peer_empty = False  # and has traffic
+        self.quiet = False  # the lock is no longer idle
+        self.idle_told = False  # and the partner will need telling when it is again
         self.tx_level = cap_level(result.want_level, self.allowed)  # every message frame says which level its sender wants back
         self._note(result, failed=False)  # take in the measurements
         status = ACK_OK  # this frame was received
@@ -442,6 +536,8 @@ class Station:  # the link rules for one station
             return None  # nothing more to send
         reply = self._ident(now, final=True)  # say goodbye in return
         self._release(now, "contact closed by partner")  # and leave (the reply still goes out)
+        if self.tune_at is not None:  # the contact was on a working frequency
+            self.tune_at = now + reply.seconds + 0.5  # go back to the calling frequency only after the goodbye has been sent
         return reply  # the closing identification
 
     # ---- acting on the clock ----
@@ -454,6 +550,20 @@ class Station:  # the link rules for one station
             if now < self.deadline:  # and there is still time
                 return None  # keep waiting
             return self._timed_out(now)  # the reply did not come
+        if self.settle_until is not None:  # a move has been agreed and the radios are retuning
+            if now < self.settle_until:  # not settled yet
+                return None  # wait
+            self.settle_until, self.arriving = None, True  # settled: look for the partner on the working frequency
+            return self._ack(now, 0, OFFER_PROBE, ACK_LINK, "probe", "probe", control_seconds(FRAME_TYPE_ACK, self.want))  # "are you here?" at the level in use
+        if self.await_since is not None and now - self.await_since >= MOVE_WAIT_S:  # moved at the partner's request, and the partner never appeared
+            self._release(now, "partner not heard on the working frequency; lock given up")  # go back to the calling frequency
+            return None  # nothing to send
+        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and now - self.last_activity >= self._quiet_gap():  # the lock is idle, the partner holds the turn and has had time to speak
+            if self.outbox or self.close_when_done:  # this station now has a message, or wants the contact closed
+                self.quiet, self.my_turn = False, True  # take the turn (if the partner starts at the same moment, the usual give-way rule settles it)
+                return self._next(now)  # send the message, or the closing identification
+            if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since this station sent its callsign
+                return self._ident(now, final=False)  # identify, turn or no turn
         if self.role == "beaconer" and self.state == "IDLE":  # looking for a partner
             return self._beacon(now)  # call
         if self.state in LOCKED_STATES and self.my_turn:  # locked, and it is this station's turn
@@ -466,12 +576,21 @@ class Station:  # the link rules for one station
             self._release(now, "partner not heard for five minutes; lock given up")  # stop waiting
         return None  # nothing to do
 
+    def _quiet_gap(self):  # how long an idle station waits before taking the turn for itself
+        return control_seconds(FRAME_TYPE_IDENT, self.want) + TURNAROUND_S + self.reply_margin  # long enough for a closing identification from the partner to arrive first
+
     def next_wake(self):  # when should poll() be called again?
         """Return the time at which this station next needs attention, or None if it is waiting to hear something."""
         if self.state == "RELEASED":  # the contact is over
             return None  # never
         if self.pending is not None:  # waiting for a reply
             return self.deadline  # until the deadline
+        if self.settle_until is not None:  # waiting for the radios to retune after a move
+            return self.settle_until  # until they have settled
+        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and (self.outbox or self.close_when_done):  # idle without the turn, but with something to send or a contact to close
+            return self.last_activity + self._quiet_gap()  # until the partner has had its chance to speak
+        if self.await_since is not None:  # waiting for the partner on a working frequency
+            return self.await_since + MOVE_WAIT_S  # until that wait runs out
         if self.state in LOCKED_STATES and self.my_turn and self.peer_empty and not self.close_when_done:  # idle with the lock kept open
             return self.last_activity + KEEPALIVE_S  # until the keep-alive is due
         if self.state in LOCKED_STATES and not self.my_turn:  # locked and waiting for the partner
@@ -510,6 +629,14 @@ class Station:  # the link rules for one station
                 self._release(now, "contact closed (no closing reply heard)")  # leave anyway
                 return None  # nothing to send
             return self._ident(now, final=True)  # say goodbye once more
+        if waited_for == "move":  # a proposal to move got no reply
+            if self.move_tries < MOVE_TRIES:  # try once more here
+                return self._propose_move(now)  # the same proposal again
+            self.moved = True  # the partner may have agreed without being heard, in which case it has already moved
+            self._retune(now, self.move_to_hz)  # so go and look for it on the working frequency
+            self.settle_until = now + MOVE_SETTLE_S  # after the radio has settled
+            self._say(now, "no reply to the move; looking for the partner on the working frequency")  # explain
+            return None  # the probe follows
         if waited_for == "probe":  # a reacquire probe went unanswered
             self.probes += 1  # count it
             if self.probes >= REACQUIRE_TRIES:  # tried enough

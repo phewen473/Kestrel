@@ -5,7 +5,7 @@ cd /d "%~dp0"
 REM If setup has not been run, say so and stop.
 if not exist .venv\Scripts\python.exe goto nosetup
 REM Start the control panel with Kestrel's own Python.
-.venv\Scripts\python.exe tools\kestrel_panel.py
+.venv\Scripts\python.exe tools\kestrel_panel.py %*
 REM Finished; skip the message below.
 goto done
 :nosetup

@@ -45,6 +45,7 @@ def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0):  # th
     while t < limit_s:  # until the time limit
         sender = tx = None  # nobody is transmitting yet
         for station in (a, b):  # ask each station in turn...
+            station.tuning(t)  # let any retune that is due take effect
             tx = station.poll(t)  # ...whether it has something to send now
             if tx is not None:  # it does
                 sender = station  # it gets the frequency
@@ -60,7 +61,10 @@ def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0):  # th
             path = paths[sender.call]  # the path in this direction
             t += tx.delay  # an answer waits for its reply slot
             snr_db = path.snr_at(t)  # conditions at this moment
-            heard = run_channel(tx.audio, snr_db, rng, path.condition, offset_hz=path.offset_hz)  # what arrives at the far end
+            if sender.tuning(t) == receiver.tuning(t):  # both radios are on the same frequency
+                heard = run_channel(tx.audio, snr_db, rng, path.condition, offset_hz=path.offset_hz)  # what arrives at the far end
+            else:  # one has moved to a working frequency and the other has not
+                heard = rng.normal(0.0, 0.01, len(tx.audio))  # the far end hears only noise
             result = receiver.hear(heard)  # the far end's receiver has a go
             t += tx.seconds + TURNAROUND_S  # the frame takes its airtime, then the far end turns round
             reply = receiver.handle(result, t)  # the far end decides what to do

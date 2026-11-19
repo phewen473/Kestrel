@@ -63,7 +63,8 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **Milestone 9 is done (18 November 2026):** Kestrel on real audio. A continuous receiver, sound-card input and output, transmitter keying, and rig control (frequency, mode, transmit) through Hamlib's rigctld, the rig-control engine WSJT-X uses. Two live stations on one PC, joined by virtual audio cables, completed a whole contact in real time. Not yet tried with a real radio. See `live/README.md`.
 - **Preselected frequencies (spec v0.15):** one meeting frequency each on 40, 30 and 20 metres (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband), all inside the 97.221(b) segments. A small control panel (`tools/kestrel_panel.py`) offers them in a drop-down list, and operators can add frequencies of their own.
 - **First contact between two real radios (18 November 2026):** two HF transceivers in the same room, one on a dummy load, on 10144.0 kHz. Beacon, answer, lock at the fastest level (L4) in both directions, and a proper close with identification from each side, in 100 seconds. Signal readings were +27 to +33 dB with no fading. No message text was sent in that first contact. Two radio settings mattered: the receive filter must be about 3000 Hz wide, and it must be centred near 1500 Hz of audio (on some radios the data mode centres it elsewhere).
-- Next: messages between the two radios, a contact over a real distance, then store-and-forward.
+- **Conversations that go on, and working frequencies (spec v0.16):** a contact can be kept open after the traffic is done, with either side sending when it has something to say, and closed properly on request. Once locked, a pair can agree to leave the meeting frequency for a working frequency and return when the contact ends. The control panel lists every callsign heard on the frequency, in a contact or not. Proven in simulation; not yet tried between radios.
+- Next: try those between the two radios, a contact over a real distance, then store-and-forward.
 - On-air tests use only a version of the signal whose spec is already published here.
 
 ## Development
@@ -120,11 +121,12 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.15 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done.
+- Spec version 0.16 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Spec v0.16: lock kept open, end on request, working frequencies; panel lists stations heard.
 - First two-radio contact; control panel shows the station's state; rig control asks for a 3000 Hz receive filter; Windows setup files; panel profiles for a second radio.
 - Spec v0.15: preselected frequencies for 40, 30 and 20 metres.
 - Milestone 9: live sound-card tools, continuous receiver, rig control through rigctld.

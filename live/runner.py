@@ -28,6 +28,8 @@ def status_for(line):  # the station's state, as far as one log line shows it
     if found:  # yes
         receive = f", receiving at L{found.group(3)}" if found.group(3) else ""  # the level asked of the partner, when the line gives it
         return f"LOCKED with {found.group(1)}  -  sending at L{found.group(2)}{receive}", "dark green"  # locked, and at what speeds
+    if "partner found on the working frequency" in line:  # the pair have met again after changing frequency
+        return "LOCKED on the working frequency", "dark green"  # locked there
     if "reacquired" in line:  # the partner was found again after a gap
         return "LOCKED again after a gap", "dark green"  # locked once more
     if "reacquiring" in line:  # the partner has gone quiet
@@ -83,15 +85,21 @@ def describe(result):  # one line about a received frame
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
     play(audio) (see audio.AudioOut), `ptt` keys the transmitter
     (see ptt.Ptt), and `say` is called with each line of the running log.
     `should_stop`, if given, is called ten times a second; the loop ends
-    when it returns True (a Stop button, for example).
+    when it returns True (a Stop button, for example). `retune`, if
+    given, is called with an offset in hertz from the calling frequency
+    whenever the link rules move to a working frequency or back; without
+    it the station declines such moves. `on_heard`, if given, is called with
+    the receiver's report on every frame that decodes, whoever sent it.
     """
+    station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
+    tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
     started = time.monotonic()  # the moment the clock starts
@@ -128,6 +136,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         for heard in listener.feed(source.read()):  # every frame that has completed
             result = station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry)
             stamp(describe(result))  # tell the operator
+            if on_heard is not None and result.ok:  # somebody was heard clearly
+                on_heard(result)  # let the caller note who
             reply = station.handle(result, now())  # what the link rules say to do
             if reply is not None:  # something to send
                 time.sleep(TURNAROUND_S)  # give the other station time to switch to receive
@@ -141,6 +151,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         for line in station.log[told:]:  # the station's own notes since last time
             say("          " + line)  # pass them on
         told = len(station.log)  # remember how far we got
+        wanted = station.tuning(now())  # where the link rules want the radio now
+        if retune is not None and wanted != tuned:  # a move to a working frequency, or back
+            retune(wanted)  # change the radio's frequency
+            tuned = wanted  # remember where it is
+            source.flush()  # what was received on the old frequency no longer matters
+            listener.clear()  # so forget it
+            stamp(f"radio moved to the working frequency ({wanted / 1000.0:+.1f} kHz)" if wanted else "radio back on the calling frequency")  # tell the operator
         if station.state == "RELEASED":  # the contact is over
             if not stay_on:  # one contact was all that was wanted
                 break  # stop

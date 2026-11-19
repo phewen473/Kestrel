@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.15 (draft), 18 November 2026.** Not yet in use on the air. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.16 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -237,8 +237,8 @@ Airtime of a whole control frame:
 |---|---|---|
 | Link number | 9 | The lock this frame belongs to (Section 4.2) |
 | Message number | 16 | The message being acknowledged |
-| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5) |
-| Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0) |
+| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10) |
+| Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0, except with part number 3, where it carries a frequency offset, Section 6.10) |
 | Channel report | 18 | How the frame being acknowledged was received |
 
 **Identification (type 5), 61 bits**
@@ -289,6 +289,8 @@ The numbers below are starting values from simulation, to be tuned on the air.
 - **The receiving station decides** the level it asks for from its own measurements, by the rule of Section 5.2, guided by the weakest of its recent readings.
 - **Turns.** Only the station holding the turn starts an exchange. The beaconing station holds it first. A station with nothing left to send offers the turn with a status-3 acknowledgment, part number 1. The partner answers by sending a message frame, which takes the turn, or with a status-3 acknowledgment, part number 0, which declines it.
 - **If both stations find themselves sending** (after a lost frame), the station that beaconed carries on and the station that answered gives way.
+- **Keeping the lock open.** By default the station holding the turn closes the contact once neither side has anything left to send. Either station may instead keep the lock open: when its own traffic is done it offers the turn once more, so that its partner knows the lock is idle, and then stays silent while the keep-alive of Section 6.5 holds the lock. Either station may close the contact at any time it holds the turn, with its closing identification.
+- **Taking the turn in an idle lock.** When the lock is idle (the station holding the turn has offered it and been declined), the other station may take the turn if it later has a message to send or wants to close the contact. It first waits long enough for a closing identification from its partner to arrive (the length of that frame at the level in use, plus the reply margin). If both then start at once, the rule above settles it.
 - Frames between the pair keep their own session timing, set by the handshake.
 
 ### 6.4 Lock states
@@ -314,7 +316,7 @@ The numbers in this section are starting values from simulation, to be tuned on 
 - **Splitting again.** If the level falls while a split message is being sent, so that the next part would exceed the airtime limit (Section 6.8), the sender splits the whole message again for the new level and starts it again under the same message number. A receiver that holds parts of a message and receives a part with a different part count discards the parts it held.
 - **Silence.** A locked station that is waiting for its partner and hears nothing for 5 minutes releases the lock.
 - **Keep-alive.** When neither station has traffic and the lock is kept open, the station holding the turn offers it again after 120 seconds of silence.
-- **Identification.** Each station sends an identification frame before any other frame once 9 minutes have passed since it last sent its callsign, and as its last transmission of the contact with the end-of-contact flag set. A station that receives the closing identification sends its own in return.
+- **Identification.** Each station sends an identification frame before any other frame once 9 minutes have passed since it last sent its callsign (a station without the turn in an idle lock sends it all the same), and as its last transmission of the contact with the end-of-contact flag set. A station that receives the closing identification sends its own in return.
 
 ### 6.6 Band starting profiles
 
@@ -351,6 +353,28 @@ So that stations can find each other, one meeting frequency is suggested per ban
 - On 30 m the amateur power limit is 200 W PEP.
 - These are first choices, to be confirmed by listening on the air. Other bands: **TBD**.
 - Operators may use other frequencies by agreement. A station with no operator present must keep its whole signal inside a 97.221(b) segment.
+
+### 6.10 Working frequencies
+
+A long contact on a meeting frequency keeps others from calling there. Once locked, the pair may move to a working frequency and leave the meeting (calling) frequency free.
+
+- **Proposal.** The station holding the turn sends a status-3 acknowledgment with part number 3. Its message-number field carries the working frequency as an offset from the frequency on which the lock was made: a signed 16-bit count (two's complement) of 100 Hz steps, so +25 means 2.5 kHz higher.
+- **Agreement.** A station that can change frequency answers with the same frame (status 3, part number 3, the same offset), then changes frequency when that frame has been sent. A station that cannot, or will not, answers with a plain reply (status 3, part number 0), and the contact stays where it is. A move is proposed at most once in a contact.
+- **Meeting again.** The proposing station changes frequency when it hears the agreement, waits 3 seconds, and sends a probe (status 3, part number 2) at the level in use. The partner answers as for any probe, both start their measurements afresh, and the contact carries on. If the probe goes unanswered the usual reacquiring rule applies (Section 6.5), on the working frequency.
+- **A lost agreement.** If a proposal gets no reply it is sent once more. If that also gets no reply, the proposing station goes to the working frequency anyway and probes there, in case its partner agreed without being heard.
+- **Giving up.** A station that has moved at its partner's request and hears nothing from it on the working frequency for 150 seconds releases the lock.
+- **Returning.** When the contact ends for any reason, each station returns to the meeting frequency: after its closing identification has been sent, or at once if the lock is released without one.
+- **Listen first.** The operator of the proposing station is responsible for choosing a working frequency that is clear. An automatic check is **TBD**.
+
+Suggested working frequencies (dial, upper sideband; first choices, to be confirmed by listening):
+
+| Band | Meeting frequency | Working frequencies | Notes |
+|---|---|---|---|
+| 40 m | 7101.5 kHz | 7106.5, 7109.0 kHz | Signals 7107.0 to 7109.0 and 7109.5 to 7111.5 kHz. Outside the 97.221(b) segment, so only with an operator present. |
+| 30 m | 10144.0 kHz | 10146.5, 10141.5 kHz | Signals 10147.0 to 10149.0 and 10142.0 to 10144.0 kHz, both inside 10140 to 10150 kHz. |
+| 20 m | 14108.5 kHz | 14106.0, 14103.5, 14101.0 kHz | Signals 14106.5 to 14108.5, 14104.0 to 14106.0 and 14101.5 to 14103.5 kHz, all inside 14100.5 to 14112 kHz. |
+
+For any other meeting frequency, the working frequencies offered are 2.5 kHz above and 2.5 kHz below it.
 
 ## 7. Nets (optional)
 

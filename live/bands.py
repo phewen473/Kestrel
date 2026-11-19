@@ -25,6 +25,12 @@ PRESETS_KHZ = {  # band name (metres) -> dial frequency in kHz, upper sideband
     "20": 14108.5,  # signal 14109.0 to 14111.0 kHz, inside 14100.5-14112 and clear of the beacons on 14100
 }  # end of the table
 
+WORKING_KHZ = {  # band name (metres) -> working dial frequencies in kHz, upper sideband, in order of preference
+    "40": (7106.5, 7109.0),  # signals 7107.0-7109.0 and 7109.5-7111.5 kHz: just above the 7100-7105 segment, so for attended stations only
+    "30": (10146.5, 10141.5),  # signals 10147.0-10149.0 and 10142.0-10144.0 kHz, both inside 10140-10150; the upper one first, away from the FT4 activity
+    "20": (14106.0, 14103.5, 14101.0),  # signals 14106.5-14108.5, 14104.0-14106.0 and 14101.5-14103.5 kHz, all inside 14100.5-14112
+}  # end of the table
+
 AUTOMATIC_SEGMENTS_KHZ = (  # HF segments of 97.221(b), in kHz
     (3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5), (14100.5, 14112.0),  # 80, 40, 30 and 20 metres
     (18105.0, 18110.0), (21090.0, 21100.0), (24925.0, 24930.0), (28120.0, 28189.0),  # 17, 15, 12 and 10 metres
@@ -37,6 +43,19 @@ def dial_khz(band):  # look up a band's preset
     if key not in PRESETS_KHZ:  # no preset for that band
         raise ValueError(f"no preset for band '{band}'; choose from {', '.join(sorted(PRESETS_KHZ, key=int))}")  # say which exist
     return PRESETS_KHZ[key]  # the dial frequency
+
+
+def working_offsets_hz(entry):  # the working frequencies that go with a calling frequency
+    """Return the offsets, in hertz from `entry`'s dial frequency, of the working frequencies to offer for it.
+
+    For one of Kestrel's meeting frequencies these are the band's
+    suggested working frequencies. For any other frequency they are one
+    channel (2.5 kHz) above and one below.
+    """
+    band = entry["band"].split()[0]  # "30 m" -> "30"
+    if entry.get("builtin") and band in WORKING_KHZ:  # a meeting frequency with suggested working frequencies
+        return [int(round((dial - entry["dial_khz"]) * 1000.0)) for dial in WORKING_KHZ[band]]  # each as an offset in hertz
+    return [2500, -2500]  # otherwise the next channel up, then the next channel down
 
 
 def signal_khz(dial):  # where does the signal sit for a given dial frequency?

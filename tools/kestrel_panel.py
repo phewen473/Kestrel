@@ -30,15 +30,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the reposi
 sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run as a script
 
 from link import Station  # the link rules  # noqa: E402
-from live import Listener, describe, plain_line, run_station, status_for  # the continuous receiver, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
+from live import KIND, Listener, describe, plain_line, run_station, status_for  # the continuous receiver, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
-from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies  # the frequency list  # noqa: E402
+from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list and the working frequencies  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 
 SETTINGS_FILE = os.path.join(ROOT, "local", "panel.json")  # where the panel remembers its settings
 DEFAULTS = {"call": "", "grid": "", "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued)
-            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": ""}  # settings for a first run
+            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0}  # settings for a first run
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tuned by hand
 
@@ -82,6 +82,8 @@ class Panel:  # the control panel window
         self.marked = 0  # how many of the tracked station's delivered messages are already marked in the list
         self.shown = 0  # how many of the tracked station's received messages are already in the list
         self.history = []  # every log line so far, as (time of day, line), so the log can be redrawn plain or in detail
+        self.heard = queue.Queue()  # reports of stations heard, waiting to go into the list (filled by the working thread)
+        self.heard_rows = {}  # callsign -> its row in the stations-heard list
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
         self.rig_lock = threading.Lock()  # only one thread at a time may start or tune through rig control
@@ -112,8 +114,16 @@ class Panel:  # the control panel window
         for text, mode in (("Monitor (receive only)", "monitor"), ("Listen (answer beacons)", "listen"), ("Beacon (call)", "beacon")):  # the three ways to run
             ttk.Button(actions, text=text, command=lambda m=mode: self.start(m)).pack(side="left", padx=4)  # one button each
         ttk.Button(actions, text="Stop", command=self.stop_station).pack(side="left", padx=12)  # the Stop button
+        options = ttk.Frame(root)  # the row of choices about how a contact is run
+        options.grid(row=4, column=0, pady=2)  # place it under the buttons
+        self.keep_open = tk.BooleanVar(value=bool(self.settings["keep_open"]))  # whether the lock is held after the traffic is done
+        ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
+        ttk.Button(options, text="End contact", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
+        ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
+        self.working = ttk.Combobox(options, state="readonly", width=46)  # stay on the calling frequency, or move to a working frequency
+        self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
-        typing.grid(row=4, column=0, sticky="ew", padx=8, pady=4)  # place it
+        typing.grid(row=5, column=0, sticky="ew", padx=8, pady=4)  # place it
         typing.columnconfigure(1, weight=1)  # the box takes the spare width
         ttk.Label(typing, text="Message").grid(row=0, column=0, sticky="w", padx=(0, 6))  # label for the message box
         self.message = ttk.Entry(typing)  # the message box
@@ -121,13 +131,15 @@ class Panel:  # the control panel window
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
         ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=2, padx=(6, 0))  # add the message to the list to send
         lists = ttk.Frame(root)  # the two message lists, side by side
-        lists.grid(row=5, column=0, sticky="nsew", padx=8, pady=4)  # place them
+        lists.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # place them
         lists.columnconfigure(0, weight=1)  # the two lists share the width
         lists.columnconfigure(1, weight=1)  # equally
-        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 70), ("text", "Message", 300), ("state", "State", 120)))  # outgoing messages and how far each has got
-        self.received = self._list(lists, 1, "Messages received", (("time", "Time", 70), ("who", "From", 90), ("text", "Message", 330)))  # incoming messages
+        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("text", "Message", 230), ("state", "State", 110)))  # outgoing messages and how far each has got
+        self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 80), ("text", "Message", 250)))  # incoming messages
+        lists.columnconfigure(2, weight=1)  # the third list shares the width too
+        self.stations = self._list(lists, 2, "Stations heard", (("who", "Callsign", 90), ("grid", "Grid", 50), ("snr", "Signal", 60), ("time", "Last heard", 70), ("text", "Sending", 110)))  # every callsign heard on the frequency, in a contact or not
         activity = ttk.LabelFrame(root, text="Activity")  # the running log, in its own box
-        activity.grid(row=6, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
+        activity.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
         activity.columnconfigure(0, weight=1)  # the log takes the width
         activity.rowconfigure(1, weight=1)  # and the spare height
         self.details = tk.BooleanVar(value=False)  # whether the log shows the technical detail
@@ -137,7 +149,7 @@ class Panel:  # the control panel window
         scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
-        root.rowconfigure(6, weight=1)  # the log stretches with the window
+        root.rowconfigure(7, weight=1)  # the log stretches with the window
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
         self.show_me()  # show this station's callsign and grid
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
@@ -158,7 +170,7 @@ class Panel:  # the control panel window
 
     def _list(self, parent, column, title, columns):  # a titled list with named columns
         frame = ttk.LabelFrame(parent, text=title)  # the box around the list
-        frame.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))  # place it
+        frame.grid(row=0, column=column, sticky="nsew", padx=2)  # place it
         frame.columnconfigure(0, weight=1)  # the list takes the width
         table = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=5)  # the list itself, five rows tall
         for name, heading, width in columns:  # each column
@@ -221,7 +233,19 @@ class Panel:  # the control panel window
                 pass  # the window still shows the line, which is what matters
         self.root.after(100, self.show_lines)  # look again in a tenth of a second
 
+    def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
+        call = (result.fields or {}).get("origin")  # the callsign it carries, if it is a beacon, an answer or an identification
+        if call:  # it names its sender
+            self.heard.put((call, (result.fields or {}).get("grid", ""), result.snr_db, KIND.get(result.frame_type, "frame")))  # pass it to the window
+
     def follow_station(self):  # keep the message lists and the readings in step with the station
+        while not self.heard.empty():  # every station heard since the last look
+            call, grid, snr, kind = self.heard.get()  # who, where, how strong, and what it sent
+            values = (call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
+            if call in self.heard_rows:  # already listed
+                self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
+            else:  # a new callsign
+                self.heard_rows[call] = self.stations.insert("", 0, values=values)  # add it at the top
         station = self.tracked  # the station being followed, running or just finished
         if station is not None:  # there is one
             while self.marked < len(station.delivered):  # a message has been delivered since the last look
@@ -234,8 +258,9 @@ class Panel:  # the control panel window
                 self.received.yview_moveto(1.0)  # keep the newest row in view
                 self.shown += 1  # one more shown
             if self.station is station and station.state in ("LOCKED", "DEGRADED", "REACQUIRE"):  # in a contact
+                where = f" on the working frequency ({station.offset_hz / 1000.0:+.1f} kHz)" if station.offset_hz else ""  # say so when the pair have left the calling frequency
                 if station.state == "LOCKED":  # the link is healthy
-                    self.show_status(f"LOCKED with {station.partner}  -  link held, speed adjusting to keep it clear", "dark green")  # solid green
+                    self.show_status(f"LOCKED with {station.partner}{where}  -  link held, speed adjusting to keep it clear" if not where else f"LOCKED with {station.partner}{where}", "dark green")  # solid green
                 elif station.state == "DEGRADED":  # frames have been failing
                     self.show_status(f"LOCKED with {station.partner}  -  signal worsening, slowing down to hold the link", "dark orange")  # amber
                 else:  # the partner has gone quiet
@@ -348,6 +373,8 @@ class Panel:  # the control panel window
 
     def save_settings(self):  # remember the current settings
         self.settings["frequency"] = self.frequency.current()  # the frequency now selected
+        self.settings["keep_open"] = bool(self.keep_open.get())  # whether contacts are kept open
+        self.settings["working"] = self.working.current()  # the working-frequency choice
         os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)  # create local/ if needed
         with open(SETTINGS_FILE, "w", encoding="utf-8") as handle:  # open the settings file
             json.dump(self.settings, handle, indent=2)  # save, readably
@@ -358,6 +385,15 @@ class Panel:  # the control panel window
         self.entries = all_frequencies()  # the presets and the operator's own
         self.frequency["values"] = [describe_frequency(entry) for entry in self.entries]  # one line each
         self.frequency.current(min(max(select, 0), len(self.entries) - 1))  # select the wanted line
+        self.refresh_working(self.settings["working"])  # and offer the working frequencies that go with it
+
+    def refresh_working(self, select=0):  # (re)fill the working-frequency choice for the selected calling frequency
+        entry = self.selected()  # the calling frequency
+        choices = ["stay on the calling frequency"]  # the first choice: no move
+        for offset in working_offsets_hz(entry):  # each working frequency that goes with it
+            choices.append(f"move to {entry['dial_khz'] + offset / 1000.0:.1f} kHz  ({offset / 1000.0:+.1f} kHz), return at the end")  # where the pair would go
+        self.working["values"] = choices  # show them
+        self.working.current(select if 0 <= select < len(choices) else 0)  # the remembered choice, if it still exists
 
     def selected(self):  # the frequency entry now selected
         return self.entries[self.frequency.current()]  # by its position in the list
@@ -396,6 +432,7 @@ class Panel:  # the control panel window
         if self.worker is not None and self.worker.is_alive() and self.station is not None:  # a station is on the air
             self.say("frequency change ignored while the station is running; press Stop first")  # moving mid-contact would drop the partner
             return  # leave the radio where it is
+        self.refresh_working(0)  # a new calling frequency has its own working frequencies; start at "stay"
         self.save_settings()  # remember the choice
         threading.Thread(target=self._tune_job, args=(dict(self.settings), self.selected()), daemon=True).start()  # tune in the background, so the window does not freeze while the radio answers
 
@@ -460,7 +497,17 @@ class Panel:  # the control panel window
         job["in"] = device_named(self.settings["audio_in"], "input") if self.settings["audio_in"] else None  # the input device, looked up by name at this moment
         job["out"] = device_named(self.settings["audio_out"], "output") if self.settings["audio_out"] else None  # the output device, likewise
         job["messages"], self.outbox = self.outbox, []  # the queued messages now belong to this run
+        offsets = working_offsets_hz(job["entry"])  # the working frequencies that go with the calling frequency
+        job["move_hz"] = offsets[self.working.current() - 1] if self.working.current() > 0 else None  # the one chosen, or none
         return job  # ready for the working thread
+
+    def end_contact(self):  # the End contact button
+        station = self.station  # the station running at this moment, if any
+        if station is None or station.state not in ("LOCKED", "DEGRADED", "REACQUIRE"):  # there is no contact to end
+            self.say("no contact in progress")  # say so
+            return  # nothing to do
+        station.end()  # close once any traffic under way is finished
+        self.say("ending the contact: closing identification will be sent when the current exchange is done")  # confirm
 
     def stop_station(self):  # the Stop button
         self.stop.set()  # the working thread sees this within a tenth of a second
@@ -476,6 +523,8 @@ class Panel:  # the control panel window
                 while not self.stop.is_set():  # until Stop
                     for heard in listener.feed(source.read()):  # every frame that has completed
                         self.say(describe(heard.result))  # show it
+                        if heard.result.ok:  # it decoded
+                            self.note_heard(heard.result)  # add its sender to the stations heard
                     time.sleep(0.1)  # a tenth of a second between looks
                 return  # done
             with self.rig_lock:  # one user of rig control at a time while it starts and tunes
@@ -485,15 +534,21 @@ class Panel:  # the control panel window
                     self._tune(rig, job["entry"])  # go to the selected frequency
             ptt = Ptt(job["ptt"], job["port"] or None, rig=rig)  # the transmit switch
             sink = AudioOut(job["out"], float(job["gain"]))  # the playing side
-            station = Station(job["call"], job["grid"])  # the link rules for this station
+            station = Station(job["call"], job["grid"], close_when_done=not job["keep_open"])  # the link rules for this station, holding the lock open if asked
+            station.move_to_hz = job["move_hz"] if rig is not None else None  # the working frequency to propose once locked (only when the radio can be retuned)
+            base_hz = job["entry"]["dial_khz"] * 1000.0  # the calling frequency, in hertz
+            retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move the radio to a working frequency and back
             station.beacon() if mode == "beacon" else station.listen()  # call, or wait to be called
             for text in job["messages"]:  # the queued messages
                 station.queue(text)  # into the station's outbox
             self.marked, self.shown, self.tracked = 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
-            run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=self.stop.is_set)  # the live loop
+            run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard)  # the live loop
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = list(station.outbox) + self.outbox  # anything it did not get to send is kept for the next run
+            if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
+                rig.set_frequency(base_hz)  # put the radio back on the calling frequency
+                self.say("radio back on the calling frequency")  # confirm
             self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)")  # the outcome for sent traffic
         except Exception as problem:  # report any failure instead of dying silently
             self.say(f"stopped by a problem: {problem}")  # what went wrong
