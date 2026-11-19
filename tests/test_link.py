@@ -9,8 +9,8 @@ ODD = "".join(chr(33 + (37 * i) % 94) for i in range(200))  # 200 characters tha
 
 def contact(path_ab, path_ba, from_a, from_b, seed=1):  # run one contact
     """Return (station A, station B, events) after A beacons, B answers, and both send their messages."""
-    a = Station("KO4WSC", "EM92")  # the station that calls
-    b = Station("W1AW", "FN31")  # the station that answers
+    a = Station("Q1AAAA", "EM92")  # the station that calls
+    b = Station("Q2BB", "FN31")  # the station that answers
     a.beacon()  # A beacons
     b.listen()  # B listens
     for text in from_a:  # A's traffic
@@ -44,8 +44,8 @@ def test_contact_on_a_lopsided_path():  # B hears A well; A hears B poorly
     kinds = [e["kind"] for e in events]  # the sequence of frames
     assert kinds[:3] == ["beacon", "answer", "confirm"] and kinds[-2:] == ["final", "final"]  # lock at the start, goodbyes at the end
     assert events[1]["level"] == 0  # the answer goes out at the slowest level
-    from_a = [e["level"] for e in events if e["sender"] == "KO4WSC" and e["kind"] == "message"]  # levels A sent its messages at
-    from_b = [e["level"] for e in events if e["sender"] == "W1AW" and e["kind"] == "message"]  # levels B sent its messages at
+    from_a = [e["level"] for e in events if e["sender"] == "Q1AAAA" and e["kind"] == "message"]  # levels A sent its messages at
+    from_b = [e["level"] for e in events if e["sender"] == "Q2BB" and e["kind"] == "message"]  # levels B sent its messages at
     assert min(from_a) > max(from_b)  # each direction ran at its own speed: fast one way, slow the other
     assert all(e["heard"] for e in events)  # and nothing was lost
 
@@ -75,8 +75,8 @@ def test_dead_path_ends_the_lock_and_reports_what_was_not_sent():  # the path ne
 
 
 def test_answering_station_gives_way_when_both_are_sending():  # the tie-break after a lost frame
-    a = Station("KO4WSC", "EM92")  # the beaconing station
-    b = Station("W1AW", "FN31")  # the answering station
+    a = Station("Q1AAAA", "EM92")  # the beaconing station
+    b = Station("Q2BB", "FN31")  # the answering station
     for station, role in ((a, "beaconer"), (b, "answerer")):  # put both into a lock by hand
         station.role, station.state, station.link, station.allowed = role, "LOCKED", 77, [0, 1, 2, 3, 4]  # same link, all levels
         station.leads = role == "beaconer"  # the beaconing station is the one that keeps the turn in a clash
@@ -89,9 +89,9 @@ def test_answering_station_gives_way_when_both_are_sending():  # the tie-break a
 
 
 def test_three_stations_answering_one_beacon_are_each_worked():  # the reply window
-    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller = Station("Q1AAAA", "EM92")  # the station that calls
     caller.beacon()  # it beacons
-    calls = ["W1AW", "K4ABC", "N0XYZ"]  # three stations that will all answer
+    calls = ["Q2BB", "Q3CCC", "Q4DDD"]  # three stations that will all answer
     others = []  # their Station objects
     for call in calls:  # set each one up
         station = Station(call, "FN31")  # a listening station
@@ -112,8 +112,8 @@ def test_three_stations_answering_one_beacon_are_each_worked():  # the reply win
 
 def pair(keep_open=False):  # two fresh stations, ready to meet
     """Return (calling station, answering station); with `keep_open` neither closes the contact when the traffic runs out."""
-    a = Station("KO4WSC", "EM92", close_when_done=not keep_open)  # the station that calls
-    b = Station("W1AW", "FN31", close_when_done=not keep_open)  # the station that answers
+    a = Station("Q1AAAA", "EM92", close_when_done=not keep_open)  # the station that calls
+    b = Station("Q2BB", "FN31", close_when_done=not keep_open)  # the station that answers
     a.beacon()  # A beacons
     b.listen()  # B listens
     return a, b  # the pair
@@ -160,51 +160,51 @@ def test_lock_kept_open_carries_later_traffic_and_closes_on_request():  # a conv
 
 
 def test_message_for_one_callsign_waits_for_that_station():  # a targeted message is not handed to anyone else
-    a, b = pair()  # KO4WSC calls, W1AW answers
+    a, b = pair()  # Q1AAAA calls, Q2BB answers
     a.queue("For whoever answers.")  # an ordinary message
-    a.queue("Only for N0XYZ.", to="N0XYZ")  # a message for a station that is not here
-    a.queue("Only for W1AW.", to="w1aw")  # a message for the station that will answer (typed in lower case)
+    a.queue("Only for Q4DDD.", to="Q4DDD")  # a message for a station that is not here
+    a.queue("Only for Q2BB.", to="q2bb")  # a message for the station that will answer (typed in lower case)
     run_link(a, b, Path(5.0), Path(5.0), seed=8)  # the contact
-    assert a.delivered == ["For whoever answers.", "Only for W1AW."]  # the two that were for this partner went, in order
-    assert a.outbox == ["Only for N0XYZ."] and a.outbox_to == ["N0XYZ"]  # the other is still waiting, with its address
-    assert b.inbox == ["For whoever answers.", "Only for W1AW."]  # and W1AW received exactly those two
+    assert a.delivered == ["For whoever answers.", "Only for Q2BB."]  # the two that were for this partner went, in order
+    assert a.outbox == ["Only for Q4DDD."] and a.outbox_to == ["Q4DDD"]  # the other is still waiting, with its address
+    assert b.inbox == ["For whoever answers.", "Only for Q2BB."]  # and Q2BB received exactly those two
 
 
 def test_directed_call_reaches_only_the_station_named():  # calling one station instead of beaconing
-    a = Station("KO4WSC", "EM92")  # the calling station
-    b = Station("W1AW", "FN31")  # the station being called
-    c = Station("N0XYZ", "EN34")  # a bystander
-    a.call_station("W1AW")  # A calls B by name
+    a = Station("Q1AAAA", "EM92")  # the calling station
+    b = Station("Q2BB", "FN31")  # the station being called
+    c = Station("Q4DDD", "EN34")  # a bystander
+    a.call_station("Q2BB")  # A calls B by name
     b.listen()  # B is listening
     c.listen()  # so is the bystander
-    a.queue("A message just for you.", to="W1AW")  # A's traffic for B
+    a.queue("A message just for you.", to="Q2BB")  # A's traffic for B
     call = a.poll(0.0)  # the directed call
     assert call.kind == "call"  # it is a call, not a beacon
     assert c.handle(c.hear(call.audio), call.seconds + 1.0) is None and c.state == "IDLE"  # the bystander hears it and stays silent
-    a2 = Station("KO4WSC", "EM92")  # start again for the contact itself
-    a2.call_station("W1AW")  # the same call
-    a2.queue("A message just for you.", to="W1AW")  # the same traffic
+    a2 = Station("Q1AAAA", "EM92")  # start again for the contact itself
+    a2.call_station("Q2BB")  # the same call
+    a2.queue("A message just for you.", to="Q2BB")  # the same traffic
     run_link(a2, b, Path(5.0), Path(5.0), seed=9)  # the contact
     assert a2.delivered == ["A message just for you."] and b.inbox == ["A message just for you."]  # delivered and acknowledged
     assert a2.state == b.state == "RELEASED"  # and closed properly
-    assert any("called by KO4WSC" in line for line in b.log)  # the called station knew it was called
+    assert any("called by Q1AAAA" in line for line in b.log)  # the called station knew it was called
 
 
 def test_directed_call_gives_up_when_nobody_is_there():  # the station named never answers
-    a = Station("KO4WSC", "EM92")  # the calling station
-    b = Station("W1AW", "FN31")  # a different station, listening
-    a.call_station("N0XYZ")  # A calls somebody who is not on the air
+    a = Station("Q1AAAA", "EM92")  # the calling station
+    b = Station("Q2BB", "FN31")  # a different station, listening
+    a.call_station("Q4DDD")  # A calls somebody who is not on the air
     b.listen()  # B hears the calls but they are not for it
     events = run_link(a, b, Path(5.0), Path(5.0), seed=10)  # let it run
     assert [e["kind"] for e in events] == ["call"] * 5  # five calls, no replies
-    assert a.state == "RELEASED" and any("no answer from N0XYZ" in line for line in a.log)  # then it gives up and says so
+    assert a.state == "RELEASED" and any("no answer from Q4DDD" in line for line in a.log)  # then it gives up and says so
     assert b.state == "IDLE"  # the other station never transmitted
 
 
 def test_broadcast_to_all_is_received_without_a_lock():  # a message to everyone
-    a = Station("KO4WSC", "EM92")  # the broadcasting station
-    b = Station("W1AW", "FN31")  # one listener
-    c = Station("N0XYZ", "EN34")  # another
+    a = Station("Q1AAAA", "EM92")  # the broadcasting station
+    b = Station("Q2BB", "FN31")  # one listener
+    c = Station("Q4DDD", "EN34")  # another
     b.listen()  # both are listening
     c.listen()  # and neither is in a contact
     text = "Net tonight at 0100 UTC on 7101.5. All stations welcome, please check in with your grid."  # too long for one frame at the slowest level
@@ -218,7 +218,7 @@ def test_broadcast_to_all_is_received_without_a_lock():  # a message to everyone
     for station in (b, c):  # each listener
         for tx in frames:  # hears every part
             assert station.handle(station.hear(tx.audio), t) is None  # and sends nothing back
-        assert station.bulletins == [("KO4WSC", "ALL", text)]  # the whole broadcast, once, with who sent it
+        assert station.bulletins == [("Q1AAAA", "ALL", text)]  # the whole broadcast, once, with who sent it
         for tx in frames:  # hearing it all again (a repeat)
             station.handle(station.hear(tx.audio), t + 100.0)  # is harmless
         assert len(station.bulletins) == 1  # and is not shown twice
@@ -242,7 +242,7 @@ def test_idle_working_frequency_is_given_up_after_three_minutes():  # nobody is 
 
 
 def test_unanswered_beacon_is_followed_by_a_wide_reply_window():  # the caller's side of the reply window
-    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller = Station("Q1AAAA", "EM92")  # the station that calls
     caller.beacon()  # it beacons
     first = caller.poll(0.0)  # the first beacon
     assert first.kind == "beacon" and first.note == "" and not caller.wide  # one reply slot to begin with

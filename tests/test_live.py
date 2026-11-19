@@ -22,7 +22,7 @@ def test_listener_finds_each_frame_once_as_audio_arrives():  # the basic job
     rng = np.random.default_rng(1201)  # repeatable random source
     report = ChannelReport(-5.0, 0.0, 2.0, 3)  # an arbitrary channel report
     frames = [  # three different frames, at three levels, with gaps between
-        (4.0, build_beacon("KO4WSC", "EM92", level=1)),  # a beacon
+        (4.0, build_beacon("Q1AAAA", "EM92", level=1)),  # a beacon
         (2.5, build_frame("First message over a live stream.", 3, link=77, msg_id=5, want_level=4)),  # a message
         (1.0, build_ack(77, 5, 0, 0, report, level=4)),  # its acknowledgment, hard on its heels
     ]  # end of the list
@@ -160,11 +160,11 @@ def test_operator_can_keep_frequencies_of_their_own(tmp_path):  # the list behin
 
 def test_status_from_log_lines():  # the panel's status display reads the station's state from log lines
     from live import status_for  # the function under test
-    assert status_for("   73.0s KO4WSC: locked with W1AW; told to send at L4, asking for L3")[0] == "LOCKED with W1AW  -  sending at L4, receiving at L3"  # the beaconing side's lock line
-    assert status_for("  151.0s KO4WSC: locked with W1AW; told to send at L4")[0] == "LOCKED with W1AW  -  sending at L4"  # the answering side's lock line
-    assert status_for("  104.3s KO4WSC: heard W1AW at +26 dB; answering, asking for L4")[0] == "ANSWERING W1AW"  # a beacon being answered
-    assert status_for("  170.1s KO4WSC: contact closed by partner")[0] == "CONTACT CLOSED"  # the end of a contact
-    assert status_for("    0.0s  KO4WSC on the air as answerer")[0].startswith("LISTENING")  # waiting for a beacon
+    assert status_for("   73.0s Q1AAAA: locked with Q2BB; told to send at L4, asking for L3")[0] == "LOCKED with Q2BB  -  sending at L4, receiving at L3"  # the beaconing side's lock line
+    assert status_for("  151.0s Q1AAAA: locked with Q2BB; told to send at L4")[0] == "LOCKED with Q2BB  -  sending at L4"  # the answering side's lock line
+    assert status_for("  104.3s Q1AAAA: heard Q2BB at +26 dB; answering, asking for L4")[0] == "ANSWERING Q2BB"  # a beacon being answered
+    assert status_for("  170.1s Q1AAAA: contact closed by partner")[0] == "CONTACT CLOSED"  # the end of a contact
+    assert status_for("    0.0s  Q1AAAA on the air as answerer")[0].startswith("LISTENING")  # waiting for a beacon
     assert status_for("    0.0s  sending beacon at L0, 28.4 s")[0].startswith("CALLING")  # calling
     assert status_for("  126.7s  finished")[0] == "STOPPED"  # the run has ended
     assert status_for("   91.2s  heard acknowledgment at L4, +14.4 dB") is None  # an ordinary line changes nothing
@@ -172,8 +172,8 @@ def test_status_from_log_lines():  # the panel's status display reads the statio
 
 def test_plain_log_lines():  # the panel's plain view drops the technical detail from a log line
     from live import plain_line  # the function under test
-    assert plain_line("   73.0s  heard answer at L0, +33.0 dB, offset +4.3 Hz, fading 0.00  {'dest': 'KO4WSC', 'levels': (0, 1)}") == "heard answer at L0, +33.0 dB, fading 0.00"  # a control frame loses its stamp, offset and fields
-    assert plain_line("             73.0s KO4WSC: locked with W1AW; told to send at L4, asking for L4") == "locked with W1AW; told to send at L4, asking for L4"  # a station note loses its stamp and callsign
+    assert plain_line("   73.0s  heard answer at L0, +33.0 dB, offset +4.3 Hz, fading 0.00  {'dest': 'Q1AAAA', 'levels': (0, 1)}") == "heard answer at L0, +33.0 dB, fading 0.00"  # a control frame loses its stamp, offset and fields
+    assert plain_line("             73.0s Q1AAAA: locked with Q2BB; told to send at L4, asking for L4") == "locked with Q2BB; told to send at L4, asking for L4"  # a station note loses its stamp and callsign
     assert plain_line("   36.5s  sending answer at L0, 36.8 s  slot 0, wants L4") == "sending answer at L0, 36.8 s"  # a transmission loses its slot and wanted level
     assert plain_line(" 1224.1s  noise briefly looked like the start of a frame; nothing decoded") is None  # a false alarm is left out
     assert plain_line("radio tuned to 10144.0 kHz PKTUSB  (30 m)") == "radio tuned to 10144.0 kHz PKTUSB  (30 m)"  # an ordinary line is unchanged

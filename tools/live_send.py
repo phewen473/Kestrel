@@ -2,8 +2,8 @@
 
 Run from the repository root:
 
-    python tools/live_send.py --call KO4WSC --grid EM92                      (a beacon at the slowest level)
-    python tools/live_send.py --call KO4WSC --to ALL --text "Kestrel test"  (a fully addressed message)
+    python tools/live_send.py --call Q1AAAA --grid EM92                      (a beacon at the slowest level)
+    python tools/live_send.py --call Q1AAAA --to ALL --text "Kestrel test"  (a fully addressed message)
 
 Useful options: --out (device number or part of its name), --level 0..4, --gain 0..1,
 --ptt none|rig|cat|rts|dtr; --rig host:port with --freq (kHz) and --mode tunes the radio through

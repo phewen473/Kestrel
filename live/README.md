@@ -27,7 +27,7 @@ Kestrel controls the radio through **Hamlib's rigctld**, the same rig-control en
 
 ```
 rigctld -m <model number> -r <serial port> -s <baud>          (start Hamlib's rig server; it listens on port 4532)
-python tools/live_station.py --call KO4WSC --grid EM93 --beacon --rig 127.0.0.1:4532 --band 20 --ptt rig --in "USB Audio" --out "USB Audio"
+python tools/live_station.py --call Q1AAAA --grid EM93 --beacon --rig 127.0.0.1:4532 --band 20 --ptt rig --in "USB Audio" --out "USB Audio"
 ```
 
 ## Preselected frequencies
@@ -54,8 +54,8 @@ Two virtual audio cables (or two real cables between two sound cards) make a com
 
 ```
 python tools/live_devices.py                                                                  (find the device numbers)
-python tools/live_station.py --call W1AW --grid FN31 --listen --in <cable 1 out> --out <cable 2 in>
-python tools/live_station.py --call KO4WSC --grid EM92 --beacon --in <cable 2 out> --out <cable 1 in> --send "Hello from Kestrel"
+python tools/live_station.py --call Q2BB --grid FN31 --listen --in <cable 1 out> --out <cable 2 in>
+python tools/live_station.py --call Q1AAAA --grid EM92 --beacon --in <cable 2 out> --out <cable 1 in> --send "Hello from Kestrel"
 ```
 
 ## Scripts for your own station

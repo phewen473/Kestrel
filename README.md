@@ -41,7 +41,7 @@ Works the same on Linux, Windows and Raspberry Pi OS (Python 3.10 or newer).
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt        (Windows: .venv\Scripts\pip install -r requirements.txt)
 .venv/bin/python -m pytest -q                    (runs the tests; takes a few seconds)
-.venv/bin/python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
+.venv/bin/python tools/demo.py --text "CQ CQ de Q1AAAA" --snr -15 --condition moderate
 .venv/bin/python tools/link_demo.py --scenario slip      (two stations hold a contact while conditions fall away and return)
 ```
 
@@ -117,7 +117,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## How to run or deploy
 - Tests: `.venv\Scripts\python -m pytest -q` (a few seconds).
-- One-frame demo: `.venv\Scripts\python tools\demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate` (writes a WAV and a waterfall picture into `results\`).
+- One-frame demo: `.venv\Scripts\python tools\demo.py --text "CQ CQ de Q1AAAA" --snr -15 --condition moderate` (writes a WAV and a waterfall picture into `results\`).
 - Sweeps: `tools\snr_sweep.py` (L0 decode rate against SNR) and `tools\level_sweep.py` (all levels), `tools\fading_sweep.py` (all levels with fading); results go to `results\`.
 - Nothing is deployed. No on-air use until the matching spec version is published.
 

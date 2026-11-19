@@ -108,9 +108,9 @@ def draw(events, path, title, out_path):  # the picture
 
 def group(seed):  # the "group" scenario
     """One station beacons; three others each have a short message for it. Print the timeline and save the chart."""
-    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller = Station("Q1AAAA", "EM92")  # the station that calls
     caller.beacon()  # it beacons
-    calls = ["W1AW", "K4ABC", "N0XYZ"]  # the three answering stations
+    calls = ["Q2BB", "Q3CCC", "Q4DDD"]  # the three answering stations
     others = []  # their Station objects
     for call in calls:  # set each one up
         station = Station(call, "FN31")  # a listening station
@@ -141,8 +141,8 @@ def main():  # the script itself
         group(args.seed)  # run that instead
         return  # done
     path_ab, path_ba, from_a, from_b = build(args.scenario)  # the paths and the traffic
-    a = Station("KO4WSC", "EM92")  # the station that calls
-    b = Station("W1AW", "FN31")  # the station that answers
+    a = Station("Q1AAAA", "EM92")  # the station that calls
+    b = Station("Q2BB", "FN31")  # the station that answers
     a.beacon()  # A beacons
     b.listen()  # B listens
     for text in from_a:  # A's traffic

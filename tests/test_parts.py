@@ -52,7 +52,7 @@ def test_compression_is_used_only_when_it_saves_a_size_class():  # compress only
     english = "arrived safe, will call sunday after church. love to all"  # 56 characters of plain English
     assert compressed_bits(english) < 0.8 * 7 * len(english)  # plain English shrinks by more than a fifth
     assert choose_packing(english) == (0, True)  # compressed, it fits the 50-character frame
-    assert choose_packing("KO4WSC DE N1CALL") == (0, False)  # a short text already fits the smallest frame: sent plain
+    assert choose_packing("Q1AAAA DE N1CALL") == (0, False)  # a short text already fits the smallest frame: sent plain
     bits = text_to_bits(english, 0, True)  # pack it compressed
     assert bits_to_text(bits, True) == english  # and it comes back unchanged
 
@@ -118,12 +118,12 @@ def test_chirp_measures_timing_and_frequency_in_noise():  # the chirp pair must 
 
 def test_callsign_coding_roundtrip_and_limits():  # addresses <-> 48 bits
     from modem.address import bits_to_call, call_to_bits, is_group  # the address helpers
-    for call in ("KO4WSC", "W1AW", "VP8/G4ABC", "KO4WSC/MM", "ALL", "SC-NET", "A"):  # ordinary, compound and group addresses
+    for call in ("Q1AAAA", "Q2BB", "Q7/Q6FFF", "Q1AAAA/MM", "ALL", "SC-NET", "A"):  # ordinary, compound and group addresses
         bits = call_to_bits(call)  # encode
         assert len(bits) == 48 and bits_to_call(bits) == call  # 48 bits, and it comes back unchanged
-    assert bits_to_call(call_to_bits(" ko4wsc ")) == "KO4WSC"  # spaces around it and lower case are tidied
-    assert is_group("ALL") and is_group("SC-NET") and not is_group("KO4WSC")  # names without a digit are groups
-    for bad in ("", "TOOLONGCALL", "KO4 WSC", "KO4WSC!"):  # empty, too long, a space inside, a character outside the alphabet
+    assert bits_to_call(call_to_bits(" q1aaaa ")) == "Q1AAAA"  # spaces around it and lower case are tidied
+    assert is_group("ALL") and is_group("SC-NET") and not is_group("Q1AAAA")  # names without a digit are groups
+    for bad in ("", "TOOLONGCALL", "KO4 WSC", "Q1AAAA!"):  # empty, too long, a space inside, a character outside the alphabet
         with pytest.raises(ValueError):  # each must be refused
             call_to_bits(bad)  # try to encode it
     with pytest.raises(ValueError):  # 48 one-bits are a number too big to be an address

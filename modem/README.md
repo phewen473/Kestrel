@@ -40,15 +40,15 @@ Every frame's body starts with an address block. There are two kinds of frame:
 | Link frame | Messages between two stations that hold a lock | 28 bits: a 9-bit link number for the pair, the speed level the sender wants from its partner, and a 16-bit message number |
 | Fully addressed frame | Traffic outside a lock, and mail being held, relayed or delivered | 120 bits: destination callsign, origin callsign, message number, relay count, remaining lifetime |
 
-- A callsign is up to 9 characters (letters, digits, `/` and `-`) packed into 48 bits, so `KO4WSC/MM` or `VP8/G4ABC` fit.
+- A callsign is up to 9 characters (letters, digits, `/` and `-`) packed into 48 bits, so `Q1AAAA/MM` or `Q7/Q6FFF` fit.
 - An address with no digit is a group name. `ALL` means everyone.
 - The origin callsign plus the message number is the message ID. Every part of a split message carries the same one, and `join_parts` refuses to join parts of different messages.
 - The link number is worked out from the two callsigns (`link_id`), so nothing extra has to be agreed.
 - Both kinds of frame are the same length. The longer address block of a fully addressed frame takes room from the text: it holds 36, 86, 136 or 186 plain characters where a link frame holds 50, 100, 150 or 200. A longer message is compressed if that makes it fit, and split otherwise.
 
 ```
-build_frame("QSL 73", level=3, link=link_id("KO4WSC", "W1AW"), msg_id=17)          # link frame
-build_frame("QSL 73", level=0, dest="W1AW", origin="KO4WSC", msg_id=17)           # fully addressed frame
+build_frame("QSL 73", level=3, link=link_id("Q1AAAA", "Q2BB"), msg_id=17)          # link frame
+build_frame("QSL 73", level=0, dest="Q2BB", origin="Q1AAAA", msg_id=17)           # fully addressed frame
 ```
 
 ## Control frames (`control.py`)
@@ -65,10 +65,10 @@ Four short frames set up and run a link. They look like message frames on the ai
 Every answer and acknowledgment carries a **channel report** (18 bits): the SNR, the fading index, the frequency offset, and the speed level the receiver wants the sender to use next. That last field is how the speed adapts: the station that hears the signal decides, and the sender follows. Message frames carry the wanted level too, so a station that is only sending can still slow its partner's acknowledgments.
 
 ```
-build_beacon("KO4WSC", "EM92", mail_check=True)                                    # level 0 unless told otherwise
-build_answer("KO4WSC", "W1AW", ChannelReport(-12.0, 0.0, 6.0, want_level=2), level=1)
+build_beacon("Q1AAAA", "EM92", mail_check=True)                                    # level 0 unless told otherwise
+build_answer("Q1AAAA", "Q2BB", ChannelReport(-12.0, 0.0, 6.0, want_level=2), level=1)
 build_ack(link, msg_id=17, part=0, status=ACK_OK, report=report, level=3)
-build_ident("KO4WSC", link, final=True, level=3)
+build_ident("Q1AAAA", link, final=True, level=3)
 ```
 
 `receive` returns the same report as for a message, with the frame's fields in `result.fields`.

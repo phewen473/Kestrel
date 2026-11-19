@@ -93,8 +93,8 @@ Two faults in the first design were found this way and fixed:
 
 ## Added with spec v0.17
 
-- **Messages for one callsign.** `station.queue(text, to="W1AW")` holds the message until W1AW is the partner. `station.outbox_to` runs alongside `station.outbox`.
-- **Directed call.** `station.call_station("W1AW")` in place of `beacon()`: the station sends an answer frame nobody asked for, addressed to W1AW. A listening W1AW locks and takes the beaconing station's part (`station.leads`); everyone else stays silent. Five calls without a reply and the caller gives up.
+- **Messages for one callsign.** `station.queue(text, to="Q2BB")` holds the message until Q2BB is the partner. `station.outbox_to` runs alongside `station.outbox`.
+- **Directed call.** `station.call_station("Q2BB")` in place of `beacon()`: the station sends an answer frame nobody asked for, addressed to Q2BB. A listening Q2BB locks and takes the beaconing station's part (`station.leads`); everyone else stays silent. Five calls without a reply and the caller gives up.
 - **Broadcast.** `station.broadcast(text)` queues fully addressed frames to ALL, sent by `poll()` while the station is idle and never acknowledged. Any station that decodes them collects the parts and adds `(origin, destination, text)` to `station.bulletins`, once.
 - Four new tests cover a targeted message that waits, a directed call (and a bystander staying silent), a call nobody answers, and a broadcast heard by two stations.
 

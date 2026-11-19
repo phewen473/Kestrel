@@ -1,8 +1,8 @@
 """Send one message through the simulated channel, save what it sounds and looks like, and decode it.
 
 Run from the repository root, for example:
-    python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
-    python tools/demo.py --text "CQ CQ de KO4WSC" --level 3 --snr -5
+    python tools/demo.py --text "CQ CQ de Q1AAAA" --snr -15 --condition moderate
+    python tools/demo.py --text "CQ CQ de Q1AAAA" --level 3 --snr -5
 It writes results/demo.wav (play it, or feed it to any waterfall program)
 and results/demo_waterfall.png (a picture of the signal).
 """

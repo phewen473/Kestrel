@@ -2,8 +2,8 @@
 
 Run from the repository root:
 
-    python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello from Kestrel"
-    python tools/live_station.py --call W1AW --grid FN31 --listen
+    python tools/live_station.py --call Q1AAAA --grid EM92 --beacon --send "Hello from Kestrel"
+    python tools/live_station.py --call Q2BB --grid FN31 --listen
 
 --beacon calls for a partner; --listen waits for a beacon and answers it.
 --send (may be repeated) queues messages for the partner.

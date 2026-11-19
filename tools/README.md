@@ -5,7 +5,7 @@ Run them from the repository root. All of them write into `results/`.
 ## demo.py - send one message and look at it
 
 ```
-python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
+python tools/demo.py --text "CQ CQ de Q1AAAA" --snr -15 --condition moderate
 ```
 
 Builds one frame, passes it through the simulated channel, and decodes it. It prints what the receiver found and writes:
@@ -54,8 +54,8 @@ These four work with real audio and need the `sounddevice` package (and `pyseria
 ```
 python tools/live_devices.py                                           (list the sound devices; give the other tools part of a NAME, since Windows renumbers devices)
 python tools/live_monitor.py --in "USB Audio"                          (receive only: print every Kestrel frame heard)
-python tools/live_send.py --call KO4WSC --grid EM92 --out "USB Audio"  (transmit one beacon)
-python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello"   (a whole contact, in real time)
+python tools/live_send.py --call Q1AAAA --grid EM92 --out "USB Audio"  (transmit one beacon)
+python tools/live_station.py --call Q1AAAA --grid EM92 --beacon --send "Hello"   (a whole contact, in real time)
 ```
 
 ```
