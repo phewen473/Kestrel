@@ -137,6 +137,7 @@ class Station:  # the link rules for one station
         self.last_traffic = 0.0  # when a message frame last went either way (or when the pair arrived on the working frequency)
         self.idle_warned = False  # True once the operator has been warned that an idle working frequency is about to be given up
         self.single = False  # True while a listening station makes one beacon round or one directed call, after which it listens again
+        self.answer_beacons = True  # a listening station answers beacons by itself; when False the operator chooses, and replies with a directed call
 
     # ---- starting up ----
 
@@ -407,6 +408,8 @@ class Station:  # the link rules for one station
     def _on_beacon(self, result, now):  # a beacon was heard
         if self.role != "answerer" or self.state != "IDLE" or not result.fields["listening"]:  # not answering, already busy, or the caller takes no answers
             return None  # stay silent
+        if not self.answer_beacons:  # the operator answers by hand, with a directed call
+            return None  # stay silent; the operator has been shown the beacon
         if result.origin in self.worked and not self._has_for(result.origin):  # already worked this station, and nothing new for it
             return None  # leave the reply window to others
         slot = int(self.rng.integers(0, WIDE_SLOTS)) if result.fields["wide"] else 0  # a wide window: pick one of four slots at random; otherwise the only slot

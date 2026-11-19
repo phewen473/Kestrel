@@ -55,11 +55,13 @@ AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, 
 DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
-            "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120,  # (continued: operating)
+            "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120, "auto_answer": False,  # (continued: operating)
             "log_level": "basic", "theme": "system",  # (continued: logging and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen (answer calls)", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
+ANSWER_NAMES = {False: "Show me each beacon; I choose whether to respond", True: "Answer every beacon automatically"}  # whether Listen answers beacons by itself
+CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stations heard list this long
 LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
 THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
 NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tuned by hand
@@ -68,6 +70,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("F1", "this list"), ("F2", "Listen (answer calls)"), ("F3", "Monitor (receive only)"), ("F4", "Off (stop receiving and transmitting)"),  # (continued)
     ("F5", "Beacon (call anyone) on or off"), ("F6", "Call the station in the To box"), ("F7", "End the contact"), ("F8", "Stations heard in the last 48 hours"),  # (continued)
     ("F9", "Telemetry received"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
+    ("Ctrl+Y", "Respond: call the station selected in the Stations heard list"),  # (continued)
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
     ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
@@ -212,6 +215,7 @@ class Panel:  # the control panel window
         self.awaiting_setup = False  # True when the panel is waiting for the first Settings to be saved before it starts
         self.rx_level = None  # Windows' level control for the receive audio device, when it can be had
         self.windows = {}  # windows of which only one may be open (stations heard, telemetry, settings), by name
+        self.calling = {}  # stations heard beaconing recently, for the Stations calling window: callsign -> {grid, snr, when, fields}
         self.base_khz = 0.0  # the calling frequency chosen, in kHz (kept here so the station thread need not read the window)
         self.level_check = 0.0  # when Windows' receive level was last read back
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
@@ -283,9 +287,10 @@ class Panel:  # the control panel window
             lists.columnconfigure(column, weight=1)  # equally
         self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
         self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
-        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 100)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *)
+        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 90), ("mail", "Messages", 150)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
         keep = ttk.Frame(self.stations.master)  # buttons under that list
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
+        ttk.Button(keep, text="Respond  Ctrl+Y", command=self.respond).pack(side="left", padx=(0, 8))  # call the selected station by name (answer its beacon by hand)
         ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
         ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
         ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
@@ -369,6 +374,7 @@ class Panel:  # the control panel window
         messages.add_command(label="Broadcast telemetry to ALL", underline=10, accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
         bar.add_cascade(label="Messages", underline=0, menu=messages)  # put the menu on the bar
         stations = tk.Menu(bar, tearoff=False)  # the Stations menu
+        stations.add_command(label="Respond to the selected station (call it)", underline=0, accelerator="Ctrl+Y", command=self.respond)  # answer a beacon by hand
         stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
         stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
         stations.add_separator()  # a divider
@@ -401,7 +407,7 @@ class Panel:  # the control panel window
                 "<F11>": self.broadcast_message, "<F12>": lambda: self.settings_window(0), "<Control-l>": lambda: self.to.focus_set(), "<Control-m>": lambda: self.message.focus_set(),  # (continued)
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set()}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -412,7 +418,7 @@ class Panel:  # the control panel window
         table = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=5)  # the list itself, five rows tall
         for name, heading, width in columns:  # each column
             table.heading(name, text=heading, anchor="w")  # its heading
-            table.column(name, width=width, anchor="w", stretch=(name == "text"))  # its width; only the message column stretches
+            table.column(name, width=width, anchor="w", stretch=(name in ("text", "mail")))  # its width; only the message columns stretch
         table.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # place the list
         scroll = ttk.Scrollbar(frame, orient="vertical", command=table.yview)  # a scroll bar for it
         scroll.grid(row=0, column=1, sticky="ns")  # place it beside the list
@@ -628,6 +634,7 @@ class Panel:  # the control panel window
         self.plain_colour = c["bg"]  # the status band's ordinary background
         self.log.configure(background=c["text_bg"], foreground=c["text_fg"], insertbackground=c["text_fg"])  # the log
         self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colours it
+        self.stations.tag_configure("calling", background="#5a4a12" if c["name"] == "dark" else "#fff0a8")  # stations beaconing now: amber in the dark look, pale yellow in the light
         self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program colour)
         theme.recolour_comboboxes(self.root, c)  # the open lists of the drop-downs
         for window in self.windows.values():  # any extra windows that are open
@@ -766,7 +773,7 @@ class Panel:  # the control panel window
             return  # nothing to note
         grid = (result.fields or {}).get("grid", "")  # its grid locator, if it carries one
         kind = KIND.get(result.frame_type, "frame")  # what it was
-        self.heard.put((call, grid, result.snr_db, kind))  # pass it to the window
+        self.heard.put((call, grid, result.snr_db, kind, dict(result.fields or {})))  # pass it to the window, with the frame's flags
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
@@ -827,7 +834,9 @@ class Panel:  # the control panel window
 
     def follow_station(self):  # keep the message lists, the readings, the beacon and the logbook in step with the station
         while not self.heard.empty():  # every station heard since the last look
-            call, grid, snr, kind = self.heard.get()  # who, where, how strong, and what it sent
+            call, grid, snr, kind, fields = self.heard.get()  # who, where, how strong, what it sent, and its flags
+            if kind == "beacon" and call != self.settings["call"]:  # a station calling for a partner
+                self.beacon_heard(call, grid, snr, fields)  # offer it to the operator
             values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
             if call in self.heard_rows:  # already listed
                 self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
@@ -884,6 +893,7 @@ class Panel:  # the control panel window
             else:  # not in a contact
                 self.readings.configure(text="")  # nothing to report
         self.follow_beacon()  # the repeating beacon's label, and its automatic stop
+        self.follow_calling()  # age the Stations calling window
         self.root.after(500, self.follow_station)  # look again in half a second
 
     def follow_contact(self, station):  # notice a contact starting and ending, for the logbook
@@ -1205,6 +1215,61 @@ class Panel:  # the control panel window
         self.logbook.write("telemetry", direction="RX", station=self.settings["call"], **{"from": sender}, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
         self.say(f"telemetry from {sender}: hears {info['count']} station(s); see Stations > Telemetry received (F9)")  # tell the operator
 
+    # ---- beacons to respond to ----
+
+    def waiting_for(self, call):  # how many messages are waiting that could go to a station
+        """Return (messages waiting for `call` by name, messages waiting for whoever the partner is)."""
+        named = anyone = 0  # the two counts
+        for row in self.to_send.get_children():  # every outgoing message
+            if self.to_send.set(row, "state") in ("waiting", "sending"):  # not yet delivered
+                to = self.to_send.set(row, "to")  # who it is for
+                named += to == call  # for this station by name
+                anyone += to == "partner"  # for whoever the partner is
+        return named, anyone  # both counts
+
+    def mail_note(self, call, fields):  # the messages column of the Stations calling window
+        named, anyone = self.waiting_for(call)  # this station's messages for it
+        notes = []  # the pieces
+        if named:  # messages addressed to it
+            notes.append(f"{named} waiting for {call}")  # say how many
+        if anyone:  # messages for whoever answers
+            notes.append(f"{anyone} for any partner")  # say how many
+        if fields.get("holds_mail"):  # its beacon says it holds mail for others
+            notes.append("it holds mail (may be for you)")  # which may be for this station
+        if fields.get("mail_check"):  # it is asking for its own mail
+            notes.append("it is asking for its mail")  # say so
+        return "; ".join(notes) or "none"  # all of them
+
+    def beacon_heard(self, call, grid, snr, fields):  # a station beaconed: show it to the operator, who chooses whether to respond
+        if self.settings["auto_answer"] and self.mode == "listen":  # the station answers beacons by itself
+            return  # nothing to ask
+        new = call not in self.calling  # not already highlighted
+        self.calling[call] = {"when": time.time(), "fields": fields}  # the latest beacon
+        note = self.mail_note(call, fields)  # messages either way
+        self.say(f"{call} is beaconing ({snr:+.0f} dB): select it in Stations heard and press Respond (Ctrl+Y) to call it" + (f"; messages: {note}" if note != "none" else ""))  # in the log
+        if new:  # a station not highlighted before
+            self.root.bell()  # draw attention
+
+    def follow_calling(self):  # keep the highlights and the messages column of the Stations heard list up to date
+        cutoff = time.time() - CALLING_KEEP_S  # beacons older than this are no longer worth answering
+        for call in [call for call, info in self.calling.items() if info["when"] < cutoff]:  # each one too old
+            del self.calling[call]  # forget it
+        for call, row in self.heard_rows.items():  # every station in the list
+            info = self.calling.get(call)  # its recent beacon, if any
+            self.stations.item(row, tags=("calling",) if info else ())  # highlighted while it is calling
+            self.stations.set(row, "mail", self.mail_note(call, info["fields"] if info else {}).replace("none", ""))  # messages either way
+
+    def respond(self):  # Respond: call the station selected in the Stations heard list
+        rows = self.stations.selection()  # the selected row
+        if not rows:  # nothing selected
+            messagebox.showinfo("Kestrel", "Select a station in the Stations heard list first (Ctrl+G, then the arrow keys).", parent=self.root)  # say how
+            return  # nothing to do
+        call = self.stations.set(rows[0], "who")  # its callsign
+        self.to.set(call)  # into the To box
+        self.calling.pop(call, None)  # it is being dealt with
+        self.stations.item(rows[0], tags=())  # no longer highlighted as calling
+        self.call_to()  # call it by name
+
     # ---- extra windows ----
 
     def table(self, parent, columns, height=14):  # a list with headings that sort when clicked
@@ -1467,6 +1532,8 @@ class Panel:  # the control panel window
         note(audio, 2, "Set the levels with the two sliders beside the meters on the main window (Ctrl+J).\nThe receive slider changes Windows' recording level for the device; the transmit slider sets the drive to the radio.")  # where the levels are
         operating = page("Operating")  # what the panel does
         field(operating, 0, "start_mode", "When the panel opens", names=START_NAMES, width=30)  # listen, monitor or nothing
+        field(operating, 5, "auto_answer", "When Listen hears a beacon", names=ANSWER_NAMES, width=44)  # answer by hand or automatically
+        note(operating, 6, "By hand: a station beaconing is highlighted in the Stations heard list, with any messages either way; select it and\npress Respond (Ctrl+Y) to call it by name. Calls made to your own callsign are always answered.")  # how it works
         field(operating, 1, "beacon_every_min", f"Repeating beacon: minutes between beacons ({BEACON_MIN} to {BEACON_MAX})", width=6)  # the interval
         field(operating, 2, "beacon_autostop_min", f"Stop the repeating beacon after this many minutes with\nno keyboard or mouse use ({AUTOSTOP_MIN} to {AUTOSTOP_MAX}; 0 = never)", width=6)  # the automatic stop
         note(operating, 3, "The repeating beacon starts only when you press its button (F5). Each round is one beacon and its reply window;\nit pauses during a contact and the interval starts again when the contact ends. Press the button again to stop.")  # how it works
@@ -1509,6 +1576,8 @@ class Panel:  # the control panel window
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
             self.logbook.level = new["log_level"]  # the logbook's level of detail
+            if self.station is not None:  # a station is listening now
+                self.station.answer_beacons = bool(new["auto_answer"])  # the change applies at once
             if new["theme"] != self.theme_var.get():  # a different look
                 self.set_theme(new["theme"])  # apply it
             self.show_me()  # show the callsign and grid at the top
@@ -1538,7 +1607,7 @@ class Panel:  # the control panel window
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
-        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "log_level")  # the ones that bear on a transmission
+        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level")  # the ones that bear on a transmission
         return "; ".join(f"{key}={self.settings[key]}" for key in keys)  # as one line
 
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)
@@ -1699,7 +1768,8 @@ class Panel:  # the control panel window
             station.move_to_hz = job["move_hz"] if rig is not None else None  # the working frequency to propose once locked (only when the radio can be retuned)
             base_hz = job["entry"]["dial_khz"] * 1000.0  # the calling frequency, in hertz
             retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move the radio to a working frequency and back
-            station.listen()  # answers beacons and directed calls
+            station.listen()  # answers directed calls...
+            station.answer_beacons = bool(job["auto_answer"])  # ...and beacons too, only if the operator chose that
             for text, to in job["messages"]:  # the queued messages
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning

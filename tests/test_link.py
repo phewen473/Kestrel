@@ -311,3 +311,17 @@ def test_station_called_during_its_own_beacon_window_answers_the_call():  # a re
     assert any("called by Q2BB" in line for line in a.log)  # A knew it was being called
     a.new_contact()  # afterwards
     assert a.role == "answerer"  # A listens again
+
+
+def test_operator_answers_a_beacon_by_hand_with_a_directed_call():  # answering by hand (spec 0.22)
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens...
+    a.beacon_once()  # ...and makes one beacon round
+    a.queue("Thanks for answering.")  # with a message for whoever answers
+    b.listen()  # B listens...
+    b.answer_beacons = False  # ...but its operator answers by hand
+    beacon = a.poll(0.0)  # A's beacon
+    assert b.handle(b.hear(beacon.audio), beacon.seconds + 1.0) is None  # B stays silent: its operator is shown the beacon instead
+    b.call_once("Q1AAAA")  # some seconds later the operator chooses to respond
+    run_link(a, b, Path(5.0), Path(5.0), seed=13, start_s=beacon.seconds + 20.0)  # the call reaches A while A is still in its reply window
+    assert b.inbox == ["Thanks for answering."] and any("called by Q2BB" in line for line in a.log)  # A took the call and delivered its message

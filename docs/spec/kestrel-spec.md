@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.21 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.20:** the transmitted signal has not changed since version 0.20, and stations following 0.20 and 0.21 work together. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.22 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.20:** the transmitted signal has not changed since version 0.20, and stations following 0.20, 0.21 and 0.22 work together. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -296,6 +296,7 @@ The numbers below are starting values from simulation, to be tuned on the air.
 - **Answering.** After a plain beacon a station answers in the only slot. After a wide-window beacon it picks one of the four slots at random and answers at the start of that slot.
 - **Choosing.** With one slot, the beaconing station locks with the answer it decodes. With four, it listens to the whole window and locks with the strongest answer it decoded.
 - **When to widen.** A station's first beacon is plain. If a beacon brings no answer it can decode, which is what happens when several stations answer on top of each other, its following beacons ask for the wide window. It keeps asking for the wide window in later calls for as long as more than one answer arrives in a window.
+- **Answering by hand.** A listening station may be set not to answer beacons by itself. Its operator is shown each beacon heard, with any messages waiting for that station, and chooses whether to respond. Because no operator can begin an answer within its reply slot, the response is a directed call (Section 6.11). The beaconing station accepts it while it is still waiting in its reply window (Section 6.11, "Called while beaconing"), or later while listening. Directed calls to the station's own callsign are always answered.
 - **Not chosen.** An answering station that hears no confirmation with its own link number returns to listening and may answer the next beacon.
 - **Already worked.** A station does not answer a beacon from a station it has just finished a contact with, unless it has new traffic for it.
 

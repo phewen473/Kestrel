@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.22 (draft) - 19 November 2026
+
+- **No frame is changed from 0.21.** The signal version stays 0.20.
+- Answering by hand (Section 6.2): a listening station may be set not to answer beacons by itself. Its operator is shown each beacon, with any messages waiting for that station, and responds, if at all, with a directed call, which the beaconing station accepts during its reply window or later while listening.
+
 ## 0.21 (draft) - 19 November 2026
 
 - **No frame is changed from 0.20.** The signal version stays 0.20; stations following 0.20 and 0.21 work together.
