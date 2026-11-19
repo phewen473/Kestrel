@@ -62,6 +62,7 @@ python tools/live_station.py --call KO4WSC --grid EM92 --beacon --send "Hello"  
 python tools/kestrel_panel.py                                          (a small control panel: the same things, with drop-down lists)
 python tools/kestrel_panel.py --profile second                         (a second panel with its own settings, for a second radio on the same computer)
 python tools/live_frequencies.py                                       (show the frequency list; --add and --remove your own)
+python tools/preamble_study.py                                         (compare the chirp pair with a tone-pattern preamble; several minutes)
 ```
 
 `kestrel_panel.py` is the control panel. How it is laid out:
@@ -91,3 +92,9 @@ python tools/make_spec_tables.py
 ```
 
 Writes the tables that the specification refers to into `docs/spec/tables/`: the LDPC check lists for each frame size (`ldpc_checks_k402.txt` and so on) and the compression code of every character (`compression_codes.txt`). The tables come straight from the modem code, so the published description and the program cannot drift apart. Run it again whenever `modem/ldpc.py` or `modem/compress.py` changes.
+
+## Preamble study
+
+`preamble_study.py` compares the two-second chirp pair that starts every frame today with a short fixed pattern of each level's own tones. It changes nothing in the modem. For every level, at that level's weakest working signals (noise only, and moderate and heavy fading), it sends test frames with a random start and a random frequency error and records how often the true start is among the receiver's three best guesses, and how exact the timing and frequency are. Results go to `results/preamble_study.csv`.
+
+First results (200 frames per point, 18 November 2026): a 12-tone pattern was found in 98 to 100 percent of frames at every level and condition, against 100 percent for the chirp pair (98 percent for the chirp 2 dB beyond L0's limit). The pattern would last 4.8 s at L0, 1.6 s at L1, 1.1 s at L2, 0.54 s at L3 and 0.27 s at L4, against 2 s for the chirp at every level, and would be as narrow as the level's data (160 Hz at L0) instead of 2 kHz. Not yet tested: telling the five patterns apart, false starts in long recordings and beside other signals, and whole frames decoded from the pattern's timing.
