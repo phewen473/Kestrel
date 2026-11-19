@@ -127,6 +127,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Help > About shows the signal version and the program's commit; `VERSION` is stamped with the commit when Git makes an archive.
 - Spec v0.20: NEW SIGNAL. A twelve-tone preamble in each level's own pattern replaces the two-second chirp pair; earlier versions cannot read it.
 - Spec v0.19: the idle limit on a working frequency is three minutes.
 - Spec v0.18: an idle working frequency is given up after five minutes, with a one-minute warning to the operator who moved there.

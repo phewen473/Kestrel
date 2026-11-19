@@ -3,6 +3,7 @@
 They match the specification (sections 4 and 5).
 """
 
+SPEC_VERSION = "0.20"  # the version of docs/spec/kestrel-spec.md that this program's signal follows (a test checks the two agree)
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 

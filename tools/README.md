@@ -67,6 +67,7 @@ python tools/preamble_study.py                                         (compare 
 
 `kestrel_panel.py` is the control panel. How it is laid out:
 
+- **Help > About Kestrel** (menu): the signal version (the specification version the program follows; two stations must match to hear each other), the program's commit number and date, and the Python version. The signal version is also in the window's title bar.
 - **Settings > Rig Information** (menu): callsign and grid locator; the radio type (from Hamlib's list of several hundred), the CAT serial port, its speed and handshake; how the transmitter is keyed (CAT, RTS, DTR or none) and the serial port for RTS or DTR; the sound devices to and from the radio and the transmit audio level. The panel starts and stops Hamlib's `rigctld` itself for the radio chosen, so there is nothing else to run. It looks for `rigctld` on the search path and in a WSJT-X installation; the dialog can also be pointed at the file, or at a rigctld already running.
 - **Frequency list:** Kestrel's meeting frequencies plus your own ("Add..." and "Remove"). Choosing a frequency tunes the radio to it at once, with a 3000 Hz receive filter. A change is refused while a station is on the air.
 - **Status band:** the station's state in large letters. A lock shows as a solid green band naming the partner; trouble holding the link turns it amber, a failure red. Under it, one line gives the partner's signal strength, whether it is steady or fading, the speed level in each direction, and how many messages are waiting and received.

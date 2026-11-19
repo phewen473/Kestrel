@@ -1,0 +1,2 @@
+# Git fills in the commit number and date in VERSION when it makes an archive (a copy without the Git folder).
+VERSION export-subst

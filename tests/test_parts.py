@@ -152,3 +152,13 @@ def test_channel_report_and_locator_coding():  # the small fields inside control
         with pytest.raises(ValueError):  # each must be refused
             control.grid_to_bits(bad)  # try to encode it
     assert control.bits_to_levels(control.levels_to_bits((0, 2, 4))) == (0, 2, 4)  # the list of levels survives
+
+
+def test_program_and_specification_agree_on_the_version():  # the About box must not name a different version from the published description
+    import os  # file paths
+    import re  # finds the version line
+    from modem.params import SPEC_VERSION  # the version the program claims
+    spec = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "spec", "kestrel-spec.md")  # the specification
+    with open(spec, "r", encoding="utf-8") as handle:  # open it
+        found = re.search(r"\*\*Version (\d+\.\d+)", handle.read())  # its version line
+    assert found and found.group(1) == SPEC_VERSION  # the two agree

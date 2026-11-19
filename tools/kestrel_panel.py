@@ -20,6 +20,7 @@ import argparse  # reads the command-line options
 import json  # settings are kept in a small JSON file
 import os  # file paths
 import queue  # carries log lines from the working thread to the window
+import subprocess  # asks Git which commit this is, for the About box
 import sys  # lets us add the repository root to the import path
 import threading  # the station runs in its own thread so the window stays responsive
 import time  # the clock, for the monitor
@@ -37,6 +38,7 @@ from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-ca
 from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list and the working frequencies  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
+from modem.params import SPEC_VERSION  # the version of the specification the signal follows  # noqa: E402
 
 SETTINGS_FILE = os.path.join(ROOT, "local", "panel.json")  # where the panel remembers its settings
 DEFAULTS = {"call": "", "grid": "", "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued)
@@ -81,6 +83,34 @@ def write_json(path, data):  # write a small JSON file
 CONTACTS_FILE = os.path.join(ROOT, "local", "contacts.json")  # the operator's saved contacts, shared by every panel on this computer
 
 
+def build_info():  # which build of the program this is
+    """Return the commit number and date of this copy of the program, or "not recorded" when neither Git nor an archive stamp is available."""
+    try:  # a copy made by "git archive" has the commit written into the VERSION file
+        with open(os.path.join(ROOT, "VERSION"), "r", encoding="utf-8") as handle:  # open it
+            stamp = handle.read().strip()  # its one line
+        if stamp and "$Format" not in stamp:  # Git filled it in
+            return stamp  # use it
+    except OSError:  # no VERSION file
+        pass  # try Git instead
+    try:  # a working copy: ask Git itself
+        asked = subprocess.run(["git", "log", "-1", "--format=commit %h of %cs"], cwd=ROOT, capture_output=True, text=True, timeout=5, **({"creationflags": 0x08000000} if sys.platform == "win32" else {}))  # the newest commit, without a console window
+        if asked.returncode == 0 and asked.stdout.strip():  # Git answered
+            return asked.stdout.strip()  # use its answer
+    except (OSError, subprocess.SubprocessError):  # Git is not installed, or did not answer
+        pass  # nothing more to try
+    return "not recorded"  # neither source was available
+
+
+def about_text():  # the words in Help > About
+    """Return the text of the About box: what Kestrel is, the signal version, the program build, and who began it."""
+    return (f"Kestrel (KES)\nAn adaptive amateur HF digital mode for short messages.\n\n"  # the name and what it is
+            f"Signal: specification version {SPEC_VERSION} (draft)\n"  # which version of the published description the signal follows
+            f"Program: {build_info()}\n"  # which build of the program
+            f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n\n"  # the Python it runs on
+            f"Stations must run the same signal version to hear each other.\n\n"  # the practical point
+            f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licences
+
+
 def device_choices(kind):  # the sound devices to offer in a drop-down list
     """Return the names of every input (or output) device, each name once.
 
@@ -119,7 +149,7 @@ class Panel:  # the control panel window
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
         self.rig_lock = threading.Lock()  # only one thread at a time may start or tune through rig control
-        root.title("Kestrel")  # window title
+        root.title(f"Kestrel  -  signal v{SPEC_VERSION}")  # window title, with the signal version so two stations can be compared at a glance
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
         self._menus()  # the menu bar
         top = ttk.Frame(root)  # the strip holding the status line and the station's own details
@@ -219,7 +249,7 @@ class Panel:  # the control panel window
         settings.add_command(label="Rig Information...", command=self.rig_information)  # callsign, grid, radio type, serial ports, sound devices
         bar.add_cascade(label="Settings", menu=settings)  # put the menu on the bar
         help_menu = tk.Menu(bar, tearoff=False)  # the Help menu
-        help_menu.add_command(label="About Kestrel", command=lambda: messagebox.showinfo("Kestrel", "Kestrel (KES)\nAn adaptive amateur HF digital mode for short messages.\nOriginated by P. H. Ewen (KO4WSC).\n\nPrototype control panel."))  # what this is and who began it
+        help_menu.add_command(label="About Kestrel", command=lambda: messagebox.showinfo("About Kestrel", about_text()))  # what this is, which version, and who began it
         bar.add_cascade(label="Help", menu=help_menu)  # put the menu on the bar
         self.root.configure(menu=bar)  # give the window its menu bar
 
@@ -774,7 +804,7 @@ def main():  # the script itself
     root = tk.Tk()  # the window
     Panel(root)  # its contents
     if profile:  # a profile was named
-        root.title(f"Kestrel - {profile}")  # show which panel this is
+        root.title(f"Kestrel - {profile}  -  signal v{SPEC_VERSION}")  # show which panel this is, and the signal version
     root.mainloop()  # run until closed
 
 
