@@ -124,7 +124,7 @@ def pilot_frequency_fit(x, start, positions, tones, level, offset_hz):  # track 
     positions = np.asarray(positions)  # which symbols are pilots
     tones = np.asarray(tones)  # which tone each pilot used
     groups = max(1, len(positions) // 8)  # split the frame into stretches of about 8 pilots
-    track = 0.0  # frequency error found so far, on top of the chirp's estimate
+    track = 0.0  # frequency error found so far, on top of the preamble's estimate
     times = []  # middle time of each stretch
     errors = []  # frequency error measured in each stretch
     for idx in np.array_split(np.arange(len(positions)), groups):  # one stretch at a time, in order

@@ -10,7 +10,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 - **Adaptive speed:** a family of waveforms, from a slow, very robust level for weak signals up to a fast level for strong ones. The two stations negotiate the level automatically from measured noise, fading, multipath and band.
 - **Beacon, answer, lock:** a station beacons its presence; a listener answers; the pair negotiate a level and lock for messaging. Every frame is acknowledged, and failed frames are combined with their retries rather than thrown away.
 - **Addresses:** frames between two locked stations carry a short link number; traffic outside a lock and held mail carry full destination and origin callsigns (up to 9 characters, so portable and maritime suffixes fit). A name with no digit, such as ALL, addresses a group.
-- **Self-describing frames:** every frame starts with a signature chirp pair (a one-second sweep up, then a one-second sweep down) and a robust header that states its speed level and size, so a receiver needs no shared clock slot to decode it.
+- **Self-describing frames:** every frame starts with a short signature pattern of tones that belongs to its speed level, then a robust header that states its level and size, so a receiver needs no shared clock slot to decode it.
 - **Nets:** optional nets with a net control station, turn-taking slots and an automatic backup net control.
 - **Store and forward for disconnected operation:** no always-on station or infrastructure is needed. Senders keep their messages, other stations carry copies, and mail moves whenever two stations hear each other, with message IDs, hop limits, expiry and delivery receipts.
 - **Plain text only:** no encryption, as Part 97 requires.
@@ -23,7 +23,7 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 | `docs/spec/CHANGELOG.md` | What changed in each version of the spec |
 | `docs/spec/tables/` | Tables the spec refers to: the error-correction check lists and the compression codes |
 | `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
-| `modem/` | Modem prototype (Python reference): chirp, speed levels, header, LDPC error correction, text compression, receiver |
+| `modem/` | Modem prototype (Python reference): preamble, speed levels, header, LDPC error correction, text compression, receiver |
 | `link/` | Link layer (Python reference): the rules that make, run and close a contact, and a two-station simulation |
 | `live/` | Kestrel on real audio: a continuous receiver, sound-card input and output, rig control through Hamlib's rigctld, and a live station |
 | `tests/` | Automated tests |
@@ -122,11 +122,12 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.19 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
+- Spec version 0.20 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Spec v0.20: NEW SIGNAL. A twelve-tone preamble in each level's own pattern replaces the two-second chirp pair; earlier versions cannot read it.
 - Spec v0.19: the idle limit on a working frequency is three minutes.
 - Spec v0.18: an idle working frequency is given up after five minutes, with a one-minute warning to the operator who moved there.
 - Spec v0.17: directed calls, messages for one callsign, broadcasts to ALL; panel scope.
@@ -157,7 +158,7 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `docs/spec/CHANGELOG.md` - what changed in each spec version.
 - `sim/channel.py` - HF channel simulator.
 - `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
-- `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `address.py`, `control.py`, `ldpc.py`, `compress.py`, `fec.py`, `chirp.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
+- `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `address.py`, `control.py`, `ldpc.py`, `compress.py`, `fec.py`, `preamble.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
 - `link/` - link layer (`station.py`, `adapt.py`, `simulate.py`, `params.py`); `link/README.md` has the rules and what the simulation showed.
 - `live/` - real audio (`listener.py`, `audio.py`, `ptt.py`, `rig.py`, `runner.py`); `live/README.md` explains the live tools and the no-radio cable test.
 - `tests/` - automated tests (`test_end_to_end.py`, `test_parts.py`, `test_link.py`, `test_live.py`).

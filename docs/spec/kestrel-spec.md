@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.19 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.20 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -16,7 +16,7 @@ Kestrel carries short free-text messages over HF radio between amateur stations.
 - **Bandwidth:** every Kestrel waveform stays within 2.8 kHz on HF.
 - **Content:** plain text. Kestrel never encrypts or obscures message meaning (97.113). Message signing to prove the sender may be added later; it does not hide content.
 - **Identification:** every beacon, connection frame and fully addressed message frame carries the sending or originating station's callsign in plain form (Section 4.2). Frames exchanged inside a lock carry only a short link number, so a locked station also sends an identification frame (Section 5.8) at least every 10 minutes and at the end of the contact (97.119).
-- **Automatic operation:** unattended relays and mail holders are subject to the message-forwarding and automatic-control rules (97.219, 97.221). A station that holds and delivers mail with no operator present operates under 97.221(b): on HF it stays within the segments that paragraph lists (28.120-28.189, 24.925-24.930, 21.090-21.100, 18.105-18.110, 14.0950-14.0995, 14.1005-14.112, 10.140-10.150, 7.100-7.105 and 3.585-3.600 MHz), or it uses the 6 m and shorter bands. Paragraph (c), which allows unattended replies elsewhere, is limited to 500 Hz and does not fit Kestrel, because every frame's chirp pair is about 2 kHz wide. A station with an operator at the controls is not limited to those segments. This is the author's reading of the rule as published at ecfr.gov; ARRL has been asked to review it and has not yet replied.
+- **Automatic operation:** unattended relays and mail holders are subject to the message-forwarding and automatic-control rules (97.219, 97.221). A station that holds and delivers mail with no operator present operates under 97.221(b): on HF it stays within the segments that paragraph lists (28.120-28.189, 24.925-24.930, 21.090-21.100, 18.105-18.110, 14.0950-14.0995, 14.1005-14.112, 10.140-10.150, 7.100-7.105 and 3.585-3.600 MHz), or it uses the 6 m and shorter bands. Paragraph (c), which allows unattended replies elsewhere, is limited to 500 Hz. From version 0.20 a frame is no wider than its tones: about 160 Hz at L0 and 470 Hz at L1, but 710 Hz at L2 and L3 and 1420 Hz at L4. Whether a station held to L0 and L1 could operate under paragraph (c) has not been reviewed, and until it has, unattended stations keep to paragraph (b). A station with an operator at the controls is not limited to those segments. This is the author's reading of the rule as published at ecfr.gov; ARRL has been asked to review it and has not yet replied.
 
 ## 3. Layers
 
@@ -83,11 +83,25 @@ All audio figures assume a sample rate of 12,000 samples per second.
 
 Every frame has three parts, in order:
 
-1. **Chirp pair:** a linear frequency sweep up from 500 Hz to 2500 Hz lasting 1 second, followed at once by a linear sweep down from 2500 Hz to 500 Hz lasting 1 second (audio frequencies; 2 seconds in all). Each sweep fades in and out over 20 ms. The pair is used to find the frame and to measure its timing and frequency offset. Two sweeps are used because a single sweep cannot tell a timing error from a frequency error: a frequency error moves the two detection peaks in opposite directions, while a timing error moves them together.
+1. **Preamble:** twelve tones of the frame's own speed level, at that level's tone length, in a fixed pattern that belongs to the level (table below). The preamble is used to find the frame, to measure its timing and frequency offset, and to tell the receiver which level the frame is sent at. It is as narrow as the rest of the frame and lasts twelve tone lengths: 4.8 s at L0, 1.62 s at L1, 1.08 s at L2, 0.54 s at L3 and 0.27 s at L4.
 2. **Header:** 24 tones sent at the same speed level as the body (Section 5.4).
 3. **Body:** the payload at the frame's speed level, with known pilot tones spread through it (Section 5.5).
 
-The receiver is not told the level in advance. After the chirp pair it tries to read the header at each speed level in turn. A level is a candidate when the header's check value matches, the header's level field names that same level, and the spare bit is zero. Noise can occasionally make a wrong level pass, so the receiver accepts a level only when the body read at that level also passes its check. Sending the header at the frame's own level keeps fast frames short: a header at the slowest level would add about 10 seconds to every frame.
+Preamble patterns (tone numbers 0 to 31, in the order sent; tone frequencies are in Section 5.2):
+
+| Level | Pattern |
+|---|---|
+| L0 | 12, 5, 27, 9, 24, 31, 19, 8, 2, 18, 1, 30 |
+| L1 | 25, 14, 5, 0, 16, 3, 8, 22, 4, 19, 31, 9 |
+| L2 | 30, 6, 15, 3, 18, 28, 5, 27, 10, 0, 24, 31 |
+| L3 | 17, 3, 8, 28, 21, 15, 29, 13, 2, 9, 1, 12 |
+| L4 | 9, 15, 7, 12, 25, 16, 5, 17, 24, 6, 0, 30 |
+
+In each pattern no tone is used twice, every jump from one tone to the next is at least five tones, and no two pairs of positions the same distance apart differ by the same number of tones, so a pattern cannot be mistaken for a copy of itself shifted in time and frequency.
+
+The receiver is not told the level in advance. It searches for all five patterns. A level is a candidate when its pattern is found, the header that follows passes its check, the header's level field names that same level, and the spare bit is zero. Noise can occasionally pass all of these, so the receiver accepts a frame only when the body also passes its check. Sending the preamble and header at the frame's own level keeps fast frames short and slow frames narrow.
+
+Until version 0.19 every frame instead began with a two-second chirp pair sweeping 500 to 2500 Hz. Frames of version 0.20 and later cannot be read by earlier versions, nor earlier frames by these.
 
 Because the header states the level and size, the receiver then knows how long the frame is and how to decode it. No global time slots are needed.
 
@@ -112,13 +126,13 @@ Airtime of a whole frame, and the weakest signal each level needs in simulation 
 
 | Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR, steady signal | Weakest SNR, fading signal |
 |---|---|---|---|---|---|---|
-| L0 | 80 s | 140 s | 200 s | 260 s | -20 dB | -12 dB |
-| L1 | 28 s | 49 s | 69 s | 89 s | -16 dB | -10 dB |
-| L2 | 20 s | 33 s | 47 s | 60 s | -14 dB | -9 dB |
-| L3 | 11 s | 18 s | 24 s | 31 s | -12 dB | -4 dB |
-| L4 | 6 s | 10 s | 13 s | 16 s | -9 dB | -1 dB |
+| L0 | 83 s | 143 s | 203 s | 262 s | -20 dB | -12 dB |
+| L1 | 28 s | 48 s | 68 s | 89 s | -16 dB | -10 dB |
+| L2 | 19 s | 32 s | 46 s | 59 s | -14 dB | -9 dB |
+| L3 | 9.4 s | 16 s | 23 s | 30 s | -11 dB | -4 dB |
+| L4 | 4.7 s | 8.1 s | 11 s | 15 s | -8 dB | -1 dB |
 
-The column headings are the size classes, named by the plain characters a link frame holds. Exact airtime is 2 seconds for the chirp pair plus the tone length times (24 header tones + 172, 322, 471 or 620 body tones).
+The column headings are the size classes, named by the plain characters a link frame holds. Exact airtime is the tone length times (12 preamble tones + 24 header tones + 172, 322, 471 or 620 body tones).
 
 - **Steady signal:** noise only; every test frame decoded at this SNR.
 - **Fading signal:** nine test frames in ten decoded at this SNR in the worst of three simulated HF paths (light, moderate and heavy fading, ITU-R F.1487). The remaining frames are recovered by combining retries (Section 5.6).
@@ -172,13 +186,13 @@ When a frame fails its check, the receiver keeps the soft values of the body. Th
 
 ### 5.7 Tracking and channel measurement
 
-- The chirp pair gives the starting frequency offset and timing.
+- The preamble gives the starting frequency offset and timing.
 - The pilots keep the frequency estimate current through the body.
 - Stations keep accurate clocks (NTP or GPS); this narrows the timing search but is not used to define time slots.
 
 Each received frame yields three measurements, which are reported back to the sender in every acknowledgment:
 
-- **Frequency offset**, from the chirp pair and the pilots.
+- **Frequency offset**, from the preamble and the pilots.
 - **Signal-to-noise ratio (SNR)** in 2.5 kHz. Once a frame has decoded, the receiver knows every tone that was sent. The signal energy is the average, over all body tones, of the energy at the sent tone plus the bin on each side of it, less the noise in those three bins. The side bins are included because fast fading moves part of a tone's energy into them. The noise is taken from the tone positions that were not sent.
 - **Fading index.** The spread (variance) of those per-tone energies, less the spread that noise alone would cause, divided by the square of the average signal energy. It is close to 0 for a steady signal and close to 1 for a signal that fades deeply and often during the frame. A frame with an index above 0.15 counts as a fading signal when choosing a level (Section 5.2).
 
@@ -188,7 +202,7 @@ Measurements of Doppler spread (fading speed) and delay spread (multipath) are p
 
 ### 5.8 Control frames
 
-Beacons, answers, acknowledgments and identifications are short frames with the same structure as a message frame: chirp pair, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
+Beacons, answers, acknowledgments and identifications are short frames with the same structure as a message frame: preamble, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
 
 **Body.** The fields of the frame (tables below), followed by the 16-bit check value of Section 4 over those fields. The body is encoded with the header's convolutional code (Section 5.4: six zero bits added, rate 1/2, generators 171 and 133), padded with zeros to a whole number of tones, interleaved by the rule of Section 5.3, and sent with pilots as in Section 5.5. Retries of control frames are not combined.
 
@@ -203,10 +217,10 @@ Airtime of a whole control frame:
 
 | Frame | L0 | L1 | L2 | L3 | L4 |
 |---|---|---|---|---|---|
-| Beacon | 28 s | 11 s | 8 s | 5 s | 3.5 s |
-| Answer | 37 s | 14 s | 10 s | 6 s | 4 s |
-| Acknowledgment | 24 s | 9 s | 7 s | 4.4 s | 3.2 s |
-| Identification | 26 s | 10 s | 7.5 s | 4.7 s | 3.4 s |
+| Beacon | 31 s | 11 s | 7.0 s | 3.5 s | 1.8 s |
+| Answer | 40 s | 13 s | 8.9 s | 4.5 s | 2.2 s |
+| Acknowledgment | 26 s | 8.9 s | 5.9 s | 3.0 s | 1.5 s |
+| Identification | 29 s | 9.9 s | 6.6 s | 3.3 s | 1.6 s |
 
 **Beacon (type 2), 75 bits**
 
@@ -275,7 +289,7 @@ A station that wants to connect replies with an answer frame (Section 5.8), sent
 
 The numbers below are starting values from simulation, to be tuned on the air.
 
-- **Reply slots.** The reply window is divided into slots of 39 seconds, the first starting 1 second after the beacon ends. A plain beacon is followed by one slot. A beacon with the wide-window flag set is followed by four.
+- **Reply slots.** The reply window is divided into slots of 42 seconds (an answer at L0 lasts 39.6 seconds), the first starting 1 second after the beacon ends. A plain beacon is followed by one slot. A beacon with the wide-window flag set is followed by four.
 - **Answering.** After a plain beacon a station answers in the only slot. After a wide-window beacon it picks one of the four slots at random and answers at the start of that slot.
 - **Choosing.** With one slot, the beaconing station locks with the answer it decodes. With four, it listens to the whole window and locks with the strongest answer it decoded.
 - **When to widen.** A station's first beacon is plain. If a beacon brings no answer it can decode, which is what happens when several stations answer on top of each other, its following beacons ask for the wide window. It keeps asking for the wide window in later calls for as long as more than one answer arrives in a window.
@@ -339,7 +353,7 @@ Both limits are operator settings; 60 and 90 seconds are the defaults.
 
 ### 6.9 Suggested frequencies (United States)
 
-So that stations can find each other, one meeting frequency is suggested per band. Each is the dial frequency of an upper-sideband radio; the Kestrel signal occupies 500 Hz to 2500 Hz above it.
+So that stations can find each other, one meeting frequency is suggested per band. Each is the dial frequency of an upper-sideband radio. Kestrel's tones are centred 1500 Hz above it; the widest level, L4, reaches from 800 Hz to 2180 Hz above it. The table allows the 500 Hz to 2500 Hz that earlier versions occupied.
 
 | Band | Dial frequency (USB) | Signal occupies | Inside 97.221(b) segment |
 |---|---|---|---|

@@ -16,8 +16,8 @@ Always listen first: the segments are shared with other data modes.
 import json  # the operator's own frequencies are kept in a small JSON file
 import os  # file paths
 
-SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency Kestrel sends (the bottom of the chirp)
-SIGNAL_HIGH_HZ = 2500.0  # the highest audio frequency Kestrel sends (the top of the chirp)
+SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency allowed for (the fastest level reaches down to about 800 Hz)
+SIGNAL_HIGH_HZ = 2500.0  # the highest audio frequency allowed for (the fastest level reaches up to about 2200 Hz)
 
 PRESETS_KHZ = {  # band name (metres) -> dial frequency in kHz, upper sideband
     "40": 7101.5,  # signal 7102.0 to 7104.0 kHz, inside 7100-7105

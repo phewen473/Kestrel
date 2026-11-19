@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.20 (draft) - 18 November 2026
+
+- **The transmitted signal has changed. Version 0.20 and later cannot exchange frames with earlier versions.**
+- The two-second chirp pair that began every frame is replaced by a preamble of twelve tones at the frame's own speed level, in a fixed pattern for each level (Section 5.1). The preamble is long at the slow levels and short at the fast ones (4.8 s at L0, 0.27 s at L4), is no wider than the rest of the frame, and tells the receiver the level.
+- Airtimes change accordingly: about 3 seconds longer at L0, and shorter at every other level (an acknowledgment at L4 is 1.5 s, was 3.2 s). The reply slot is 42 seconds (was 39).
+- Level limits re-measured in simulation with the new preamble (Section 5.2).
+- Header, body, error correction, pilots, control frames and link rules are otherwise unchanged.
+
 ## 0.19 (draft) - 18 November 2026
 
 - No frame is changed from 0.18.

@@ -14,7 +14,7 @@ from scipy.signal import firwin, lfilter, resample_poly  # filter design, filter
 from modem.params import FS  # the modem's sample rate (12,000)
 
 FACTOR = 4  # sound card rate divided by modem rate
-LEAD_S = 0.3  # silence played before each transmission, so the sound card is running steadily before the chirp starts
+LEAD_S = 0.3  # silence played before each transmission, so the sound card is running steadily before the frame starts
 TAIL_S = 0.5  # silence played after each transmission: sound cards stop a little early, and without this the last tones are cut off
 CARD_RATE = FS * FACTOR  # the rate the sound card is opened at (48,000)
 

@@ -13,7 +13,7 @@ import numpy as np  # numerical arrays
 
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
 from modem.frame import HEADER_SYMBOLS  # tones in a header
-from modem.params import CHIRP_SAMPLES, CONTROL_BITS, FS  # chirp length, control frame types and the sample rate
+from modem.params import CONTROL_BITS, FS, PREAMBLE_TONES  # control frame types, the sample rate and the preamble's length in tones
 
 WINDOW_S = 100.0  # how much audio is kept: longer than the longest frame (90 s)
 STEP_S = 1.0  # how often the stored audio is searched
@@ -35,7 +35,7 @@ def frame_samples(result):  # how long is the frame this report describes?
         body = control_layout(result.frame_type)["total"]  # its body tones
     else:  # a message frame
         body = body_layout(result.size_class)["total"]  # its body tones
-    return 2 * CHIRP_SAMPLES + (HEADER_SYMBOLS + body) * LEVELS[result.level].samples  # chirp pair + header + body
+    return (PREAMBLE_TONES + HEADER_SYMBOLS + body) * LEVELS[result.level].samples  # preamble + header + body
 
 
 class Listener:  # the continuous receiver
@@ -69,7 +69,7 @@ class Listener:  # the continuous receiver
 
     def _search(self):  # look for one whole frame in the store
         """Return a Heard for the strongest complete frame in the store, cutting it out; None if there is none."""
-        if len(self.store) < 3 * CHIRP_SAMPLES:  # too little audio to hold even a chirp pair and a tone or two
+        if len(self.store) < FS:  # less than a second of audio: too little to be worth searching
             return None  # nothing to find
         result = receive(self.store)  # run the modem receiver over everything kept
         if result.level < 0:  # no header was read

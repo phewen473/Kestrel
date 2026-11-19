@@ -7,7 +7,7 @@ tuned once Kestrel is tested on the air.
 TURNAROUND_S = 1.0  # pause between hearing a frame and transmitting the reply, in seconds
 REPLY_MARGIN_S = 3.0  # extra time a station waits for a reply beyond the reply's own length
 BEACON_TRIES = 5  # beacons sent without an answer before the station gives up
-REPLY_SLOT_S = 39.0  # length of one reply slot: an answer at the slowest level (36.8 s) plus a short gap
+REPLY_SLOT_S = 42.0  # length of one reply slot: an answer at the slowest level (39.6 s) plus a short gap
 WIDE_SLOTS = 4  # reply slots after a beacon that asks for a wide window (a plain beacon has one)
 STEP_UP_CLEAN = 2  # clean frames in a row before the receiver asks for a faster level
 STEP_UP_LEVELS = 2  # the most levels the receiver moves up in one step

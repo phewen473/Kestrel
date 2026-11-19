@@ -11,7 +11,7 @@ python tools/demo.py --text "CQ CQ de KO4WSC" --snr -15 --condition moderate
 Builds one frame, passes it through the simulated channel, and decodes it. It prints what the receiver found and writes:
 
 - `results/demo.wav` - what the receiver heard. Play it, or feed it to any waterfall program.
-- `results/demo_waterfall.png` - a picture of the signature chirp and the tones.
+- `results/demo_waterfall.png` - a picture of the signature tone pattern and the tones that follow.
 
 Options: `--text`, `--level` (0 to 4), `--snr` (dB in 2.5 kHz), `--condition` (`awgn`, `good`, `moderate`, `poor`), `--offset` (Hz), `--seed`.
 

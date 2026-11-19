@@ -5,12 +5,12 @@ This is the working Python model of the Kestrel modem: it turns a text message i
 ## What a frame looks like
 
 ```
-chirp pair (2 s) | header (24 tones) | body (data tones, with a known pilot tone before every 15)
+preamble (12 tones in the level's own pattern) | header (24 tones) | body (data tones, with a known pilot tone before every 15)
 ```
 
 | Part | What it does |
 |---|---|
-| Chirp pair | A 1-second rising sweep, then a 1-second falling sweep, 500 to 2500 Hz. Finds the frame and measures timing and frequency offset. |
+| Preamble | Twelve tones of the frame's own speed level in a fixed pattern that belongs to the level. Finds the frame, measures timing and frequency offset, and says which level the frame uses. Long at slow levels (4.8 s at L0), short at fast ones (0.27 s at L4), and no wider than the data. |
 | Header | Frame type (message in a link frame, message in a fully addressed frame, beacon, answer, acknowledgment or identification), speed level, size class, part number, part count and a "compressed" flag, with a check value. Sent twice. |
 | Body | An address block (who the frame is for and which message it is), the character count, the text (plain 7-bit ASCII, or compressed), and a 16-bit check value, protected by the LDPC error-correcting code and shuffled across the frame. |
 | Pilots | Known tones the receiver uses to follow frequency drift and to measure SNR. |
@@ -53,7 +53,7 @@ build_frame("QSL 73", level=0, dest="W1AW", origin="KO4WSC", msg_id=17)         
 
 ## Control frames (`control.py`)
 
-Four short frames set up and run a link. They look like message frames on the air (chirp pair, header, body) and can be sent at any speed level.
+Four short frames set up and run a link. They look like message frames on the air (preamble, header, body) and can be sent at any speed level.
 
 | Frame | What it says | L0 | L2 | L4 |
 |---|---|---|---|---|
@@ -123,7 +123,7 @@ All of these are now written into the specification (sections 4 and 5).
 | Item | Value |
 |---|---|
 | Sample rate | 12,000 samples per second |
-| Chirp | 500-2500 Hz, 1 s up + 1 s down |
+| Preamble | 12 tones at the frame's level, a fixed pattern per level (`PREAMBLE_PATTERNS` in `params.py`) |
 | Tones | 32 per level (5 bits each), centred near 1500 Hz |
 | Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalised min-sum, up to 80 passes |
 | Header error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder |
@@ -140,7 +140,8 @@ All of these are now written into the specification (sections 4 and 5).
 | `levels.py` | The speed levels and the SNR each one needs, for steady and for fading signals |
 | `frame.py` | `build_frame` (transmitter) and `receive` (receiver) |
 | `plan.py` | Level choice, airtime limits, splitting and reassembly |
-| `chirp.py` | Makes and detects the signature chirp pair |
+| `preamble.py` | Makes and detects the signature tone pattern that starts every frame |
+| `chirp.py` | The chirp pair that started every frame up to spec v0.19; kept only for the comparison in `tools/preamble_study.py` |
 | `mfsk.py` | The 32-tone waveform, soft-bit calculation and pilot drift tracking |
 | `address.py` | Callsign coding (48 bits each) and the link number |
 | `control.py` | The fields of beacon, answer, acknowledgment and identification frames, and the channel report |
@@ -168,8 +169,8 @@ Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; th
 
 ## What we learned
 
-- **The chirp pair works.** One sweep up and one down lets the receiver separate timing from frequency error. It measured a 15 Hz offset to within half a hertz at -15 dB.
-- **In deep noise the chirp was the weak link at first.** A noise peak could outrank the real chirp. The receiver now keeps the best three candidates and lets the header check choose.
+- **The tone-pattern preamble replaced the chirp pair (spec v0.20).** The chirp was two seconds long and 2 kHz wide at every level, which made fast frames mostly preamble and slow frames far wider than their data. A study (`tools/preamble_study.py`) showed twelve tones of the level's own set are found 98 to 100 percent of the time at each level's weakest working signal.
+- **The receiver keeps the best three candidates for each level's pattern** and lets the header and body checks pick the real frame, because in deep noise a noise peak can outrank the real preamble.
 - **Speed costs what theory says.** Each level's limit moved by almost exactly the ratio of tone lengths, so the level table can be planned on paper.
 - **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification adopted this in v0.7.
 - **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones.

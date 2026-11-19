@@ -1,7 +1,7 @@
 """Building and receiving a complete Kestrel frame at any speed level.
 
 Frame layout on the air:
-    chirp pair (2 s) | header (24 tones) | body (data tones with a pilot before every 15)
+    preamble (12 tones) | header (24 tones) | body (data tones with a pilot before every 15)
 
 The header and the body are both sent at the frame's own speed level. The
 receiver does not need to be told the level: it tries the header at each
@@ -17,7 +17,7 @@ import numpy as np  # numerical arrays
 from .address import bits_to_call, call_to_bits  # callsign <-> bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .blanker import blank_impulses  # static-crash blanker
-from .chirp import detect_chirp_pair, make_chirp_pair  # signature chirp
+from .preamble import detect_preamble, make_preamble, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header
 from . import control, ldpc  # control-frame fields, and error correction for the message body
@@ -28,10 +28,10 @@ from .mfsk import (  # tone waveform
     signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
 )  # end of the import list
 from .params import (  # frame format numbers
-    ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CHIRP_SAMPLES, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
+    ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
     FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS,  # (continued)
     HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LEVEL_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
-    MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
+    MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
 )  # end of the import list
 from .text import bits_to_text, choose_packing, text_to_bits  # message <-> bits
 
@@ -77,12 +77,12 @@ def control_layout(frame_type):  # the shape of a control frame's body
 
 def control_seconds(frame_type, level=0):  # how long a control frame lasts on the air
     """Return the airtime of a whole control frame, in seconds."""
-    return 2 * CHIRP_SAMPLES / FS + (HEADER_SYMBOLS + control_layout(frame_type)["total"]) * LEVELS[level].seconds  # chirps + header + body
+    return (PREAMBLE_TONES + HEADER_SYMBOLS + control_layout(frame_type)["total"]) * LEVELS[level].seconds  # preamble + header + body, all at the level's tone length
 
 
 def frame_seconds(size_class, level=0):  # how long a frame lasts on the air
     """Return the airtime of a whole frame, in seconds."""
-    return 2 * CHIRP_SAMPLES / FS + (HEADER_SYMBOLS + body_layout(size_class)["total"]) * LEVELS[level].seconds  # chirps + header + body
+    return (PREAMBLE_TONES + HEADER_SYMBOLS + body_layout(size_class)["total"]) * LEVELS[level].seconds  # preamble + header + body, all at the level's tone length
 
 
 def _header_bits(frame_type, level, size_class, part, parts, compressed):  # the self-describing header
@@ -159,7 +159,7 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     data_bits = np.concatenate([_address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
-    return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # chirps, then all the tones
+    return np.concatenate([make_preamble(spec), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # the level's preamble, then all the tones
 
 
 def build_control(frame_type, fields, level=0):  # the transmitter for control frames
@@ -170,7 +170,7 @@ def build_control(frame_type, fields, level=0):  # the transmitter for control f
     header_syms = np.tile(bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False))), HEADER_REPEAT)  # header: type and level; the other fields are zero; sent twice
     data_bits = np.concatenate([fields, crc16(fields)])  # the fields and their check value
     body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
-    return np.concatenate([make_chirp_pair(), symbols_to_audio(np.concatenate([header_syms, body_syms]), LEVELS[level])])  # chirps, then all the tones
+    return np.concatenate([make_preamble(LEVELS[level]), symbols_to_audio(np.concatenate([header_syms, body_syms]), LEVELS[level])])  # the level's preamble, then all the tones
 
 
 def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False):  # "here I am"
@@ -205,7 +205,7 @@ class RxResult:  # the receiver's report
     drift_hz_s: float = 0.0  # measured frequency drift, in Hz per second
     snr_db: float = float("nan")  # measured signal-to-noise ratio in 2.5 kHz
     fade_index: float = float("nan")  # how much the signal faded during the frame: 0 = steady, about 1 = deep, frequent fades
-    chirp_quality: float = 0.0  # strength of the chirp detection
+    sync_quality: float = 0.0  # strength of the preamble detection
     level: int = -1  # speed level read from the header
     size_class: int = -1  # size class read from the header
     part: int = 0  # which part of a split message this frame is (0 = first)
@@ -223,26 +223,29 @@ class RxResult:  # the receiver's report
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
 
 
-def _read_headers(x, header_start, offset):  # find out which level the frame uses
-    """Try the header at every speed level; yield (level record, header bits) for each level whose header checks out.
+def _read_header(x, header_start, offset, spec):  # read the header that follows a preamble
+    """Return the header bits found after a preamble of level `spec`, or None when the header does not check out.
 
-    Normally exactly one level passes. Very rarely (about one frame in a
-    thousand) noise makes a second level pass too, which is why the caller
-    goes on to check the body before believing a header.
+    The preamble says which level to read the header at. Noise that looks
+    like a preamble will now and then pass the header check too (about one
+    time in a thousand), which is why the caller goes on to check the body
+    before believing a header.
     """
-    for spec in LEVELS:  # one speed level at a time
-        tone_e = symbol_energies(x, header_start, HEADER_SYMBOLS, spec, offset)  # measure the header tones as if sent at this level
-        llrs = energies_to_llrs(tone_e, noise_level(tone_e))  # turn them into soft bits
-        llrs = llrs.reshape(HEADER_REPEAT, -1).sum(axis=0)[:HEADER_CODED_BITS]  # add the two copies together, drop the padding
-        bits = viterbi_decode(llrs)  # correct errors
-        check_ok = np.array_equal(crc8(bits[:HEADER_FIELD_BITS]), bits[HEADER_FIELD_BITS:])  # does the check value match?
-        if check_ok and bits_to_int(bits[3:6]) == spec.number and bits[15] == 0:  # and does the header name the level we tried, with the spare bit clear?
-            yield spec, bits  # yes: this may be the frame's level
+    if header_start < 0 or header_start + HEADER_SYMBOLS * spec.samples > len(x):  # the header is not (yet) wholly inside the recording
+        return None  # nothing to read
+    tone_e = symbol_energies(x, header_start, HEADER_SYMBOLS, spec, offset)  # measure the header tones
+    llrs = energies_to_llrs(tone_e, noise_level(tone_e))  # turn them into soft bits
+    llrs = llrs.reshape(HEADER_REPEAT, -1).sum(axis=0)[:HEADER_CODED_BITS]  # add the two copies together, drop the padding
+    bits = viterbi_decode(llrs)  # correct errors
+    check_ok = np.array_equal(crc8(bits[:HEADER_FIELD_BITS]), bits[HEADER_FIELD_BITS:])  # does the check value match?
+    if check_ok and bits_to_int(bits[3:6]) == spec.number and bits[15] == 0:  # and does the header name the preamble's level, with the spare bit clear?
+        return bits  # yes: this may be a frame
+    return None  # no
 
 
 def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a frame once its header is known
     """Return the receiver's report for the frame that `header` describes."""
-    result = RxResult(start=found["start"], chirp_quality=found["quality"], level=spec.number)  # start the report with what the chirp and header told us
+    result = RxResult(start=found["start"], sync_quality=found["quality"], level=spec.number)  # start the report with what the preamble and header told us
     result.frame_type = bits_to_int(header[0:3])  # first field: frame type
     result.size_class = bits_to_int(header[6:8])  # third field: size class
     result.part = bits_to_int(header[8:11])  # fourth field: part number
@@ -252,9 +255,12 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     if not is_control and (result.frame_type not in ADDRESS_BITS or result.part >= result.parts):  # neither a control frame nor a sensible message frame
         result.reason = "unsupported frame"  # say why we stopped
         return result  # give up on this reading of the header
-    offset = found["offset_hz"]  # frequency error measured from the chirp
+    offset = found["offset_hz"]  # frequency error measured from the preamble
     layout = control_layout(result.frame_type) if is_control else body_layout(result.size_class)  # the header told us the body's shape
-    body_start = found["start"] + 2 * CHIRP_SAMPLES + HEADER_SYMBOLS * spec.samples  # the body follows the chirps and the header
+    body_start = found["start"] + preamble_samples(spec) + HEADER_SYMBOLS * spec.samples  # the body follows the preamble and the header
+    if body_start + layout["total"] * spec.samples > len(x) + spec.samples // 4:  # the body is not inside the recording, give or take a quarter of a tone (the frame is still arriving, or this is noise near the end)
+        result.reason = "frame incomplete"  # say why we stopped
+        return result  # the caller may look again when more audio has arrived
     extra, drift = pilot_frequency_fit(x, body_start, layout["pilot_pos"], layout["pilot_tones"], spec, offset)  # fine frequency and drift from the pilots
     result.offset_hz = offset + extra  # best estimate of the offset at the start of the body
     result.drift_hz_s = drift  # best estimate of the drift
@@ -329,18 +335,20 @@ def receive(x, blank=True, prior_llrs=None):  # the receiver
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
         x = blank_impulses(x)  # silence static crashes
-    candidates = detect_chirp_pair(x)  # look for the signature chirp (best few candidates)
-    if not candidates:  # recording too short to hold a chirp
-        return RxResult(reason="no chirp found")  # give up
+    candidates = [(found, spec) for spec in LEVELS for found in detect_preamble(x, spec)]  # look for every level's signature pattern (best few candidates of each)
+    if not candidates:  # recording too short to hold any preamble
+        return RxResult(reason="no preamble found")  # give up
+    candidates.sort(key=lambda pair: -pair[0]["quality"])  # try the candidate that stands furthest above the background first
     best = None  # the most believable failed attempt so far
-    for found in candidates:  # try the strongest chirp candidate first
-        header_start = found["start"] + 2 * CHIRP_SAMPLES  # the header follows the two sweeps
-        for spec, header in _read_headers(x, header_start, found["offset_hz"]):  # every level whose header checks out
-            attempt = _decode_body(x, found, spec, header, prior_llrs)  # try to read the body at that level
-            if attempt.ok:  # the body checked out too
-                return attempt  # this is the frame
-            if best is None or _score(attempt) > _score(best):  # otherwise remember the most believable failure
-                best = attempt  # keep it
+    for found, spec in candidates:  # each candidate, at the level its pattern belongs to
+        header = _read_header(x, found["start"] + preamble_samples(spec), found["offset_hz"], spec)  # the header follows the preamble
+        if header is None:  # no header there
+            continue  # not a frame
+        attempt = _decode_body(x, found, spec, header, prior_llrs)  # try to read the body
+        if attempt.ok:  # the body checked out too
+            return attempt  # this is the frame
+        if best is None or _score(attempt) > _score(best):  # otherwise remember the most believable failure
+            best = attempt  # keep it
     if best is not None:  # a header was found but no body decoded
         return best  # report that failure (its soft bits can be combined with a retry)
-    return RxResult(reason="header check failed", start=candidates[0]["start"], chirp_quality=candidates[0]["quality"])  # no header at all
+    return RxResult(reason="header check failed", start=candidates[0][0]["start"], sync_quality=candidates[0][0]["quality"])  # no header at all

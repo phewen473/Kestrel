@@ -21,7 +21,8 @@ def _send(text, snr_db, seed, **channel):  # helper: transmit and receive once
 
 def test_frame_lengths_match_the_design():  # airtime of each size class
     assert abs(len(build_frame(SHORT)) / FS - frame_seconds(0)) < 1e-9  # the audio is exactly as long as predicted
-    assert [round(frame_seconds(c)) for c in range(4)] == [80, 140, 200, 260]  # L0: about 1, 2, 3 and 4 minutes
+    assert [round(frame_seconds(c)) for c in range(4)] == [83, 143, 203, 262]  # L0: about 1.4, 2.4, 3.4 and 4.4 minutes
+    assert [round(frame_seconds(c, 4), 1) for c in range(4)] == [4.7, 8.1, 11.4, 14.8]  # L4: the same frames in a few seconds
     assert frame_seconds(3, 2) <= 60 and frame_seconds(3, 1) <= 90  # 200 characters fit the 60 s cap at L2 and the 90 s cap at L1
 
 
@@ -29,7 +30,7 @@ def test_clean_channel():  # no noise at all
     result = _send(SHORT, None, 1)  # perfect channel
     assert result.ok and result.text == SHORT  # the exact message comes back
     assert result.level == 0 and result.size_class == 0  # the header was read correctly
-    assert abs(result.start - FS) < 1  # the frame was found at the 1-second mark
+    assert abs(result.start - FS) < 5  # the frame was found at the 1-second mark, to within a thousandth of a tone
 
 
 def test_noise_with_frequency_offset():  # 14 dB below the noise and 12 Hz off frequency

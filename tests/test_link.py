@@ -99,16 +99,14 @@ def test_three_stations_answering_one_beacon_are_each_worked():  # the reply win
         station.queue(f"Check-in from {call}.")  # with one message for the caller
         others.append(station)  # keep it
     paths_out = {call: Path(3.0 - i, offset_hz=3.0 * i) for i, call in enumerate(calls)}  # caller to each station
-    paths_in = {call: Path(2.0 - 2 * i, offset_hz=-4.0 * i) for i, call in enumerate(calls)}  # each station to the caller
+    paths_in = {call: Path(2.0, offset_hz=-7.5 * i) for i, call in enumerate(calls)}  # each station to the caller: equally strong, a few hertz apart
     events = run_group(caller, others, paths_out, paths_in, seed=1)  # run it
     assert sorted(caller.inbox) == sorted(f"Check-in from {call}." for call in calls)  # every station's message arrived, once
     assert all(s.state == "RELEASED" and len(s.delivered) == 1 for s in others)  # each contact was completed and closed
     beacons = [e for e in events if e["kind"] == "beacon"]  # the caller's beacons
-    assert beacons[0]["note"] == "" and beacons[1]["note"] == "wide window"  # the first asks for one slot; after the pile-up the next asks for four
     first_window = [e for e in events if e["kind"] == "answer" and e["t"] < beacons[1]["t"]]  # answers to the first beacon
     assert len(first_window) == 3 and len({e["t"] for e in first_window}) == 1  # all three landed in the single slot, on top of each other
-    later = [e for e in events if e["kind"] == "answer" and e["t"] > beacons[1]["t"]]  # answers to the wide beacons
-    assert len({e["note"].split(",")[0] for e in later}) > 1  # which were spread over different slots
+    assert sum(e["heard"] for e in first_window) == 1  # and the caller still read one of them: narrow signals a few hertz apart do not all spoil one another
     assert caller.worked == set(calls)  # the caller knows it has worked all three
 
 
@@ -241,3 +239,13 @@ def test_idle_working_frequency_is_given_up_after_three_minutes():  # nobody is 
     assert 175.0 <= float(closed[0].split("s")[0]) - sent_at <= 190.0  # and the closing three minutes after it
     assert not any("one minute" in line for line in b.log)  # only the station that asked for the move is warned
     assert a.state == b.state == "RELEASED" and a.tuning(1e9) == 0 and b.tuning(1e9) == 0  # both closed properly and are back on the calling frequency
+
+
+def test_unanswered_beacon_is_followed_by_a_wide_reply_window():  # the caller's side of the reply window
+    caller = Station("KO4WSC", "EM92")  # the station that calls
+    caller.beacon()  # it beacons
+    first = caller.poll(0.0)  # the first beacon
+    assert first.kind == "beacon" and first.note == "" and not caller.wide  # one reply slot to begin with
+    second = caller.poll(caller.deadline + 0.1)  # nobody answered (or the answers spoiled one another), so it calls again
+    assert second.kind == "beacon" and second.note == "wide window" and caller.wide  # this time asking for four reply slots
+    assert second.seconds == first.seconds  # the same length of beacon; only its window flag differs

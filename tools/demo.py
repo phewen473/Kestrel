@@ -44,10 +44,10 @@ def main():  # the script itself
     import matplotlib  # plotting library
     matplotlib.use("Agg")  # draw to a file, no window needed
     import matplotlib.pyplot as plt  # the plotting interface
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), gridspec_kw={"width_ratios": [1, 2]})  # two panels: the chirp close up, and the whole frame
-    axes[0].specgram(clean[:int(2.6 * FS)], NFFT=512, Fs=FS, noverlap=384, cmap="viridis")  # the clean chirp pair and first tones
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), gridspec_kw={"width_ratios": [1, 2]})  # two panels: the start of the frame close up, and the whole frame
+    axes[0].specgram(clean[:int(2.6 * FS)], NFFT=512, Fs=FS, noverlap=384, cmap="viridis")  # the clean preamble and first tones
     axes[0].set_ylim(300, 2700)  # show the part of the audio band Kestrel uses
-    axes[0].set_title("Signature chirp (clean)")  # panel title
+    axes[0].set_title("Signature tone pattern (clean)")  # panel title
     axes[0].set_xlabel("Time (s)")  # x-axis title
     axes[0].set_ylabel("Audio frequency (Hz)")  # y-axis title
     nfft = max(256, min(4096, spec.samples))  # analysis window about one tone long

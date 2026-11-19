@@ -6,13 +6,21 @@ They match the specification (sections 4 and 5).
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 
-CHIRP_F0 = 500.0  # lowest frequency of the signature chirp, in Hz
+CHIRP_F0 = 500.0  # lowest frequency of the chirp pair that began every frame up to spec v0.19 (kept for the comparison study), in Hz
 CHIRP_F1 = 2500.0  # highest frequency of the signature chirp, in Hz
 CHIRP_SECONDS = 1.0  # length of each sweep (one up, one down), in seconds
 CHIRP_SAMPLES = int(CHIRP_SECONDS * FS)  # the same length counted in samples
 CHIRP_RAMP_SECONDS = 0.02  # fade-in and fade-out time at each end of a sweep
 CHIRP_RATE = (CHIRP_F1 - CHIRP_F0) / CHIRP_SECONDS  # sweep speed, in Hz per second
 
+PREAMBLE_TONES = 12  # every frame starts with this many tones in a pattern fixed for its speed level
+PREAMBLE_PATTERNS = (  # the twelve tone numbers that start every frame, one row per speed level
+    (12, 5, 27, 9, 24, 31, 19, 8, 2, 18, 1, 30),  # L0
+    (25, 14, 5, 0, 16, 3, 8, 22, 4, 19, 31, 9),  # L1
+    (30, 6, 15, 3, 18, 28, 5, 27, 10, 0, 24, 31),  # L2
+    (17, 3, 8, 28, 21, 15, 29, 13, 2, 9, 1, 12),  # L3
+    (9, 15, 7, 12, 25, 16, 5, 17, 24, 6, 0, 30),  # L4
+)  # each row: no tone used twice, every jump at least five tones, and no two pairs of positions the same distance apart differ by the same number of tones
 M_TONES = 32  # number of different tones every level can send
 BITS_PER_SYMBOL = 5  # each tone carries 5 bits, because 2**5 = 32
 CENTRE_HZ = 1500.0  # the tones of every level are centred near this audio frequency
