@@ -100,4 +100,4 @@ Two faults in the first design were found this way and fixed:
 
 ## Added with spec v0.18
 
-- **An idle working frequency is given up.** The station that proposed the move times the gap since the last message frame (`last_traffic`). At four minutes it logs a warning for its operator; at five it closes the contact (`WORKING_IDLE_S`, `WORKING_WARN_S` in `params.py`), and both stations return to the calling frequency as they do at the end of any contact. One new test.
+- **An idle working frequency is given up.** The station that proposed the move times the gap since the last message frame (`last_traffic`). At two minutes it logs a warning for its operator; at three it closes the contact (the limit was five minutes in v0.18 and is three from v0.19) (`WORKING_IDLE_S`, `WORKING_WARN_S` in `params.py`), and both stations return to the calling frequency as they do at the end of any contact. One new test.

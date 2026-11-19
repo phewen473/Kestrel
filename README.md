@@ -122,11 +122,12 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.18 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
+- Spec version 0.19 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits (all 2026-11-18):
+- Spec v0.19: the idle limit on a working frequency is three minutes.
 - Spec v0.18: an idle working frequency is given up after five minutes, with a one-minute warning to the operator who moved there.
 - Spec v0.17: directed calls, messages for one callsign, broadcasts to ALL; panel scope.
 - Spec v0.16: lock kept open, end on request, working frequencies; panel lists stations heard.

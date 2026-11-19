@@ -324,7 +324,7 @@ class Panel:  # the control panel window
             self.history.append((clock, line))  # remember it, so the log can be redrawn
             del self.history[:-2000]  # keep only the last two thousand lines
             if "returning to the calling frequency in one minute" in line:  # this station moved the contact and the working frequency has gone idle
-                self.show_notice("No messages have passed for four minutes on the working frequency.\n\nIn one minute this contact will be closed and both stations will return to the calling frequency.\n\nSend a message to keep the contact here.")  # warn the operator
+                self.show_notice("No messages have passed for two minutes on the working frequency.\n\nIn one minute this contact will be closed and both stations will return to the calling frequency.\n\nSend a message to keep the contact here.")  # warn the operator
             elif self.notice is not None and any(mark in line for mark in ("sending message", "received message", "back on the calling frequency", "contact closed")):  # traffic has resumed, or the return has happened
                 self.close_notice()  # the warning no longer applies
             state = status_for(line)  # does it mark a change of state?

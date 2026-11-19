@@ -227,7 +227,7 @@ def test_broadcast_to_all_is_received_without_a_lock():  # a message to everyone
     assert a.state == "IDLE"  # the broadcaster never left the idle state
 
 
-def test_idle_working_frequency_is_given_up_after_five_minutes():  # nobody is using the working frequency any more
+def test_idle_working_frequency_is_given_up_after_three_minutes():  # nobody is using the working frequency any more
     a, b = pair(keep_open=True)  # a conversation that is kept open
     a.can_move = b.can_move = True  # both radios can be retuned
     a.move_to_hz = 2500  # the calling station takes the contact to a working frequency
@@ -235,9 +235,9 @@ def test_idle_working_frequency_is_given_up_after_five_minutes():  # nobody is u
     events = run_link(a, b, Path(5.0), Path(5.0), seed=11, limit_s=900.0)  # the contact, then a long silence
     sent_at = max(e["t"] for e in events if e["kind"] == "message")  # when the message went
     warned = [line for line in a.log if "returning to the calling frequency in one minute" in line]  # the operator's warning
-    closed = [line for line in a.log if "no messages for five minutes" in line]  # the decision to close
+    closed = [line for line in a.log if "no messages for 3 minutes" in line]  # the decision to close
     assert len(warned) == 1 and len(closed) == 1  # warned once, then closed
-    assert 235.0 <= float(warned[0].split("s")[0]) - sent_at <= 250.0  # the warning came four minutes after the message
-    assert 295.0 <= float(closed[0].split("s")[0]) - sent_at <= 310.0  # and the closing five minutes after it
+    assert 115.0 <= float(warned[0].split("s")[0]) - sent_at <= 130.0  # the warning came two minutes after the message
+    assert 175.0 <= float(closed[0].split("s")[0]) - sent_at <= 190.0  # and the closing three minutes after it
     assert not any("one minute" in line for line in b.log)  # only the station that asked for the move is warned
     assert a.state == b.state == "RELEASED" and a.tuning(1e9) == 0 and b.tuning(1e9) == 0  # both closed properly and are back on the calling frequency

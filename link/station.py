@@ -623,12 +623,12 @@ class Station:  # the link rules for one station
             return None  # nothing to send
         if self._watching_idle():  # this station moved the contact to a working frequency and is keeping it open
             idle = now - self.last_traffic  # how long since a message went either way
-            if idle >= WORKING_IDLE_S:  # five minutes with no messages
-                self._say(now, "no messages for five minutes on the working frequency; closing the contact and returning to the calling frequency")  # explain
+            if idle >= WORKING_IDLE_S:  # the idle limit has been reached with no messages
+                self._say(now, f"no messages for {WORKING_IDLE_S / 60:.0f} minutes on the working frequency; closing the contact and returning to the calling frequency")  # explain
                 self.close_when_done = True  # close properly; both stations return when the contact ends
             elif idle >= WORKING_IDLE_S - WORKING_WARN_S and not self.idle_warned:  # one minute to go
                 self.idle_warned = True  # warn once
-                self._say(now, "no messages for four minutes; returning to the calling frequency in one minute unless a message is sent")  # the operator's warning
+                self._say(now, f"no messages for {(WORKING_IDLE_S - WORKING_WARN_S) / 60:.0f} minutes; returning to the calling frequency in one minute unless a message is sent")  # the operator's warning
         if self.pending is not None:  # waiting for a reply
             if now < self.deadline:  # and there is still time
                 return None  # keep waiting

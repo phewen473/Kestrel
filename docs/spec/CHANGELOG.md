@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.19 (draft) - 18 November 2026
+
+- No frame is changed from 0.18.
+- An idle working frequency is now given up after 3 minutes without a message frame (was 5). The operator's warning still comes one minute before.
+
 ## 0.18 (draft) - 18 November 2026
 
 - No frame is changed from 0.17.
