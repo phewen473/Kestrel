@@ -28,6 +28,7 @@ IDENT_EVERY_S = 540.0  # a station identifies after this many seconds without se
 OFFER_REPLY = 0  # part-number value in a status-3 acknowledgment: a plain reply, nothing more expected
 OFFER_TURN = 1  # part-number value: "I have nothing to send; the turn is yours" (must be answered)
 OFFER_PROBE = 2  # part-number value: "are you still there?" sent while reacquiring (must be answered with a status-3 acknowledgment)
+OFFER_UNAVAILABLE = 4  # part-number value: "this station's operator is not available" (the one reply sent to a directed call while the operator has set the station to unavailable)
 OFFER_MOVE = 3  # part-number value: "move to the working frequency given in the message-number field" (a proposal, or the same value sent back as agreement)
 MOVE_STEP_HZ = 100  # a working frequency is given as an offset from the calling frequency, in steps of this many hertz (a signed 16-bit count)
 MOVE_SETTLE_S = 3.0  # after a move is agreed, the proposing station waits this long for both radios to retune before it probes

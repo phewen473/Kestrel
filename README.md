@@ -123,11 +123,12 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.24 (draft), 19 November 2026; signal version 0.24. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
+- Spec version 0.25 (draft), 19 November 2026; signal version 0.25. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits:
+- 2026-11-19, spec v0.25: Available / Unavailable switch (Ctrl+U): when away, beacons are presence beacons and a call by name gets one short "not available" reply; every station's status shows in Stations heard.
 - 2026-11-19, spec v0.24: Listen just listens (nothing sent unless the operator starts it; calls to you are shown for Respond); a calling station takes a call back as the answer.
 - 2026-11-19, spec v0.23 (new signal version): call-up at L2 first, L0 if unanswered; reply slots sized to the level; straight to the measured level at lock; directed-call flag carrying the caller's reading.
 - 2026-11-19, spec v0.22 (no signal change): Listen no longer answers beacons by itself; the panel lists stations calling, marks messages waiting for them or mail they hold, and the operator responds with a call by name (or chooses automatic answering in Settings).

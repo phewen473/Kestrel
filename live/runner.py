@@ -53,6 +53,14 @@ def status_for(line):  # the station's state, as far as one log line shows it
     found = re.search(r"no answer from (\S+)", line)  # a directed call was given up
     if found:  # yes
         return f"NO ANSWER from {found.group(1)}", "black"  # nobody there
+    found = re.search(r"(\S+) is not available", line)  # the station being called replied that its operator is away
+    if found:  # yes
+        return f"NOT AVAILABLE  -  {found.group(1)} says its operator is away", "dark orange"  # say so
+    found = re.search(r"called by (\S+); replying: not available", line)  # this station told a caller it is away
+    if found:  # yes
+        return f"UNAVAILABLE  -  told {found.group(1)} you are not available", "dark orange"  # say so
+    if "presence only" in line:  # a beacon sent while unavailable
+        return "UNAVAILABLE  -  presence beacon sent (not taking contacts)", "dark orange"  # say so
     if "sending broadcast" in line:  # a broadcast is going out
         return "BROADCASTING to all stations", "dark blue"  # say so
     if "on the air as beaconer" in line or "sending beacon" in line:  # this station is calling

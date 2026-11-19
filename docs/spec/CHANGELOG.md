@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.25 (draft) - 19 November 2026
+
+- **Signal version 0.25** (only the two test stations are affected).
+- Available or not (Section 6.11): while the operator is not available, the station's beacons are presence beacons (listening flag 0, no reply window, nobody answers), and a directed call gets one short reply, a status-3 acknowledgment with part number 4 ("not available"), at the call's level. The caller stops calling at once.
+
 ## 0.24 (draft) - 19 November 2026
 
 - **Signal version 0.24** (only the two test stations are affected).

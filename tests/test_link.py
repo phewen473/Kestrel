@@ -384,3 +384,28 @@ def test_station_that_just_listens_accepts_a_reply_to_its_own_beacon():  # what 
     b.call_once("Q1AAAA")  # a minute later B's operator presses Respond
     run_link(a, b, Path(5.0), Path(5.0), seed=24, start_s=beacon.seconds + 60.0)  # A's round is over by then, but it beaconed recently, so it takes the call
     assert b.inbox == ["Reply to my beacon."]  # the message arrived
+
+
+def test_unavailable_station_tells_a_caller_once_and_the_caller_stops():  # availability (spec 0.25)
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens...
+    a.call_once("Q2BB")  # ...and calls B by name
+    b.listen()  # B listens...
+    b.available = False  # ...but its operator has set it to unavailable
+    events = run_link(a, b, Path(5.0), Path(5.0), seed=25)  # let it run
+    assert [e["kind"] for e in events] == ["call", "not available"]  # one call, one short reply, and nothing more
+    assert events[1]["level"] == events[0]["level"] == 2  # the reply goes at the call's own level
+    assert a.state == "RELEASED" and a.unavailable_from == "Q2BB" and any("Q2BB is not available" in line for line in a.log)  # A stopped calling and knows why
+
+
+def test_unavailable_station_sends_presence_beacons_that_nobody_answers():  # the beacon says it too
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens
+    a.available = False  # its operator is not available
+    a.beacon_once()  # the repeating beacon's round
+    beacon = a.poll(0.0)  # the beacon
+    assert beacon.kind == "beacon" and a.state == "RELEASED" and a.pending is None  # sent, with no reply window
+    b.listen()  # B answers beacons by itself
+    heard = b.hear(beacon.audio)  # B hears it
+    assert heard.ok and heard.fields["listening"] is False  # the beacon says A is not taking contacts
+    assert b.handle(heard, beacon.seconds + 1.0) is None  # so B does not answer

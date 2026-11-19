@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.24 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.24:** the call-up changed in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame) and again in 0.24 (a calling station takes a call back as the answer), so stations following earlier versions cannot work reliably with 0.24 stations. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.25 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.25:** the call-up changed in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), in 0.24 (a calling station takes a call back as the answer) and in 0.25 (availability: presence beacons and the "not available" reply), so stations following earlier versions cannot work reliably with 0.25 stations. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -229,7 +229,7 @@ Airtime of a whole control frame:
 | Origin | 48 | Callsign of the beaconing station (Section 4.2) |
 | Locator | 15 | Four-character Maidenhead grid locator |
 | Levels | 8 | Speed levels the station can use: the bit for level n has the value 2^n |
-| Listening | 1 | 1 when the station will take answers |
+| Listening | 1 | 1 when the station will take answers; 0 for a presence beacon from a station whose operator is not available (Section 6.11) |
 | Mail check | 1 | 1 asks any station holding mail for the origin to deliver it now |
 | Holds mail | 1 | 1 when the station is holding mail for others |
 | Wide window | 1 | 0 = one reply slot follows the beacon; 1 = four reply slots follow (Section 6.2) |
@@ -251,7 +251,7 @@ Airtime of a whole control frame:
 |---|---|---|
 | Link number | 9 | The lock this frame belongs to (Section 4.2) |
 | Message number | 16 | The message being acknowledged |
-| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10) |
+| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10); 4 = "not available": the operator of the station called is away (Section 6.11) |
 | Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0, except with part number 3, where it carries a frequency offset, Section 6.10) |
 | Channel report | 18 | How the frame being acknowledged was received |
 
@@ -401,6 +401,7 @@ For any other meeting frequency, the working frequencies offered are 2.5 kHz abo
 
 - **Directed call.** A station may call one particular station instead of beaconing. It sends an answer frame (Section 5.8) with the directed-call flag set and the called station as destination: first at L2, and at L0 for any repeats. If the calling station has decoded a frame from the called station in the last 10 minutes, the channel report carries that reading and the level it supports, so the called station can start at that level; otherwise it carries no measurement (SNR at the bottom of the scale, fading index at its largest value) and asks for L0. Only the station named replies; every other station stays silent.
 - **Who answers by itself.** A listening station may be set to answer directed calls by itself, or (the reference program's default) to just listen. A station that just listens transmits nothing unless its operator starts it, except that it accepts, by itself, a directed call from any station within 5 minutes of its own last beacon, and from a station it has itself called within the last 5 minutes: those calls answer something its operator started. Any other directed call is shown to the operator, who responds, if at all, with a directed call of its own (a call back).
+- **Available or not.** The operator sets the station available or not available for contacts. While it is not available: (1) its beacons are presence beacons, with the listening flag 0 and no reply window, and nobody answers them; (2) a directed call addressed to it gets one short reply, a status-3 acknowledgment with part number 4 ("not available"), sent at the level the call came at, with the link number the caller is using (Section 6.3) and a report of how the call was received; nothing else is sent and no contact is made. A calling station that hears this reply stops calling at once and tells its operator. Operator programs show each station's last known availability. A station left not available with nobody at the controls is under automatic control when it sends that reply (Section 2).
 - **Call back.** A station making a directed call that receives a directed call from the very station it is calling takes it as the answer: it stops calling and completes the lock as a called station would (below).
 - **Being called.** An idle, listening station that receives a directed call addressed to it and takes it (as above) treats it as follows. It completes the lock as a beaconing station would (Section 6.3), except that its confirming acknowledgment has part number 1: it hands the first turn to the caller, who called because it has something to send. That first offer does not mean the called station has nothing to send. For the rest of the contact the called station takes the beaconing station's part: it keeps the turn if both find themselves sending, and its callsign comes first in the link number. It sends an identification frame the first time it holds the turn, since nothing it has sent so far carries its callsign. Until the lock is confirmed the calling station assumes the called station supports the same speed levels as itself.
 - **Called while beaconing.** A station waiting in the reply window of its own beacon that receives a directed call to itself (an answer frame with the directed-call flag set) stops waiting for answers and confirms the call at once, as a listening station would.
