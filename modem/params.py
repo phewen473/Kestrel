@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.22"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.20"  # the specification version in which the transmitted signal last changed: stations with the same signal version can hear each other
+SPEC_VERSION = "0.23"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.23"  # the specification version in which the transmitted signal last changed (0.23: call-up at L2 first, reply slots sized to the level, directed-call flag): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 

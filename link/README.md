@@ -6,8 +6,8 @@ Nothing here touches a radio. A `Station` is handed the audio it heard and the t
 
 ## A contact, step by step
 
-1. **Beacon.** The calling station sends a beacon at the slowest level (L0).
-2. **Answer.** A listening station answers, also at L0, because it knows nothing yet about the path in its own direction. The answer says how well the beacon was heard and which speed level the answering station wants.
+1. **Beacon.** The calling station sends a beacon at the middle level (L2), and at once again at the slowest level (L0) if nobody answers (spec 0.23).
+2. **Answer.** A listening station answers at the level the beacon came at, in a reply slot sized for that level (11.3 s at L2, 42 s at L0). The answer says how well the beacon was heard and which speed level the answering station wants. If the return path is too weak for that level, the answer is lost, the caller tries again at L0, and the answer then goes at L0.
 3. **Lock.** The calling station confirms with a short acknowledgment carrying its own report. Both are now locked.
 4. **Messages.** The station holding the turn sends its messages. Every message frame is acknowledged, and every acknowledgment carries a fresh channel report.
 5. **Turn.** When the sender has nothing left it offers the turn. The partner either starts sending or says it has nothing either.
@@ -68,7 +68,7 @@ Run `python tools/link_demo.py --scenario <name>`; charts are in `results/`.
 
 Two faults in the first design were found this way and fixed:
 
-- An answer sent at the speed the beacon was heard at was lost when the return path was worse. Answers now go at L0.
+- An answer sent at the speed the beacon was heard at was lost when the return path was worse. Answers then went at L0. Since spec 0.23 they go at the beacon's level again, because the caller now falls back to an L0 beacon when an L2 one brings no answer, which covers that case.
 - A station that only sent messages had no way to tell its partner to slow its acknowledgments down. Every message frame now carries the level its sender wants.
 
 ## Not covered yet

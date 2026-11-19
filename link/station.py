@@ -40,11 +40,16 @@ from modem.text import pick_size_class  # which frame size a piece of text needs
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
-    MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
+    MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S,  # (continued)
     REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the station has a partner
+
+
+def reply_slot(level):  # how long one reply slot lasts after a beacon at a given level
+    """Return the length in seconds of a reply slot after a beacon sent at `level`: an answer at that level plus a short gap."""
+    return control_seconds(FRAME_TYPE_ANSWER, level) + REPLY_SLOT_GAP_S  # 42 s after an L0 beacon, 11.3 s after an L2 beacon
 
 
 @dataclass  # a plain record
@@ -138,6 +143,9 @@ class Station:  # the link rules for one station
         self.idle_warned = False  # True once the operator has been warned that an idle working frequency is about to be given up
         self.single = False  # True while a listening station makes one beacon round or one directed call, after which it listens again
         self.answer_beacons = True  # a listening station answers beacons by itself; when False the operator chooses, and replies with a directed call
+        self.callup = CALLUP_LEVEL if CALLUP_LEVEL in self.levels else 0  # the level the next beacon or directed call goes at: the middle level first, L0 if that brings no reply
+        self.beacon_sent_at = 0  # the level of the beacon now waiting for answers
+        self.heard_at = {}  # callsign -> (time, report) of the last frame heard from it that named it, for the report a directed call carries
 
     # ---- starting up ----
 
@@ -359,6 +367,7 @@ class Station:  # the link rules for one station
         self.proposed_move, self.idle_warned = False, False  # no move has been asked for in the next contact yet
         self.leads, self.calls = self.role == "beaconer", 0  # the beaconing station leads again; no calls outstanding
         self.close_when_done = not self.keep_open  # an earlier end() applied to that contact only
+        self.callup = CALLUP_LEVEL if CALLUP_LEVEL in self.levels else 0  # the next call-up starts at the middle level again
         if self.single:  # that was a single beacon round or directed call from a listening station
             self.single, self.role, self.leads, self.target = False, "answerer", False, ""  # listen again
 
@@ -385,6 +394,9 @@ class Station:  # the link rules for one station
                 return self._ack(now, 0, result.part, ACK_RESEND, "ack")  # ask for it again
             return None  # otherwise there is nothing to reply to
         self.last_activity = now  # a good frame was heard
+        sender = (result.fields or {}).get("origin") or (result.origin if result.frame_type == FRAME_TYPE_ADDRESSED else "")  # the callsign it carries, if any
+        if sender and np.isfinite(result.snr_db):  # it names its sender and was measured
+            self.heard_at[sender] = (now, ChannelReport(result.snr_db, result.fade_index, result.offset_hz, supported_level([(result.snr_db, result.fade_index)], self.levels)))  # remember the reading, for a directed call to it
         kind = result.frame_type  # what sort of frame it is
         if kind == FRAME_TYPE_ADDRESSED:  # a fully addressed message: a broadcast, or one sent without a lock
             return self._on_addressed(result, now)  # show it if it is for this station or for everyone
@@ -412,19 +424,20 @@ class Station:  # the link rules for one station
             return None  # stay silent; the operator has been shown the beacon
         if result.origin in self.worked and not self._has_for(result.origin):  # already worked this station, and nothing new for it
             return None  # leave the reply window to others
+        slot_s = reply_slot(result.level)  # the beaconing station's reply slots are sized for the level its beacon came at
         slot = int(self.rng.integers(0, WIDE_SLOTS)) if result.fields["wide"] else 0  # a wide window: pick one of four slots at random; otherwise the only slot
         slots_left = (WIDE_SLOTS if result.fields["wide"] else 1) - slot  # slots from this station's own to the end of the window
         self.partner = result.origin  # the calling station
         self.link = link_id(self.partner, self.call)  # link number: the beaconing station first
         self.allowed = common_levels(self.levels, result.fields["levels"])  # the levels both can use
         self._fresh_start(result)  # the first measurement of the partner
-        self.tx_level = min(self.allowed)  # answer at the slowest level: nothing is known yet about the path in this direction
+        self.tx_level = result.level if result.level in self.allowed else min(self.allowed)  # answer at the beacon's own level: hearing it shows the path carries that level
         self.last_ident = now  # the answer carries this station's callsign
         self._say(now, f"heard {self.partner} at {result.snr_db:+.0f} dB; answering, asking for L{self.want}")  # explain
         audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level)  # the answer frame
-        wait = slot * REPLY_SLOT_S + slots_left * REPLY_SLOT_S + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
+        wait = slot * slot_s + slots_left * slot_s + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
         tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}")  # wait for the lock to be confirmed
-        tx.delay = slot * REPLY_SLOT_S  # hold the answer back until its slot
+        tx.delay = slot * slot_s  # hold the answer back until its slot
         return tx  # the answer, with its waiting time
 
     def _on_addressed(self, result, now):  # a fully addressed message frame was heard
@@ -445,9 +458,8 @@ class Station:  # the link rules for one station
 
     @staticmethod  # needs nothing from the station itself
     def _is_call(result):  # does an answer frame carry a directed call rather than a reply to a beacon?
-        """Return True if the answer's channel report carries no measurement (SNR at the bottom of the scale, fading at its largest): the mark of a directed call (Section 6.11)."""
-        report = result.fields["report"]  # the report the frame carries
-        return report.snr_db <= SNR_FLOOR_DB and not report.fade_index < 1.5  # nothing measured (a missing fading reading arrives as the largest value)
+        """Return True if the answer frame's directed-call flag is set (Section 6.11)."""
+        return bool(result.fields.get("directed"))  # the flag says so
 
     def _on_answer(self, result, now):  # an answer was heard
         answering_call = self.role == "answerer" and self.pending is None  # a listening station with nothing under way
@@ -481,7 +493,8 @@ class Station:  # the link rules for one station
     def _on_ack(self, result, now):  # an acknowledgment was heard
         fields = result.fields  # its contents
         self.tx_level = cap_level(fields["report"].want_level, self.allowed)  # from now on, send at the level the partner asks for
-        if self.state == "IDLE":  # the answering station was waiting for this
+        if self.state == "IDLE":  # the answering (or calling) station was waiting for this
+            self._fresh_start(result)  # the first frame from the partner since the lock: ask straight away for the level it supports, rather than climbing from L0
             self.state = "LOCKED"  # the lock is confirmed
             self._say(now, f"locked with {self.partner}; told to send at L{self.tx_level}")  # explain
         status = fields["status"]  # the verdict
@@ -734,20 +747,26 @@ class Station:  # the link rules for one station
         self.partner = self.target  # the station being called
         self.link = link_id(self.partner, self.call)  # link number: the called station takes the beaconing station's place, so it comes first
         self.allowed = list(self.levels)  # the called station's levels are not known yet; assume it has the same
-        self.tx_level = min(self.allowed)  # call at the slowest level: nothing is known about the path
+        self.tx_level = self.callup if self.calls == 1 else min(self.allowed)  # the first call at the middle level, the rest at the slowest
         self.last_ident = now  # the call carries this station's callsign
         if self.calls == 1:  # the first call
             self._say(now, f"calling {self.target}")  # explain
-        audio = build_answer(self.partner, self.call, ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0), self.levels, level=self.tx_level)  # an answer frame nobody asked for, carrying no measurement and asking for L0, is a directed call
+        heard = self.heard_at.get(self.target)  # the last reading of the called station, if it was heard lately
+        if heard is not None and now - heard[0] <= HEARD_FOR_CALL_S:  # recent enough to be useful
+            report = heard[1]  # it goes with the call, so the called station can start at the right level
+        else:  # never heard, or long ago
+            report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0)  # no measurement, asking for L0
+        audio = build_answer(self.partner, self.call, report, self.levels, level=self.tx_level, directed=True)  # an answer frame marked as a directed call
         return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
 
     def _beacon(self, now):  # send a beacon
         self.beacons += 1  # count it
         self.last_ident = now  # a beacon carries the callsign
         self.candidates = []  # a new reply window starts empty
-        audio = build_beacon(self.call, self.grid, self.levels, level=0, wide=self.wide)  # at the slowest level, to reach the furthest
-        window = (WIDE_SLOTS if self.wide else 1) * REPLY_SLOT_S  # how long to listen for answers
-        return self._send(now, audio, "beacon", 0, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window (plus any extra margin a live station allows)
+        self.beacon_sent_at = self.callup  # the middle level first; L0 after that brings no answer
+        audio = build_beacon(self.call, self.grid, self.levels, level=self.beacon_sent_at, wide=self.wide)  # the beacon
+        window = (WIDE_SLOTS if self.wide else 1) * reply_slot(self.beacon_sent_at)  # how long to listen for answers: slots sized for this level
+        return self._send(now, audio, "beacon", self.beacon_sent_at, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window (plus any extra margin a live station allows)
 
     def _timed_out(self, now):  # the reply being waited for did not come
         waited_for = self.pending  # what was expected
@@ -757,6 +776,10 @@ class Station:  # the link rules for one station
             self.wide = len(self.candidates) > 1  # several stations are waiting: keep the window wide for the next call
             self._say(now, f"{len(self.candidates)} answer(s) in the window; choosing {best.origin}")  # explain
             return self._lock_with(best, now)  # lock with it
+        if waited_for == "answer" and self.beacon_sent_at > 0:  # nobody answered the faster beacon: perhaps the path is too weak for it
+            self.callup, self.beacons = 0, self.beacons - 1  # call again at once at L0; the faster try does not count against the tries
+            self._say(now, f"no answer at L{self.beacon_sent_at}; calling again at L0")  # explain
+            return self._beacon(now)  # the L0 beacon
         if waited_for == "answer":  # nobody answered the beacon (or the answers collided)
             self.wide = True  # ask for a wide window from now on
             if self.beacons >= BEACON_TRIES:  # enough tries

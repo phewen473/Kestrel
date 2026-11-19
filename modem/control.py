@@ -101,9 +101,12 @@ def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail
     return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # callsign, locator, levels, flags
 
 
-def pack_answer(dest, origin, report, levels, mail_check=False):  # answer fields -> 124 bits
-    """Return the body bits of an answer to a beacon: who is answering whom, how the beacon was received, what the answerer can do."""
-    flags = [int(mail_check), 0]  # wants its mail / spare
+def pack_answer(dest, origin, report, levels, mail_check=False, directed=False):  # answer fields -> 124 bits
+    """Return the body bits of an answer frame: who is answering (or calling) whom, how the other station was last received, what the sender can do.
+
+    With `directed` the frame is a directed call (Section 6.11) rather than a reply to a beacon.
+    """
+    flags = [int(mail_check), int(directed)]  # wants its mail / a directed call
     return np.concatenate([call_to_bits(dest), call_to_bits(origin), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, report, levels, flags
 
 
@@ -134,7 +137,8 @@ def unpack(frame_type, bits):  # body bits -> named fields
     if frame_type == FRAME_TYPE_ANSWER:  # an answer to a beacon
         rest = bits[2 * CALL_BITS:]  # what follows the two callsigns
         return {"dest": bits_to_call(bits[:CALL_BITS]), "origin": bits_to_call(bits[CALL_BITS:2 * CALL_BITS]), "report": unpack_report(rest[:REPORT_BITS]),  # (continued)
-                "levels": bits_to_levels(rest[REPORT_BITS:REPORT_BITS + LEVEL_MASK_BITS]), "mail_check": bool(rest[REPORT_BITS + LEVEL_MASK_BITS])}  # who to whom, the report, the levels, the flag
+                "levels": bits_to_levels(rest[REPORT_BITS:REPORT_BITS + LEVEL_MASK_BITS]), "mail_check": bool(rest[REPORT_BITS + LEVEL_MASK_BITS]),  # (continued)
+                "directed": bool(rest[REPORT_BITS + LEVEL_MASK_BITS + 1])}  # who to whom, the report, the levels, the two flags
     if frame_type == FRAME_TYPE_ACK:  # an acknowledgment
         rest = bits[LINK_ID_BITS + MSG_ID_BITS:]  # what follows the link and message numbers
         return {"link": bits_to_int(bits[:LINK_ID_BITS]), "msg_id": bits_to_int(bits[LINK_ID_BITS:LINK_ID_BITS + MSG_ID_BITS]), "part": bits_to_int(rest[:PART_BITS]),  # (continued)

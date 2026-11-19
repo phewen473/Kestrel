@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.23 (draft) - 19 November 2026
+
+- **The call-up has changed. Signal version 0.23; stations following 0.22 or earlier cannot work reliably with 0.23 stations.** (Only the two test stations had the earlier versions.)
+- Middle level first (Section 6.1): a beacon goes at L2 first and, if it brings no answer, at once again at L0. The answer goes at the beacon's level (6.2). Reply slots are an answer at the beacon's level plus 2.4 s: 42.0 s at L0, 11.3 s at L2. At L2 every call-up frame is under 10 seconds and the call-up holds the calling frequency about 24 s instead of about 100.
+- Starting level (6.3): each station asks straight away for the level its first measurement supports when the lock is made or confirmed.
+- Directed calls (6.11): marked by the answer frame's former spare bit (now the directed-call flag); first call at L2; the report carries the caller's reading of the called station when it has one from the last 10 minutes.
+- New study tool: tools/callup_study.py (results/callup_study.csv).
+
 ## 0.22 (draft) - 19 November 2026
 
 - **No frame is changed from 0.21.** The signal version stays 0.20.

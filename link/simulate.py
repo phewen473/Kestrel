@@ -105,6 +105,7 @@ def run_group(caller, others, paths_out, paths_in, seed=0, limit_s=7200.0):  # o
         if beacon is None:  # the caller has stopped calling
             break  # the run is over
         t_end = t + beacon.seconds + TURNAROUND_S  # when the reply window opens
+        slot_s = _slot_length(beacon.level)  # the reply slots after this beacon, sized for its level
         events.append(_event(t, caller.call, beacon, float("nan"), True, caller, None))  # record the beacon
         answers = {}  # reply slot -> list of (station, answer)
         for station in waiting:  # every station still waiting hears the beacon over its own path
@@ -112,10 +113,10 @@ def run_group(caller, others, paths_out, paths_in, seed=0, limit_s=7200.0):  # o
             heard = station.hear(run_channel(beacon.audio, path.snr_at(t), rng, path.condition, offset_hz=path.offset_hz))  # what it receives
             answer = station.handle(heard, t_end)  # does it answer?
             if answer is not None:  # yes
-                answers.setdefault(round(answer.delay / _slot_length()), []).append((station, answer))  # file it under its slot
+                answers.setdefault(round(answer.delay / slot_s), []).append((station, answer))  # file it under its slot
         confirm = None  # the caller's reply, once it has chosen
         for slot in sorted(answers):  # the reply slots, in time order
-            t_slot = t_end + slot * _slot_length()  # when this slot starts
+            t_slot = t_end + slot * slot_s  # when this slot starts
             mixed = None  # what the caller hears in this slot
             for station, answer in answers[slot]:  # every answer in the slot
                 path = paths_in[station.call]  # this station to the caller
@@ -129,7 +130,7 @@ def run_group(caller, others, paths_out, paths_in, seed=0, limit_s=7200.0):  # o
             else:  # a slot with one answer
                 events[-1]["heard"] = bool(result.ok)  # did it decode?
             confirm = caller.handle(result, t_slot + answers[slot][0][1].seconds + TURNAROUND_S) or confirm  # a single-slot window is settled at once
-        t = caller.deadline if caller.pending == "answer" else t_end + _slot_length()  # the window closes
+        t = caller.deadline if caller.pending == "answer" else t_end + slot_s  # the window closes
         if confirm is None:  # a wide window, or nothing decoded
             confirm = caller.poll(t)  # the caller decides: lock with the best answer, or beacon again
             if confirm is not None and confirm.kind == "beacon":  # it beaconed again
@@ -156,10 +157,10 @@ def run_group(caller, others, paths_out, paths_in, seed=0, limit_s=7200.0):  # o
     return events  # the whole story
 
 
-def _slot_length():  # the reply slot length
-    """Return the length of one reply slot, in seconds."""
-    from .params import REPLY_SLOT_S  # the setting
-    return REPLY_SLOT_S  # as configured
+def _slot_length(level=0):  # the reply slot length
+    """Return the length of one reply slot after a beacon at `level`, in seconds."""
+    from .station import reply_slot  # the rule
+    return reply_slot(level)  # an answer at that level plus a short gap
 
 
 def _event(t, sender, tx, snr_db, heard, a, b):  # one line of the record

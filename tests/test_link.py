@@ -2,6 +2,7 @@
 
 from link import Path, Station, run_group, run_link, supported_level, wanted_level  # the link layer and its simulations
 from link.params import OFFER_PROBE  # the "are you still there?" code
+from link.station import reply_slot  # the length of a reply slot at each level
 
 ENGLISH = "Good morning from South Carolina. Weather here is clear and 52 degrees with a light wind from the north. How do you copy this evening?"  # an ordinary message
 ODD = "".join(chr(33 + (37 * i) % 94) for i in range(200))  # 200 characters that do not compress
@@ -43,7 +44,7 @@ def test_contact_on_a_lopsided_path():  # B hears A well; A hears B poorly
     assert a.state == "RELEASED" and b.state == "RELEASED"  # the contact was closed properly
     kinds = [e["kind"] for e in events]  # the sequence of frames
     assert kinds[:3] == ["beacon", "answer", "confirm"] and kinds[-2:] == ["final", "final"]  # lock at the start, goodbyes at the end
-    assert events[1]["level"] == 0  # the answer goes out at the slowest level
+    assert events[0]["level"] == events[1]["level"] == 2  # beacon and answer go out at the middle level first (spec 0.23)
     from_a = [e["level"] for e in events if e["sender"] == "Q1AAAA" and e["kind"] == "message"]  # levels A sent its messages at
     from_b = [e["level"] for e in events if e["sender"] == "Q2BB" and e["kind"] == "message"]  # levels B sent its messages at
     assert min(from_a) > max(from_b)  # each direction ran at its own speed: fast one way, slow the other
@@ -63,7 +64,7 @@ def test_lock_survives_a_gap_in_the_path():  # the path vanishes for a while, th
 
 def test_dead_path_ends_the_lock_and_reports_what_was_not_sent():  # the path never comes back
     def dies(t):  # SNR over time
-        return 2.0 if t < 75 else -45.0  # gone for good soon after the lock is made
+        return 2.0 if t < 35 else -45.0  # gone for good soon after the lock is made (about 20 s in, with the call-up at L2)
     a, b, events = contact(Path(dies), Path(dies), [ODD, ODD, ODD], [])  # three messages, time for one at most
     assert a.state == "RELEASED"  # the sender gave up the lock rather than calling for ever
     assert b.state == "RELEASED" and any("not heard" in line for line in b.log)  # and the receiver stopped waiting after five minutes of silence
@@ -245,10 +246,13 @@ def test_unanswered_beacon_is_followed_by_a_wide_reply_window():  # the caller's
     caller = Station("Q1AAAA", "EM92")  # the station that calls
     caller.beacon()  # it beacons
     first = caller.poll(0.0)  # the first beacon
-    assert first.kind == "beacon" and first.note == "" and not caller.wide  # one reply slot to begin with
-    second = caller.poll(caller.deadline + 0.1)  # nobody answered (or the answers spoiled one another), so it calls again
-    assert second.kind == "beacon" and second.note == "wide window" and caller.wide  # this time asking for four reply slots
-    assert second.seconds == first.seconds  # the same length of beacon; only its window flag differs
+    assert first.kind == "beacon" and first.level == 2 and first.note == "" and not caller.wide  # at the middle level, one reply slot (spec 0.23)
+    assert abs(caller.deadline - (first.seconds + 1.0 * reply_slot(2))) < 15.0  # a short window: one slot sized for an L2 answer
+    second = caller.poll(caller.deadline + 0.1)  # nobody answered at L2: perhaps the path is too weak
+    assert second.kind == "beacon" and second.level == 0 and not caller.wide  # so it calls at L0, still with one slot
+    third = caller.poll(caller.deadline + 0.1)  # nobody answered at L0 either (or the answers spoiled one another)
+    assert third.kind == "beacon" and third.level == 0 and third.note == "wide window" and caller.wide  # this time asking for four reply slots
+    assert third.seconds == second.seconds  # the same length of beacon; only its window flag differs
 
 
 def test_station_refuses_to_call_itself():  # a directed call to one's own callsign can never be answered
@@ -264,8 +268,10 @@ def test_listening_station_beacons_once_and_listens_again():  # the panel's repe
     a.listen()  # answering beacons
     a.beacon_once()  # the operator's timer asks for one beacon round
     first = a.poll(0.0)  # the beacon
-    assert first.kind == "beacon"  # it goes out
-    assert a.poll(a.deadline + 0.1) is None and a.state == "RELEASED"  # nobody answers: one round only, no second beacon
+    assert first.kind == "beacon" and first.level == 2  # it goes out, at the middle level first
+    second = a.poll(a.deadline + 0.1)  # nobody answers
+    assert second.kind == "beacon" and second.level == 0  # so the round tries once more at L0 (spec 0.23)
+    assert a.poll(a.deadline + 0.1) is None and a.state == "RELEASED"  # nobody answers that either: one round only
     assert any("no answer to the beacon" in line for line in a.log)  # and the log says so
     a.new_contact()  # the live loop gets ready for the next contact
     assert a.role == "answerer" and a.state == "IDLE" and not a.single  # listening again
@@ -325,3 +331,28 @@ def test_operator_answers_a_beacon_by_hand_with_a_directed_call():  # answering 
     b.call_once("Q1AAAA")  # some seconds later the operator chooses to respond
     run_link(a, b, Path(5.0), Path(5.0), seed=13, start_s=beacon.seconds + 20.0)  # the call reaches A while A is still in its reply window
     assert b.inbox == ["Thanks for answering."] and any("called by Q2BB" in line for line in a.log)  # A took the call and delivered its message
+
+
+def test_weak_path_gets_the_l0_call_up_after_the_middle_level_fails():  # the price of starting in the middle
+    a, b, events = contact(Path(-18.0), Path(-18.0), ["Weak but readable."], [], seed=21)  # too weak for L2, fine for L0
+    beacons = [e["level"] for e in events if e["kind"] == "beacon"]  # the beacons sent
+    assert beacons[:2] == [2, 0]  # the middle level first, then L0
+    answer = next(e for e in events if e["kind"] == "answer")  # the answer that made the lock
+    assert answer["level"] == 0 and b.inbox == ["Weak but readable."]  # answered at L0, and the message arrived
+
+
+def test_directed_call_carries_a_reading_so_the_first_message_is_fast():  # no L0 start after a call by name
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    b.listen()  # B listens...
+    b.beacon_once()  # ...and beacons once
+    b.queue("Straight to a fast level.")  # with a message for whoever calls
+    a.listen()  # A listens, answering by hand
+    a.answer_beacons = False  # (so it stays silent)
+    beacon = b.poll(0.0)  # B's beacon
+    a.handle(a.hear(beacon.audio), beacon.seconds + 1.0)  # A hears it, and keeps the reading
+    a.call_once("Q2BB")  # A responds with a directed call
+    events = run_link(a, b, Path(5.0), Path(5.0), seed=22, start_s=beacon.seconds + 5.0)  # the contact
+    call = next(e for e in events if e["kind"] == "call")  # the call
+    first = next(e for e in events if e["kind"] == "message")  # B's first message
+    assert call["level"] == 2 and first["level"] >= 2  # the call went at the middle level, and the message at least as fast
+    assert a.inbox == ["Straight to a fast level."]  # and it arrived
