@@ -128,6 +128,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-19: fix: a directed call asked for while the station was busy no longer goes out by surprise after a later contact ends (it is dropped if a contact starts first; the log says when a call is waiting).
 - 2026-11-19, spec v0.21 (no signal change): control panel reworked: starts listening; repeating beacon with interval and automatic stop; themes; labelled scope; level meters and sliders; CSV and ADIF logbook at three levels; quick messages; telemetry messages; 48-hour heard log; full menus and keyboard shortcuts.
 - 2026-11-18:
 - Help > About shows the signal version and the program's commit; `VERSION` is stamped with the commit when Git makes an archive.

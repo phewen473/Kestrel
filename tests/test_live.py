@@ -206,3 +206,31 @@ def test_scope_spectrum_shows_a_tone_where_it_is():  # the scope's spectrum puts
     assert abs(peak * 3000.0 / 511 - 1500.0) < 10.0  # within a few hertz of 1500
     assert abs(levels[peak] - 20 * np.log10(0.5)) < 3.0  # and about 6 dB below full scale, as a half-scale tone should be (a display point may fall between two frequency bins)
     assert levels[60] < levels[peak] - 60  # far from the tone the display is dark
+
+
+def test_waiting_call_is_dropped_when_a_contact_starts_first():  # the bug of 19 November: an old call went out after a long contact ended
+    from link import Station  # the link rules
+    from live import call_request  # the panel's directed-call request
+    said = []  # what the request told the operator
+    a = Station("Q1AAAA", "EM92")  # the station
+    a.listen()  # listening
+    a.beacon_once()  # in the middle of a beacon round when the operator asks for the call
+    request = call_request("Q2BB", after_contact=False, say=said.append)  # call Q2BB once free
+    assert request(a) is False  # busy with the beacon round: it waits
+    a.state, a.partner = "LOCKED", "Q2BB"  # then Q2BB answers the beacon and the pair lock
+    assert request(a) is True and "already in contact" in said[-1]  # the call is dropped, not saved for later
+    a.state, a.partner = "LOCKED", "Q3CCC"  # a contact with somebody else instead
+    other = call_request("Q2BB", after_contact=False, say=said.append)  # a fresh request made before that contact
+    assert other(a) is True and "started first" in said[-1]  # dropped too
+
+
+def test_call_asked_for_during_a_contact_waits_for_it_to_end():  # "call Q2BB when this contact is over" still works
+    from link import Station  # the link rules
+    from live import call_request  # the panel's directed-call request
+    a = Station("Q1AAAA", "EM92")  # the station
+    a.listen()  # listening
+    a.state, a.partner = "LOCKED", "Q3CCC"  # in a contact with Q3CCC
+    request = call_request("Q2BB", after_contact=True, say=lambda text: None)  # the operator asks to call Q2BB afterwards
+    assert request(a) is False  # it waits for the contact
+    a.state, a.partner = "IDLE", ""  # the contact ends and the station is listening again
+    assert request(a) is True and a.role == "caller" and a.target == "Q2BB"  # now the call is made

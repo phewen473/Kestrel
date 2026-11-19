@@ -95,6 +95,37 @@ def describe(result):  # one line about a received frame
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
 
 
+LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
+
+
+def call_request(target, after_contact, say=print):  # a directed call the operator asked for, to be made in the station's own thread
+    """Return a request for run_station's on_tick: call `target` once the station is free.
+
+    The request returns True when it is finished with (the call made, or
+    dropped) and False while it is still waiting. `after_contact` is True
+    when the operator asked during a contact, meaning "call once this
+    contact is over". A call that is waiting is dropped if the station
+    locks with `target` some other way, or if a contact starts that was
+    not under way when the call was asked for: the operator can ask again
+    afterwards, and an old request is never carried out by surprise.
+    """
+    def request(station):  # looked at once every loop
+        if station.state in LOCKED_STATES and station.partner == target:  # already in a contact with the station to be called
+            say(f"call to {target} dropped: already in contact with {target}")  # say so
+            return True  # finished with
+        if station.state in LOCKED_STATES and not after_contact:  # a contact began while the call was waiting
+            say(f"call to {target} dropped: a contact with {station.partner} started first; press Call station again to call {target}")  # say so
+            return True  # finished with
+        if station.state != "IDLE" or station.pending is not None or station.role != "answerer":  # busy: a beacon round, an answer, or the contact the operator wants to finish first
+            return False  # look again shortly
+        station.call_once(target)  # call, then go back to listening
+        return True  # done
+
+    request.kind = "call"  # so a change of mode can find and cancel waiting calls
+    request.target = target  # and say whom they were for
+    return request  # ready to hand to the station thread
+
+
 def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 

@@ -38,7 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the reposi
 sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run as a script
 
 from link import Station  # the link rules  # noqa: E402
-from live import KIND, Listener, describe, plain_line, run_station, status_for  # the continuous receiver, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
+from live import KIND, Listener, call_request, describe, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list and the working frequencies  # noqa: E402
@@ -956,6 +956,13 @@ class Panel:  # the control panel window
         else:  # waiting for the next round
             self.beacon_note = "waiting"  # the window works out the time left
 
+    def cancel_calls(self):  # forget any directed call still waiting for the station to be free
+        with self.actions_lock:  # one at a time
+            waiting = [action for action in self.actions if getattr(action, "kind", "") == "call"]  # the calls
+            self.actions = [action for action in self.actions if getattr(action, "kind", "") != "call"]  # everything else stays
+        for action in waiting:  # each cancelled call
+            self.say(f"call to {action.target} cancelled")  # say so
+
     def ask_station(self, action, words):  # hand a request to the station's own thread
         with self.actions_lock:  # one at a time
             self.actions.append(action)  # the station thread does it at its next look
@@ -994,6 +1001,8 @@ class Panel:  # the control panel window
         if self.in_contact() and not messagebox.askyesno("Kestrel", f"A contact with {self.station.partner} is in progress. Stop it without closing it properly?", parent=self.root):  # do not drop a contact by accident
             self.mode_var.set(self.mode)  # put the buttons back
             return  # leave it running
+        if mode != "listen":  # a call can only be made by a listening station
+            self.cancel_calls()  # so any call still waiting is cancelled
         if mode != "listen" and self.beacon_wanted:  # the repeating beacon needs a listening station
             self.beacon_var.set(False)  # release its button
             self.beacon_off("repeating beacon stopped")  # and stop it
@@ -1087,13 +1096,15 @@ class Panel:  # the control panel window
         if not self.ensure_listening(f"call {target}"):  # a call needs a listening station
             return  # nothing started
 
-        def call(station):  # done in the station's own thread
-            if station.state != "IDLE" or station.pending is not None or station.role != "answerer":  # busy
-                return False  # try again shortly
-            station.call_once(target)  # call, then go back to listening
-            return True  # done
-
-        self.ask_station(call, f"calling {target} as soon as the station is free" if self.in_contact() else "")  # hand it over
+        station = self.station  # the running station, if any
+        busy = station is not None and (station.state != "IDLE" or station.pending is not None or station.role != "answerer")  # it cannot call this moment
+        if self.in_contact():  # a contact is under way: the call follows it
+            words = f"calling {target} when the contact with {station.partner} is over"  # say when
+        elif busy or station is None:  # a beacon round, an answer, or the station still starting
+            words = f"calling {target} as soon as the station is free (dropped if a contact starts first)"  # say when, and the condition
+        else:  # free now
+            words = ""  # the station's own log line says it is calling
+        self.ask_station(call_request(target, self.in_contact(), self.say), words)  # hand it over
 
     def end_contact(self):  # the End contact button
         station = self.station  # the station running at this moment, if any
