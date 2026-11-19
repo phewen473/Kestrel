@@ -45,6 +45,14 @@ def status_for(line):  # the station's state, as far as one log line shows it
     found = re.search(r"heard (\S+) at .* dB; answering", line)  # a beacon was heard and is being answered
     if found:  # yes
         return f"ANSWERING {found.group(1)}", "dark blue"  # say who
+    found = re.search(r": calling (\S+)", line)  # a directed call has begun
+    if found:  # yes
+        return f"CALLING {found.group(1)}", "dark blue"  # say who is being called
+    found = re.search(r"no answer from (\S+)", line)  # a directed call was given up
+    if found:  # yes
+        return f"NO ANSWER from {found.group(1)}", "black"  # nobody there
+    if "sending broadcast" in line:  # a broadcast is going out
+        return "BROADCASTING to all stations", "dark blue"  # say so
     if "on the air as beaconer" in line or "sending beacon" in line:  # this station is calling
         return "CALLING  -  beaconing for a partner", "dark blue"  # calling
     if "on the air as answerer" in line or "listening again" in line:  # this station is waiting for a beacon
@@ -131,7 +139,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         source.flush()  # throw away whatever was received meanwhile (it was this station's own signal)
         listener.clear()  # and forget it
 
-    stamp(f"{station.call} on the air as {station.role}")  # opening line
+    stamp(f"{station.call} on the air as {station.role or 'broadcaster'}")  # opening line (a station with no role is only sending a broadcast)
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
         for heard in listener.feed(source.read()):  # every frame that has completed
             result = station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry)

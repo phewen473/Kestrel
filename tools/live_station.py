@@ -39,7 +39,10 @@ def main():  # the script itself
     role = parser.add_mutually_exclusive_group(required=True)  # exactly one of the two roles
     role.add_argument("--beacon", action="store_true", help="call for a partner")  # the calling station
     role.add_argument("--listen", action="store_true", help="wait for a beacon and answer it")  # the answering station
+    role.add_argument("--call-station", default=None, metavar="CALLSIGN", help="call one station by name instead of beaconing")  # a directed call
     parser.add_argument("--send", action="append", default=[], help="a message for the partner (may be repeated)")  # traffic
+    parser.add_argument("--to", default=None, metavar="CALLSIGN", help="send the --send messages only to this callsign")  # targeted traffic
+    parser.add_argument("--broadcast", action="append", default=[], help="a message to send to ALL stations, unacknowledged, before anything else (may be repeated)")  # a broadcast
     parser.add_argument("--in", dest="source", default=None, help="input device: a number, or part of its name")  # where to listen
     parser.add_argument("--out", dest="sink", default=None, help="output device: a number, or part of its name")  # where to play
     parser.add_argument("--gain", type=float, default=0.5, help="transmit audio level, 0 to 1")  # how loud
@@ -59,10 +62,14 @@ def main():  # the script itself
     station = Station(args.call, args.grid, close_when_done=not args.keep_open)  # the link rules for this station, holding the lock open if asked
     if args.beacon:  # the calling station
         station.beacon()  # it beacons
+    elif args.call_station:  # calling one station by name
+        station.call_station(args.call_station)  # only that station answers
     else:  # the answering station
         station.listen()  # it listens
+    for text in args.broadcast:  # the operator's broadcasts
+        station.broadcast(text)  # queued for everyone; they go out first, while no contact is in progress
     for text in args.send:  # the operator's messages
-        station.queue(text)  # into the outbox
+        station.queue(text, to=args.to)  # into the outbox, addressed if --to was given
     rig = RigCtl(args.rig) if args.rig else None  # connect to rigctld when asked
     dial = args.freq if args.freq is not None else (dial_khz(args.band) if args.band else None)  # an exact frequency wins over a band preset
     if dial is not None and rig is None:  # tuning was asked for but there is no rig control

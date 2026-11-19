@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.17 (draft) - 18 November 2026
+
+- No frame format is changed from 0.16. Two existing frames gain a use each (Section 6.11).
+- Directed call: an answer frame sent without a beacon calls one station by name; the called station completes the lock and takes the beaconing station's part.
+- Messages may be marked for one callsign and are then sent only in a contact with that station.
+- Broadcast: fully addressed message frames with destination ALL, sent without a lock and without acknowledgment; any station that decodes them shows the message once.
+
 ## 0.16 (draft) - 18 November 2026
 
 - No frame format is changed from 0.15. One value is newly defined: in an acknowledgment with status 3, part number 3 means "move to a working frequency", with the offset in the message-number field (signed, 100 Hz steps).

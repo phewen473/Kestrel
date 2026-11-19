@@ -54,6 +54,33 @@ def load_settings():  # read the remembered settings
     return settings  # the settings to use
 
 
+def side_file(suffix):  # a file kept beside this panel's settings file
+    """Return the path of a companion file such as the waiting messages ("_outbox.json") for this panel's profile."""
+    return os.path.splitext(SETTINGS_FILE)[0] + suffix  # the settings file's name with a different ending
+
+
+def read_json(path, default):  # read a small JSON file
+    """Return the contents of the JSON file at `path`, or `default` if it is missing or damaged."""
+    try:  # the file may not exist yet
+        with open(path, "r", encoding="utf-8") as handle:  # open it
+            return json.load(handle)  # its contents
+    except (OSError, ValueError):  # missing, unreadable or not JSON
+        return default  # start afresh
+
+
+def write_json(path, data):  # write a small JSON file
+    """Save `data` as JSON at `path`, creating the folder if needed; a failure to save is not fatal."""
+    try:  # the disk may refuse
+        os.makedirs(os.path.dirname(path), exist_ok=True)  # make sure the folder is there
+        with open(path, "w", encoding="utf-8") as handle:  # open the file
+            json.dump(data, handle, indent=2)  # save, readably
+    except OSError:  # it could not be written
+        pass  # carry on; the window still holds the information
+
+
+CONTACTS_FILE = os.path.join(ROOT, "local", "contacts.json")  # the operator's saved contacts, shared by every panel on this computer
+
+
 def device_choices(kind):  # the sound devices to offer in a drop-down list
     """Return the names of every input (or output) device, each name once.
 
@@ -78,7 +105,8 @@ class Panel:  # the control panel window
         self.lines = queue.Queue()  # log lines waiting to be shown
         self.stop = threading.Event()  # set when the operator presses Stop
         self.worker = None  # the thread running the station, when there is one
-        self.outbox = []  # messages queued while no station is running
+        self.outbox = []  # messages queued while no station is running, as (text, callsign it is for or "")
+        self.shown_b = 0  # how many of the tracked station's received broadcasts are already in the list
         self.station = None  # the station that is running now, when there is one, so a message can be handed straight to it
         self.tracked = None  # the station whose messages the lists are following (kept after it stops, for a last look)
         self.marked = 0  # how many of the tracked station's delivered messages are already marked in the list
@@ -86,6 +114,7 @@ class Panel:  # the control panel window
         self.history = []  # every log line so far, as (time of day, line), so the log can be redrawn plain or in detail
         self.heard = queue.Queue()  # reports of stations heard, waiting to go into the list (filled by the working thread)
         self.heard_rows = {}  # callsign -> its row in the stations-heard list
+        self.contacts = read_json(CONTACTS_FILE, {})  # saved contacts: callsign -> {"grid": locator}
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
         self.rig_lock = threading.Lock()  # only one thread at a time may start or tune through rig control
@@ -113,7 +142,7 @@ class Panel:  # the control panel window
         self.frequency.bind("<<ComboboxSelected>>", lambda event: self.tune())  # choosing a frequency tunes the radio to it
         actions = ttk.Frame(root)  # the row of main buttons
         actions.grid(row=3, column=0, pady=4)  # place it
-        for text, mode in (("Monitor (receive only)", "monitor"), ("Listen (answer beacons)", "listen"), ("Beacon (call)", "beacon")):  # the three ways to run
+        for text, mode in (("Monitor (receive only)", "monitor"), ("Listen (answer beacons)", "listen"), ("Beacon (call anyone)", "beacon"), ("Call station (To)", "call")):  # the four ways to run
             ttk.Button(actions, text=text, command=lambda m=mode: self.start(m)).pack(side="left", padx=4)  # one button each
         ttk.Button(actions, text="Stop", command=self.stop_station).pack(side="left", padx=12)  # the Stop button
         options = ttk.Frame(root)  # the row of choices about how a contact is run
@@ -126,20 +155,37 @@ class Panel:  # the control panel window
         self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
         typing.grid(row=5, column=0, sticky="ew", padx=8, pady=4)  # place it
-        typing.columnconfigure(1, weight=1)  # the box takes the spare width
-        ttk.Label(typing, text="Message").grid(row=0, column=0, sticky="w", padx=(0, 6))  # label for the message box
+        typing.columnconfigure(1, weight=0)  # the callsign box keeps its size...
+        typing.columnconfigure(3, weight=1)  # ...and the message box takes the spare width
+        ttk.Label(typing, text="To").grid(row=0, column=0, sticky="w", padx=(0, 6))  # label for the callsign box
+        self.to = ttk.Combobox(typing, width=11)  # the callsign a message is for, or the station to call: type one, or pick a saved contact or a station heard; blank means whoever the partner is
+        self.to.grid(row=0, column=1, sticky="w")  # place it
+        ttk.Label(typing, text="Message").grid(row=0, column=2, sticky="w", padx=(10, 6))  # label for the message box
         self.message = ttk.Entry(typing)  # the message box
-        self.message.grid(row=0, column=1, sticky="ew")  # place it
+        self.message.grid(row=0, column=3, sticky="ew")  # place it
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
-        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=2, padx=(6, 0))  # add the message to the list to send
+        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=4, padx=(6, 0))  # add the message to the list to send
+        ttk.Button(typing, text="Broadcast to ALL", command=self.broadcast_message).grid(row=0, column=5, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
         lists = ttk.Frame(root)  # the two message lists, side by side
         lists.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # place them
         lists.columnconfigure(0, weight=1)  # the two lists share the width
         lists.columnconfigure(1, weight=1)  # equally
-        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("text", "Message", 230), ("state", "State", 110)))  # outgoing messages and how far each has got
-        self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 80), ("text", "Message", 250)))  # incoming messages
+        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
+        self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
         lists.columnconfigure(2, weight=1)  # the third list shares the width too
-        self.stations = self._list(lists, 2, "Stations heard", (("who", "Callsign", 90), ("grid", "Grid", 50), ("snr", "Signal", 60), ("time", "Last heard", 70), ("text", "Sending", 110)))  # every callsign heard on the frequency, in a contact or not
+        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 100)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *)
+        keep = ttk.Frame(self.stations.master)  # buttons under that list
+        keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
+        ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
+        ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
+        ttk.Label(keep, text="double-click a callsign to put it in To").pack(side="left", padx=6)  # a hint
+        self.stations.bind("<Double-1>", lambda event: self.pick_station())  # a double-click chooses the callsign for the next message or call
+        for call in sorted(self.contacts):  # the saved contacts are listed from the start
+            self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), "", "", "saved contact"))  # one row each
+        self.refresh_to()  # offer them in the To box
+        for item in read_json(side_file("_outbox.json"), []):  # messages left waiting when the panel was last closed
+            self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", item.get("text", ""), "waiting"))  # back in the list
+            self.outbox.append((item.get("text", ""), item.get("to", "")))  # and back in the queue for the next contact
         bottom = ttk.Frame(root)  # the bottom strip: the log on the left, the scope on the right
         bottom.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
         bottom.columnconfigure(0, weight=1)  # the log takes the spare width
@@ -278,25 +324,36 @@ class Panel:  # the control panel window
         self.root.after(100, self.show_lines)  # look again in a tenth of a second
 
     def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
-        call = (result.fields or {}).get("origin")  # the callsign it carries, if it is a beacon, an answer or an identification
+        call = (result.fields or {}).get("origin") or (result.origin if result.frame_type == 1 else "")  # the callsign it carries: in a beacon, an answer, an identification or a fully addressed message
         if call:  # it names its sender
             self.heard.put((call, (result.fields or {}).get("grid", ""), result.snr_db, KIND.get(result.frame_type, "frame")))  # pass it to the window
 
     def follow_station(self):  # keep the message lists and the readings in step with the station
         while not self.heard.empty():  # every station heard since the last look
             call, grid, snr, kind = self.heard.get()  # who, where, how strong, and what it sent
-            values = (call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
+            values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
             if call in self.heard_rows:  # already listed
                 self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
+                self.stations.move(self.heard_rows[call], "", 0)  # and move it to the top: most recently heard first
             else:  # a new callsign
                 self.heard_rows[call] = self.stations.insert("", 0, values=values)  # add it at the top
+                self.refresh_to()  # and offer it in the To box
         station = self.tracked  # the station being followed, running or just finished
         if station is not None:  # there is one
             while self.marked < len(station.delivered):  # a message has been delivered since the last look
-                self._advance("delivered " + time.strftime("%H:%M"))  # mark the oldest unfinished row
+                self._advance(station.delivered[self.marked], "delivered " + time.strftime("%H:%M"))  # mark its row
                 self.marked += 1  # one more accounted for
             if station.plan and self.station is station:  # a message is on its way right now
-                self._advance("sending", finish=False)  # show that on the oldest unfinished row
+                self._advance(station.plan_text, "sending")  # show that on its row
+            if self.station is station and not station.broadcasts:  # no broadcast is waiting in the running station
+                for row in self.to_send.get_children():  # look for one shown as waiting
+                    if self.to_send.set(row, "state") == "broadcast when idle":  # it has gone out
+                        self.to_send.set(row, "state", "sent " + time.strftime("%H:%M"))  # say so
+            while self.shown_b < len(station.bulletins):  # a broadcast (or an addressed message) has arrived since the last look
+                origin, dest, text = station.bulletins[self.shown_b]  # who sent it, who it was for, and what it says
+                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} to {dest}", text))  # add it to the received list
+                self.received.yview_moveto(1.0)  # keep the newest row in view
+                self.shown_b += 1  # one more shown
             while self.shown < len(station.inbox):  # a message has arrived since the last look
                 self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), station.partner, station.inbox[self.shown]))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
@@ -318,13 +375,45 @@ class Panel:  # the control panel window
                 self.readings.configure(text="")  # nothing to report
         self.root.after(500, self.follow_station)  # look again in half a second
 
-    def _advance(self, state, finish=True):  # change the state of the oldest message row that is not finished
+    def refresh_to(self):  # (re)fill the To box's list
+        self.to["values"] = sorted(self.contacts) + [call for call in self.heard_rows if call not in self.contacts]  # saved contacts first, then the other stations heard
+
+    def pick_station(self):  # a callsign in the stations list was double-clicked
+        for row in self.stations.selection()[:1]:  # the row chosen
+            self.to.set(self.stations.set(row, "who"))  # its callsign goes into the To box
+
+    def save_contact(self):  # keep the selected callsigns as contacts
+        for row in self.stations.selection():  # each selected row
+            call = self.stations.set(row, "who")  # its callsign
+            self.contacts[call] = {"grid": self.stations.set(row, "grid")}  # remember it, with its grid locator if known
+            self.stations.set(row, "saved", "*")  # mark the row
+        write_json(CONTACTS_FILE, self.contacts)  # save the list
+        self.refresh_to()  # and offer them first in the To box
+
+    def remove_contact(self):  # forget the selected contacts
+        for row in self.stations.selection():  # each selected row
+            self.contacts.pop(self.stations.set(row, "who"), None)  # forget it
+            self.stations.set(row, "saved", "")  # unmark the row
+        write_json(CONTACTS_FILE, self.contacts)  # save the list
+        self.refresh_to()  # and reorder the To box
+
+    def save_outbox(self):  # remember the messages still waiting, so they survive closing the panel
+        waiting = []  # the messages not yet delivered
+        for row in self.to_send.get_children():  # every row of the list
+            if self.to_send.set(row, "state") in ("waiting", "sending"):  # not finished (broadcasts are not kept)
+                to = self.to_send.set(row, "to")  # who it is for
+                waiting.append({"time": self.to_send.set(row, "time"), "to": "" if to == "partner" else to, "text": self.to_send.set(row, "text")})  # keep it
+        write_json(side_file("_outbox.json"), waiting)  # save them beside the settings
+
+    def _advance(self, text, state):  # change the state of the oldest unfinished row carrying a given message
         for row in self.to_send.get_children():  # oldest first
-            if not self.to_send.set(row, "state").startswith("delivered"):  # this one is not finished
+            done = self.to_send.set(row, "state")  # how far this row has got
+            if self.to_send.set(row, "text") == text and not done.startswith(("delivered", "sent")):  # the same message, not finished
+                changed = done != state  # is this news?
                 self.to_send.set(row, "state", state)  # give it the new state
+                if changed:  # something moved on
+                    self.save_outbox()  # keep the saved copy of the waiting messages in step
                 return  # only the oldest
-        if finish:  # a delivery was reported with no row waiting (should not happen)
-            self.to_send.insert("", "end", values=("", "(message)", state))  # show it anyway
 
     # ---- settings ----
 
@@ -502,19 +591,41 @@ class Panel:  # the control panel window
 
     def queue_message(self):  # add the typed message to the list to send
         text = self.message.get().strip()  # what was typed
+        to = self.to.get().strip().upper()  # who it is for, if anyone in particular
         if text:  # something was
             self.message.delete(0, "end")  # clear the box
-            self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), text, "waiting"))  # show it in the list
+            self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", text, "waiting"))  # show it in the list
             self.to_send.yview_moveto(1.0)  # keep the newest row in view
             station = self.station  # the station running at this moment, if any
             if station is not None:  # one is running
-                station.queue(text)  # hand it the message now; it goes in the contact in progress or the next one
-                self.say(f"queued with the running station: {text}")  # confirm
+                station.queue(text, to=to or None)  # hand it the message now; it goes when the right station is the partner
+                self.say(f"queued with the running station{' for ' + to if to else ''}: {text}")  # confirm
             else:  # nothing is running
-                self.outbox.append(text)  # keep it for the next Listen or Beacon
-                self.say(f"queued for the next Listen or Beacon: {text}")  # confirm
+                self.outbox.append((text, to))  # keep it for the next Listen, Beacon or Call
+                self.say(f"queued for the next contact{' with ' + to if to else ''}: {text}")  # confirm
+            self.save_outbox()  # a waiting message is kept even if the panel is closed
 
-    def start(self, mode):  # one of the three main buttons
+    def broadcast_message(self):  # send the typed message to every station listening
+        text = self.message.get().strip()  # what was typed
+        if not text:  # nothing was
+            messagebox.showinfo("Kestrel", "Type the message to broadcast first.")  # say so
+            return  # nothing to do
+        station = self.station  # the station running at this moment, if any
+        if station is None and self.worker is not None and self.worker.is_alive():  # the receive-only monitor is running
+            messagebox.showinfo("Kestrel", "Monitor is receive only. Press Stop, then Broadcast to ALL.")  # say so
+            return  # nothing to do
+        if not messagebox.askokcancel("Kestrel", "This will TRANSMIT the message to all stations at the slowest level, with no acknowledgment.\nCheck on the scope that the frequency is clear. Continue?"):  # a last check before transmitting
+            return  # the operator backed out
+        self.message.delete(0, "end")  # clear the box
+        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), "ALL", text, "broadcast" if station is None else "broadcast when idle"))  # show it in the list
+        self.to_send.yview_moveto(1.0)  # keep the newest row in view
+        if station is not None:  # a station is running
+            station.broadcast(text)  # it goes out as soon as no contact is in progress
+            self.say(f"broadcast queued: {text}")  # confirm
+        else:  # nothing is running: start a short run that only sends the broadcast
+            self.start("broadcast", confirmed=True, text=text)  # go
+
+    def start(self, mode, confirmed=False, text=""):  # one of the main buttons (or a broadcast with nothing running)
         if self.worker is not None and self.worker.is_alive():  # already running
             messagebox.showinfo("Kestrel", "Already running. Press Stop first.")  # say so
             return  # nothing to do
@@ -522,10 +633,14 @@ class Panel:  # the control panel window
             messagebox.showinfo("Kestrel", "Enter your callsign and grid locator first, under Settings > Rig Information.")  # say so
             self.rig_information()  # and open the dialog
             return  # nothing more to do
-        if mode != "monitor" and not messagebox.askokcancel("Kestrel", "This station will TRANSMIT on the radio's frequency. Continue?"):  # a last check before transmitting
+        if mode == "call" and not self.to.get().strip():  # a directed call needs somebody to call
+            messagebox.showinfo("Kestrel", "Type the callsign to call in the To box first.")  # say so
+            return  # nothing to do
+        if mode != "monitor" and not confirmed and not messagebox.askokcancel("Kestrel", "This station will TRANSMIT on the radio's frequency. Continue?"):  # a last check before transmitting
             return  # the operator backed out
         try:  # the chosen sound devices may have gone away
             job = self.prepare()  # everything the working thread needs
+            job["target"], job["broadcast"] = self.to.get().strip().upper(), text  # the station to call, and the broadcast to send, when those are what was asked for
         except ValueError as problem:  # a device is not connected
             messagebox.showerror("Kestrel", f"{problem}. Choose the sound devices under Settings > Rig Information.")  # say which, and where to fix it
             return  # nothing started
@@ -564,12 +679,15 @@ class Panel:  # the control panel window
             self.audio = source  # let the scope show what it hears
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
+                watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
+                self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
                 self.say("monitoring: receive only, nothing will be transmitted")  # opening line
                 while not self.stop.is_set():  # until Stop
                     for heard in listener.feed(source.read()):  # every frame that has completed
                         self.say(describe(heard.result))  # show it
                         if heard.result.ok:  # it decoded
                             self.note_heard(heard.result)  # add its sender to the stations heard
+                            watcher.handle(heard.result, time.monotonic())  # and let the watcher collect any broadcast
                     time.sleep(0.1)  # a tenth of a second between looks
                 return  # done
             with self.rig_lock:  # one user of rig control at a time while it starts and tunes
@@ -583,14 +701,23 @@ class Panel:  # the control panel window
             station.move_to_hz = job["move_hz"] if rig is not None else None  # the working frequency to propose once locked (only when the radio can be retuned)
             base_hz = job["entry"]["dial_khz"] * 1000.0  # the calling frequency, in hertz
             retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move the radio to a working frequency and back
-            station.beacon() if mode == "beacon" else station.listen()  # call, or wait to be called
-            for text in job["messages"]:  # the queued messages
-                station.queue(text)  # into the station's outbox
-            self.marked, self.shown, self.tracked = 0, 0, station  # the lists follow this station from its beginning
+            if mode == "beacon":  # call for anyone
+                station.beacon()  # by beaconing
+            elif mode == "call":  # call one station by name
+                station.call_station(job["target"])  # only that station answers
+            elif mode == "listen":  # wait to be called
+                station.listen()  # answers beacons and directed calls
+            else:  # a broadcast and nothing else
+                station.broadcast(job["broadcast"])  # queue it; the station sends it at once, since it is idle
+            for text, to in job["messages"]:  # the queued messages
+                station.queue(text, to=to or None)  # into the station's outbox, each with its address
+            self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
-            run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard)  # the live loop
+            run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=(lambda: self.stop.is_set() or (mode == "broadcast" and not station.broadcasts)), retune=retune, on_heard=self.note_heard)  # the live loop (a broadcast-only run ends when the broadcast has gone)
             self.station = None  # the run is over; later messages wait for the next one
-            self.outbox = list(station.outbox) + self.outbox  # anything it did not get to send is kept for the next run
+            self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
+            if mode == "broadcast":  # a broadcast-only run
+                self._advance(job["broadcast"], "sent " + time.strftime("%H:%M"))  # mark the broadcast as sent
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
                 rig.set_frequency(base_hz)  # put the radio back on the calling frequency
                 self.say("radio back on the calling frequency")  # confirm
@@ -611,6 +738,7 @@ class Panel:  # the control panel window
     def close(self):  # the window is being closed
         self.stop.set()  # stop the station
         self.save_settings()  # remember the settings
+        self.save_outbox()  # and the messages still waiting
         self.rigs.stop()  # stop the rig control program this panel started
         self.root.destroy()  # close the window
 

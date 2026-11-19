@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.16 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.17 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -375,6 +375,16 @@ Suggested working frequencies (dial, upper sideband; first choices, to be confir
 | 20 m | 14108.5 kHz | 14106.0, 14103.5, 14101.0 kHz | Signals 14106.5 to 14108.5, 14104.0 to 14106.0 and 14101.5 to 14103.5 kHz, all inside 14100.5 to 14112 kHz. |
 
 For any other meeting frequency, the working frequencies offered are 2.5 kHz above and 2.5 kHz below it.
+
+### 6.11 Directed calls, messages for one station, and broadcasts
+
+- **Directed call.** A station may call one particular station instead of beaconing. It sends an answer frame (Section 5.8) that no beacon asked for, at L0, with the called station as destination. Its channel report carries no measurement (SNR at the bottom of the scale, fading index at its largest value) and asks for L0. Only the station named replies; every other station stays silent.
+- **Being called.** An idle, listening station that receives an answer frame addressed to it, without having beaconed, treats it as a directed call. It completes the lock as a beaconing station would (Section 6.3), except that its confirming acknowledgment has part number 1: it hands the first turn to the caller, who called because it has something to send. That first offer does not mean the called station has nothing to send. For the rest of the contact the called station takes the beaconing station's part: it keeps the turn if both find themselves sending, and its callsign comes first in the link number. It sends an identification frame the first time it holds the turn, since nothing it has sent so far carries its callsign. Until the lock is confirmed the calling station assumes the called station supports the same speed levels as itself.
+- **No reply.** The call is repeated when its confirmation does not arrive; after 5 calls without a reply the calling station gives up.
+- **Messages for one station.** A message may be marked for one callsign. It is sent only in a contact with that station, as ordinary link frames with their usual acknowledgments, and otherwise waits. A station that has already worked a caller answers that caller's next beacon only if it has a message for that caller or for anyone.
+- **Broadcast.** A message for every station in range is sent as fully addressed message frames (frame type 1, Section 5.7) with the destination ALL, the sender's callsign as origin, a hop count of 0 and the shortest lifetime. It is sent at L0 unless the operator chooses otherwise, split into parts under the airtime limits (Section 6.8), and only while the sending station is in no contact. Nobody acknowledges a broadcast and it is not forwarded.
+- **Receiving.** Any station that decodes every part of a fully addressed message whose destination is ALL or its own callsign shows it to its operator once, with the origin; repeats of the same message number from the same origin are dropped. This applies whether or not the receiving station is in a contact of its own.
+- **Listen first.** A broadcast is sent without knowing who is listening or who is in the middle of an exchange. The operator checks that the frequency is clear before sending one.
 
 ## 7. Nets (optional)
 

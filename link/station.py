@@ -14,6 +14,11 @@ Two optional extras: a station may keep the lock open after the traffic
 is done (close_when_done=False, ended later with end()), and the pair
 may agree to leave the calling frequency for a working frequency once
 locked, returning when the contact ends.
+
+Messages may be meant for one callsign (queue(text, to=...)); they wait
+until that station is the partner. A station may call one particular
+station instead of beaconing (call_station()), and may send a broadcast
+to everyone, which nobody acknowledges (broadcast()).
 """
 
 import zlib  # gives each station its own repeatable random numbers, from its callsign
@@ -27,13 +32,13 @@ from modem import (  # the modem: frames, reports, planner
 )  # end of the import list
 from modem.address import clean_call  # tidies a callsign
 from modem.params import (  # frame type numbers and the airtime limit
-    AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS, MSG_ID_BITS,  # (continued)
+    AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS, MSG_ID_BITS,  # (continued)
 )  # end of the import list
 from modem.text import pick_size_class  # which frame size a piece of text needs
 
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
 from .params import (  # timing and retry settings
-    BEACON_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
+    BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
     REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S,  # (continued)
 )  # end of the import list
@@ -82,6 +87,14 @@ class Station:  # the link rules for one station
         self.good_run = 0  # clean frames in a row since the last failure (for leaving DEGRADED)
         self.last_result = None  # the receiver's report on the frame heard most recently
         self.outbox = []  # messages waiting to be sent, oldest first
+        self.outbox_to = []  # for each of those, the callsign it is meant for, or None for whoever the partner is
+        self.broadcasts = []  # broadcast frames waiting to be sent to everyone: (audio, level, note)
+        self.bulletins = []  # broadcasts and other fully addressed messages received: (origin, destination, text)
+        self.bulletin_parts = {}  # parts of those still arriving: (origin, message number) -> {part: report}
+        self.bulletin_done = set()  # (origin, message number) of those already delivered, so a repeat is not shown twice
+        self.target = ""  # the callsign being called, for a station making a directed call
+        self.calls = 0  # directed calls sent without a reply
+        self.leads = False  # True for the station that keeps the turn when both find themselves sending: the one that beaconed, or the one that was called
         self.delivered = []  # messages the partner has acknowledged in full
         self.inbox = []  # complete messages received
         self.plan = []  # the frames of the message being sent
@@ -125,14 +138,40 @@ class Station:  # the link rules for one station
     def beacon(self):  # become the station that calls
         """Start beaconing for a partner."""
         self.role = "beaconer"  # this station sends beacons
+        self.leads = True  # and keeps the turn in a clash
 
     def listen(self):  # become the station that answers
         """Wait for a beacon and answer it."""
         self.role = "answerer"  # this station answers beacons
 
-    def queue(self, text):  # hand the station a message to send
-        """Add a message to the outbox."""
+    def call_station(self, target):  # become a station that calls one particular station
+        """Call `target` by name instead of beaconing; only that station answers."""
+        self.role = "caller"  # this station sends directed calls
+        self.target = clean_call(target)  # to this callsign
+        self.leads = False  # the station that is called keeps the turn in a clash
+
+    def queue(self, text, to=None):  # hand the station a message to send
+        """Add a message to the outbox. With `to`, it is sent only when that callsign is the partner."""
         self.outbox.append(text)  # oldest first
+        self.outbox_to.append(clean_call(to) if to else None)  # who it is for, if anyone in particular
+
+    def broadcast(self, text, level=BROADCAST_LEVEL):  # send a message to everyone listening
+        """Queue `text` as a broadcast to ALL: fully addressed frames that nobody acknowledges, sent when no contact is in progress."""
+        number = self.next_id  # the broadcast takes the next message number
+        self.next_id = (self.next_id + 1) % (1 << MSG_ID_BITS)  # and the counter moves on
+        for item in plan_at_level(text, level, addressed=True):  # cut into frames that respect the airtime limits
+            audio = build_frame(item["text"], level, item["part"], item["parts"], msg_id=number, dest="ALL", origin=self.call, hops=0, life_hours=BROADCAST_LIFE_HOURS)  # a fully addressed frame for everyone
+            self.broadcasts.append((audio, level, f"to ALL, msg {number} part {item['part'] + 1}/{item['parts']}"))  # wait for a free moment
+
+    def _sendable(self):  # which waiting message can go to the present partner?
+        """Return the position in the outbox of the first message for this partner (or for anyone), or None."""
+        for index, to in enumerate(self.outbox_to):  # oldest first
+            if to is None or to == self.partner:  # for anyone, or for this partner
+                return index  # this one
+        return None  # nothing for this partner
+
+    def _has_for(self, call):  # is there traffic for a given callsign?
+        return any(to is None or to == call for to in self.outbox_to)  # a message for anyone, or for that station
 
     def end(self):  # the operator wants the contact closed
         """Close the contact once any traffic under way is finished (for a lock that was being kept open)."""
@@ -255,7 +294,10 @@ class Station:  # the link rules for one station
             return self._propose_move(now)  # ask the partner to move before any traffic
         if self.plan and self.part_index < len(self.plan):  # a message is under way
             return self._send_part(now)  # send its next frame
-        if self.outbox:  # another message is waiting
+        index = self._sendable()  # the next message that may go to this partner
+        if index is not None:  # there is one
+            self.outbox.insert(0, self.outbox.pop(index))  # bring it to the front of the outbox...
+            self.outbox_to.insert(0, self.outbox_to.pop(index))  # ...with its address
             self._start_message(self.outbox[0])  # plan it
             return self._send_part(now)  # send its first frame
         if not self.peer_empty:  # nothing to send, and the partner has not said the same
@@ -293,6 +335,7 @@ class Station:  # the link rules for one station
         self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
         self.quiet, self.moved, self.move_tries, self.settle_until, self.arriving, self.await_since = False, False, 0, None, False, None  # no idle lock, no move under way
         self.idle_told = False  # nothing has been said about being idle
+        self.leads, self.calls = self.role == "beaconer", 0  # the beaconing station leads again; no calls outstanding
         self.close_when_done = not self.keep_open  # an earlier end() applied to that contact only
 
     def _release(self, now, why):  # the contact is over
@@ -319,6 +362,8 @@ class Station:  # the link rules for one station
             return None  # otherwise there is nothing to reply to
         self.last_activity = now  # a good frame was heard
         kind = result.frame_type  # what sort of frame it is
+        if kind == FRAME_TYPE_ADDRESSED:  # a fully addressed message: a broadcast, or one sent without a lock
+            return self._on_addressed(result, now)  # show it if it is for this station or for everyone
         if kind == FRAME_TYPE_BEACON:  # someone is calling
             return self._on_beacon(result, now)  # maybe answer
         if kind == FRAME_TYPE_ANSWER:  # someone answered a beacon
@@ -339,7 +384,7 @@ class Station:  # the link rules for one station
     def _on_beacon(self, result, now):  # a beacon was heard
         if self.role != "answerer" or self.state != "IDLE" or not result.fields["listening"]:  # not answering, already busy, or the caller takes no answers
             return None  # stay silent
-        if result.origin in self.worked and not self.outbox:  # already worked this station, and nothing new for it
+        if result.origin in self.worked and not self._has_for(result.origin):  # already worked this station, and nothing new for it
             return None  # leave the reply window to others
         slot = int(self.rng.integers(0, WIDE_SLOTS)) if result.fields["wide"] else 0  # a wide window: pick one of four slots at random; otherwise the only slot
         slots_left = (WIDE_SLOTS if result.fields["wide"] else 1) - slot  # slots from this station's own to the end of the window
@@ -356,7 +401,28 @@ class Station:  # the link rules for one station
         tx.delay = slot * REPLY_SLOT_S  # hold the answer back until its slot
         return tx  # the answer, with its waiting time
 
+    def _on_addressed(self, result, now):  # a fully addressed message frame was heard
+        if result.dest not in ("ALL", self.call):  # for some other station
+            return None  # not this station's business
+        key = (result.origin, result.msg_id)  # which message this is
+        if key in self.bulletin_done:  # already delivered (a repeat)
+            return None  # nothing to do
+        parts = self.bulletin_parts.setdefault(key, {})  # the parts of this message so far
+        parts[result.part] = result  # add this one
+        whole = join_parts(list(parts.values()))  # is the message complete?
+        if whole is not None:  # yes
+            self.bulletins.append((result.origin, result.dest, whole))  # deliver it to the operator
+            self.bulletin_done.add(key)  # remember it is done
+            del self.bulletin_parts[key]  # the parts are no longer needed
+            self._say(now, f"{'broadcast' if result.dest == 'ALL' else 'message'} from {result.origin}: {whole[:40]!r}")  # explain
+        return None  # nobody acknowledges these
+
     def _on_answer(self, result, now):  # an answer was heard
+        if self.role == "answerer" and self.state == "IDLE" and self.pending is None and result.dest == self.call:  # an answer nobody asked for, addressed to this listening station: a directed call
+            self._say(now, f"called by {result.origin}")  # explain
+            self.leads = True  # the called station takes the beaconing station's part from here on
+            self._lock_with(result, now)  # lock with the caller (the plain confirmation it prepares is replaced below)
+            return self._ack(now, 0, OFFER_TURN, ACK_LINK, "confirm", "offer", self._longest_reply())  # confirm the lock and hand the caller the first turn: it called because it has something to say
         if self.role != "beaconer" or self.pending != "answer" or result.dest != self.call:  # not expecting one, or it is for someone else
             return None  # stay silent
         if self.wide:  # a wide window: other answers may still come
@@ -402,6 +468,7 @@ class Station:  # the link rules for one station
         self.part_index = len(self.plan) if status == ACK_HAVE_IT else self.part_index + 1  # "already have it" covers the whole message; otherwise move to the next frame
         if self.part_index >= len(self.plan):  # that was the last frame of the message
             self.delivered.append(self.outbox.pop(0))  # the whole message is delivered
+            self.outbox_to.pop(0)  # and its address goes with it
             self.plan = []  # nothing under way
             self._say(now, f"message {self.current_id} delivered")  # explain
         return self._next(now)  # carry on
@@ -415,7 +482,7 @@ class Station:  # the link rules for one station
         """
         if self.pending not in ("ack", "offer", "probe", "move"):  # not in the middle of an exchange of its own
             return True  # no clash
-        if self.role == "beaconer":  # the beaconing station keeps the turn
+        if self.leads:  # the beaconing (or called) station keeps the turn
             return False  # ignore the frame; its own retry will follow
         self._say(now, "both sides were sending; giving way")  # explain
         self.pending = None  # stop waiting for a reply
@@ -436,9 +503,9 @@ class Station:  # the link rules for one station
             return self._ack(now, 0, OFFER_REPLY, ACK_LINK, "reply")  # "still here", with a fresh report
         self._note(result, failed=False)  # a clean frame from the partner
         if code == OFFER_TURN:  # the partner has nothing to send and offers the turn
-            self.peer_empty = True  # remember the partner is empty
+            self.peer_empty = self.pending != "confirm"  # remember the partner is empty (except when this offer is a called station confirming the lock: it may yet have traffic)
             self.pending = None  # any wait is over
-            if self.plan or self.outbox:  # this station has traffic
+            if self.plan or self._sendable() is not None:  # this station has traffic for the partner
                 self.my_turn = True  # take the turn
                 return self._next(now)  # and use it
             self.my_turn = False  # nothing here either: the partner keeps the turn
@@ -475,7 +542,7 @@ class Station:  # the link rules for one station
         steps = result.fields["msg_id"]  # the offset, as an unsigned 16-bit count
         offset_hz = (steps - 0x10000 if steps >= 0x8000 else steps) * MOVE_STEP_HZ  # back to a signed offset in hertz
         self._note(result, failed=False)  # a clean frame from the partner
-        if self.pending == "move" and (offset_hz == self.move_to_hz or self.role == "beaconer"):  # the partner agrees (or both proposed at once and the beaconing station's proposal stands)
+        if self.pending == "move" and (offset_hz == self.move_to_hz or self.leads):  # the partner agrees (or both proposed at once and the beaconing station's proposal stands)
             if offset_hz != self.move_to_hz:  # the partner proposed somewhere else at the same moment
                 return None  # ignore it; this station's own proposal will be repeated
             self.pending = None  # the wait is over
@@ -559,15 +626,21 @@ class Station:  # the link rules for one station
             self._release(now, "partner not heard on the working frequency; lock given up")  # go back to the calling frequency
             return None  # nothing to send
         if self.state in LOCKED_STATES and self.quiet and not self.my_turn and now - self.last_activity >= self._quiet_gap():  # the lock is idle, the partner holds the turn and has had time to speak
-            if self.outbox or self.close_when_done:  # this station now has a message, or wants the contact closed
+            if self._sendable() is not None or self.close_when_done:  # this station now has a message for the partner, or wants the contact closed
                 self.quiet, self.my_turn = False, True  # take the turn (if the partner starts at the same moment, the usual give-way rule settles it)
                 return self._next(now)  # send the message, or the closing identification
             if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since this station sent its callsign
                 return self._ident(now, final=False)  # identify, turn or no turn
+        if self.broadcasts and self.state == "IDLE":  # a broadcast is waiting and no contact is in progress
+            audio, level, note = self.broadcasts.pop(0)  # its next frame
+            self.last_ident = now  # a fully addressed frame carries this station's callsign
+            return self._send(now, audio, "broadcast", level, None, 0.0, note)  # send it; nobody replies
         if self.role == "beaconer" and self.state == "IDLE":  # looking for a partner
             return self._beacon(now)  # call
+        if self.role == "caller" and self.state == "IDLE":  # calling one particular station
+            return self._call(now)  # call it
         if self.state in LOCKED_STATES and self.my_turn:  # locked, and it is this station's turn
-            if self.peer_empty and not self.plan and not self.outbox and not self.close_when_done:  # both sides idle, lock kept open
+            if self.peer_empty and not self.plan and self._sendable() is None and not self.close_when_done:  # both sides idle, lock kept open
                 if now - self.last_activity < KEEPALIVE_S:  # not silent for long enough yet
                     return None  # stay quiet
                 self.peer_empty = False  # time to check on the partner: offer the turn again
@@ -587,7 +660,7 @@ class Station:  # the link rules for one station
             return self.deadline  # until the deadline
         if self.settle_until is not None:  # waiting for the radios to retune after a move
             return self.settle_until  # until they have settled
-        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and (self.outbox or self.close_when_done):  # idle without the turn, but with something to send or a contact to close
+        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and (self._sendable() is not None or self.close_when_done):  # idle without the turn, but with something to send or a contact to close
             return self.last_activity + self._quiet_gap()  # until the partner has had its chance to speak
         if self.await_since is not None:  # waiting for the partner on a working frequency
             return self.await_since + MOVE_WAIT_S  # until that wait runs out
@@ -596,6 +669,21 @@ class Station:  # the link rules for one station
         if self.state in LOCKED_STATES and not self.my_turn:  # locked and waiting for the partner
             return self.last_activity + LOCK_TIMEOUT_S  # until the silence has lasted too long
         return None  # nothing scheduled
+
+    def _call(self, now):  # send a directed call
+        if self.calls >= CALL_TRIES:  # tried enough
+            self._release(now, f"no answer from {self.target}")  # give up
+            return None  # nothing to send
+        self.calls += 1  # count the call
+        self.partner = self.target  # the station being called
+        self.link = link_id(self.partner, self.call)  # link number: the called station takes the beaconing station's place, so it comes first
+        self.allowed = list(self.levels)  # the called station's levels are not known yet; assume it has the same
+        self.tx_level = min(self.allowed)  # call at the slowest level: nothing is known about the path
+        self.last_ident = now  # the call carries this station's callsign
+        if self.calls == 1:  # the first call
+            self._say(now, f"calling {self.target}")  # explain
+        audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level)  # an answer frame nobody asked for is a directed call
+        return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
 
     def _beacon(self, now):  # send a beacon
         self.beacons += 1  # count it
@@ -619,6 +707,9 @@ class Station:  # the link rules for one station
                 self._release(now, "no answer to the beacon")  # give up
                 return None  # nothing to send
             return self._beacon(now)  # call again
+        if waited_for == "confirm" and self.role == "caller":  # a directed call went unanswered
+            self.state = "IDLE"  # still looking
+            return self._call(now)  # call again, or give up after enough tries
         if waited_for == "confirm":  # the lock was never confirmed
             self.state = "IDLE"  # go back to listening
             self._say(now, "lock not confirmed; listening again")  # explain
