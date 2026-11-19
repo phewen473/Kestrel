@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.20 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.21 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.20:** the transmitted signal has not changed since version 0.20, and stations following 0.20 and 0.21 work together. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -283,6 +283,9 @@ A station announces itself with a beacon frame (Section 5.8), by default at leve
 
 A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**.
 
+- **Repeating a beacon.** A station that is otherwise listening may call for a partner again from time to time. Each round is one beacon and its reply window; if nobody answers, the station goes back to listening. Rounds are at least 5 minutes apart (the operator program allows 5 to 60 minutes), measured from the start of one round to the start of the next. A round is not sent while the station is in a contact, has answered another station and is waiting for the lock to be confirmed, or is making a directed call; after a contact the interval starts again from the end of the contact.
+- **Attended operation.** Repeating beacons start only when the operator asks for them. The operator program stops them by itself after a period with no operator activity at the station (2 hours by default, adjustable from 15 minutes to 12 hours, or turned off by the operator), so that a station left alone does not go on calling. A station repeating beacons with nobody at the controls is under automatic control (Section 2).
+
 ### 6.2 Answer and the reply window
 
 A station that wants to connect replies with an answer frame (Section 5.8), sent at L0 because the answering station has no measurement yet of the path in its own direction. The answer reports how the beacon was received and names the speed level the answering station wants the beaconing station to use.
@@ -395,11 +398,21 @@ For any other meeting frequency, the working frequencies offered are 2.5 kHz abo
 
 - **Directed call.** A station may call one particular station instead of beaconing. It sends an answer frame (Section 5.8) that no beacon asked for, at L0, with the called station as destination. Its channel report carries no measurement (SNR at the bottom of the scale, fading index at its largest value) and asks for L0. Only the station named replies; every other station stays silent.
 - **Being called.** An idle, listening station that receives an answer frame addressed to it, without having beaconed, treats it as a directed call. It completes the lock as a beaconing station would (Section 6.3), except that its confirming acknowledgment has part number 1: it hands the first turn to the caller, who called because it has something to send. That first offer does not mean the called station has nothing to send. For the rest of the contact the called station takes the beaconing station's part: it keeps the turn if both find themselves sending, and its callsign comes first in the link number. It sends an identification frame the first time it holds the turn, since nothing it has sent so far carries its callsign. Until the lock is confirmed the calling station assumes the called station supports the same speed levels as itself.
+- **Called while beaconing.** A station waiting in the reply window of its own beacon that receives a directed call to itself (an answer frame whose report carries no measurement) stops waiting for answers and confirms the call at once, as a listening station would. An answer to a beacon always carries a measurement of that beacon, so the two cannot be confused.
 - **No reply.** The call is repeated when its confirmation does not arrive; after 5 calls without a reply the calling station gives up.
 - **Messages for one station.** A message may be marked for one callsign. It is sent only in a contact with that station, as ordinary link frames with their usual acknowledgments, and otherwise waits. A station that has already worked a caller answers that caller's next beacon only if it has a message for that caller or for anyone.
 - **Broadcast.** A message for every station in range is sent as fully addressed message frames (frame type 1, Section 5.7) with the destination ALL, the sender's callsign as origin, a hop count of 0 and the shortest lifetime. It is sent at L0 unless the operator chooses otherwise, split into parts under the airtime limits (Section 6.8), and only while the sending station is in no contact. Nobody acknowledges a broadcast and it is not forwarded.
 - **Receiving.** Any station that decodes every part of a fully addressed message whose destination is ALL or its own callsign shows it to its operator once, with the origin; repeats of the same message number from the same origin are dropped. This applies whether or not the receiving station is in a contact of its own.
 - **Listen first.** A broadcast is sent without knowing who is listening or who is in the middle of an exchange. The operator checks that the frequency is clear before sending one.
+
+### 6.12 Telemetry message
+
+A station can tell others how well it hears the band, so that operators can compare stations, for example to choose the station best placed to act as net control (Section 7). It does so with an ordinary message, sent to one station or broadcast to ALL, whose text follows a fixed layout. Nothing in the link layer treats it differently.
+
+- **Layout.** Words separated by single spaces: the tag `TLM1`; the sender's grid locator; `P` followed by the transmit power in whole watts, or `P?` if it is not known; `N` followed by the number of stations heard in the 30 minutes before the message was made; then one entry for each of those stations, strongest first. An entry is the station's callsign, its median SNR over that time as a sign and two digits (dB in 2500 Hz), the letter `L` and the fastest speed level decoded from it. Example: `TLM1 EM92 P50 N3 Q1AAAA+05L3 Q2BB-08L1 Q3CCC-15L0`.
+- **Length.** The message stays within 200 characters. Entries that do not fit are left out; N still counts every station heard.
+- **Text before the tag.** Other words may come before `TLM1` (the sender's callsign, for example). A receiving program looks for the tag anywhere in the message and reads the words after it.
+- **Comparing.** A receiving program may rank the stations whose telemetry it has received by the number of stations each hears, then by the median of the SNRs listed. This is a guide for the operators; it is not used by any automatic rule.
 
 ## 7. Nets (optional)
 

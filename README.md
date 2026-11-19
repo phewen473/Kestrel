@@ -47,7 +47,7 @@ python -m venv .venv
 
 The demo sends one message through the simulated channel, decodes it, and writes a sound file and a waterfall picture into `results/`.
 
-**Windows, the short way:** copy the folder to the computer, double-click `setup_windows.bat` once (it needs Python from python.org and the internet), then double-click `kestrel_panel.bat` to open the control panel. In the panel open **Settings > Rig Information** and choose your radio type, its serial port and the sound devices that lead to and from the radio; **Monitor** only listens and never transmits.
+**Windows, the short way:** copy the folder to the computer, double-click `setup_windows.bat` once (it needs Python from python.org and the internet), then double-click `kestrel_panel.bat` to open the control panel. The first time, the panel opens **Settings**: enter your callsign and grid, choose your radio type, its serial port and the sound devices that lead to and from the radio, and save. From then on the panel starts listening whenever it opens; **Monitor** (F3) only listens and never transmits. Every function is on the menus; Help > Keyboard shortcuts (F1) lists the keys.
 
 ## Where things stand
 
@@ -65,6 +65,7 @@ The demo sends one message through the simulated channel, decodes it, and writes
 - **First contact between two real radios (18 November 2026):** two HF transceivers in the same room, one on a dummy load, on 10144.0 kHz. Beacon, answer, lock at the fastest level (L4) in both directions, and a proper close with identification from each side, in 100 seconds. Signal readings were +27 to +33 dB with no fading. No message text was sent in that first contact. Two radio settings mattered: the receive filter must be about 3000 Hz wide, and it must be centred near 1500 Hz of audio (on some radios the data mode centres it elsewhere).
 - **Conversations that go on, and working frequencies (spec v0.16):** a contact can be kept open after the traffic is done, with either side sending when it has something to say, and closed properly on request. Once locked, a pair can agree to leave the meeting frequency for a working frequency and return when the contact ends. The control panel lists every callsign heard on the frequency, in a contact or not. Proven in simulation; not yet tried between radios.
 - **Calling one station, messages for one callsign, and broadcasts (spec v0.17):** a station can call another by name instead of beaconing; a message can be marked for one callsign and then waits for that station; and a broadcast to ALL reaches every station listening, with no acknowledgment. Proven in simulation; not yet tried between radios.
+- **Operating panel (spec v0.21, 19 November 2026; no signal change):** the panel starts listening on its own; a repeating beacon (5 to 60 minutes, paused during contacts, stopping itself after 2 hours with nobody at the keyboard); light and dark themes; a scope with frequency, strength and time scales; receive and transmit level meters with sliders; a CSV logbook at three levels of detail and an ADIF contact log; quick messages; telemetry messages (TLM1) that show which station hears the most, as a guide to net control; a 48-hour stations-heard record; and every function on a menu with keyboard shortcuts.
 - Next: try those between the two radios, a contact over a real distance, then store-and-forward.
 - On-air tests use only a version of the signal whose spec is already published here.
 
@@ -122,11 +123,13 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.20 (draft), 18 November 2026. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
+- Spec version 0.21 (draft), 19 November 2026; signal version 0.20. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
 - Status: **in progress**.
 
 ## Where things were left
-Last commits (all 2026-11-18):
+Last commits:
+- 2026-11-19, spec v0.21 (no signal change): control panel reworked: starts listening; repeating beacon with interval and automatic stop; themes; labelled scope; level meters and sliders; CSV and ADIF logbook at three levels; quick messages; telemetry messages; 48-hour heard log; full menus and keyboard shortcuts.
+- 2026-11-18:
 - Help > About shows the signal version and the program's commit; `VERSION` is stamped with the commit when Git makes an archive.
 - Spec v0.20: NEW SIGNAL. A twelve-tone preamble in each level's own pattern replaces the two-second chirp pair; earlier versions cannot read it.
 - Spec v0.19: the idle limit on a working frequency is three minutes.

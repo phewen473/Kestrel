@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.21 (draft) - 19 November 2026
+
+- **No frame is changed from 0.20.** The signal version stays 0.20; stations following 0.20 and 0.21 work together.
+- Repeating a beacon (Section 6.1): a listening station may make one beacon round at a time, at least 5 minutes apart, paused during a contact. Repeating starts only at the operator's request and stops by itself after a period with no operator activity (2 hours by default).
+- Telemetry message (new Section 6.12): an ordinary message in a fixed layout, tag TLM1, giving the sender's grid, power and the stations it has heard in the last 30 minutes with their SNR and fastest level, so operators can compare stations, for example when choosing net control.
+- Called while beaconing (Section 6.11): a station in its own beacon's reply window that receives a directed call confirms the call at once instead of treating it as one of the answers. (The reference program now also sends a directed call's report with no measurement, as Section 6.11 already required.)
+- The document's version and the signal's version are now shown separately: the header gives both.
+
 ## 0.20 (draft) - 18 November 2026
 
 - **The transmitted signal has changed. Version 0.20 and later cannot exchange frames with earlier versions.**

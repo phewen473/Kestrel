@@ -13,9 +13,14 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 | `ptt.py` | `Ptt`: keys the transmitter by rigctld, a CAT command, the RTS line, the DTR line, or not at all (VOX) |
 | `rig.py` | `RigCtl`: sets frequency and mode, and keys the transmitter, through Hamlib's `rigctld` |
 | `bands.py` | The preselected frequency for each band, and a check that a frequency keeps the signal inside a 97.221(b) segment |
-| `runner.py` | `run_station`: runs one `link.Station` on real audio, in real time |
+| `runner.py` | `run_station`: runs one `link.Station` on real audio, in real time, with hooks the control panel uses to ask for a beacon or call and to log every frame |
+| `heardlog.py` | `HeardLog`: every station decoded in the last 48 hours, kept on disk |
+| `logbook.py` | `Logbook`: a CSV file per UTC day at three levels of detail (basic, advanced, verbose) and an ADIF file of completed contacts |
+| `telemetry.py` | Telemetry messages (TLM1, spec Section 6.12): build one from the heard log, read one back, and compare stations |
+| `theme.py` | Light and dark looks for the control panel, and following Windows' own setting |
+| `mixer.py` | Windows' recording level for a sound device, through the `pycaw` package, for the panel's receive-level slider |
 
-The tools that use them are in `tools/`: `kestrel_panel.py` (a small control panel), `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py` and `live_frequencies.py`.
+The tools that use them are in `tools/`: `kestrel_panel.py` (the control panel), `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py` and `live_frequencies.py`.
 
 ## How the listener works
 

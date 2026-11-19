@@ -5,3 +5,4 @@ matplotlib>=3.8  # charts and waterfall pictures
 pytest>=8.0  # test runner
 sounddevice>=0.4  # sound-card input and output (live tools only)
 pyserial>=3.5  # keying the transmitter over a serial port (live tools only)
+pycaw>=20230407; sys_platform == "win32"  # Windows recording level for the panel's receive slider (Windows only; the panel works without it)

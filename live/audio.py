@@ -77,6 +77,16 @@ def to_card_rate(audio, gain=0.5):  # 12,000 samples per second up to 48,000, re
 
 
 SCOPE_SAMPLES = 8192  # how much recent audio the scope looks at (about a sixth of a second at the card's rate)
+CLIP_LEVEL = 0.98  # a sample this close to full scale means the input is being driven too hard
+
+
+def level_dbfs(samples):  # how loud a stretch of audio is
+    """Return (RMS level, peak level) of `samples` in dB relative to full scale (0 dBFS is the loudest the sound card can record)."""
+    if len(samples) == 0:  # nothing to measure
+        return -120.0, -120.0  # silence
+    rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))  # the average power, as an amplitude
+    peak = float(np.max(np.abs(samples)))  # the largest sample
+    return 20.0 * np.log10(max(rms, 1e-6)), 20.0 * np.log10(max(peak, 1e-6))  # both in decibels, floored at -120
 
 
 def scope_spectrum(samples, rate=CARD_RATE, top_hz=3000.0, points=512):  # the spectrum a scope display draws
@@ -101,6 +111,7 @@ class AudioIn:  # the receiving side of the sound card
         self.decimator = Decimator()  # the rate converter
         self.lost = 0  # how many times the sound card reported that it had to drop audio
         self.recent = np.zeros(SCOPE_SAMPLES, dtype="float32")  # the newest audio at the card's rate, for a scope display
+        self.clips = 0  # how many blocks have had a sample at or near full scale (the input is being overdriven)
         self.stream = sd.InputStream(samplerate=CARD_RATE, channels=1, dtype="float32", device=device, callback=self._arrived, latency="high")  # one channel, at the card's rate, with generous buffering so a busy program does not lose audio
         self.stream.start()  # begin recording
 
@@ -108,6 +119,8 @@ class AudioIn:  # the receiving side of the sound card
         if status.input_overflow:  # the sound card had to throw audio away because it was not collected in time
             self.lost += 1  # count it, so the operator can be told
         self.chunks.put(data[:, 0].copy())  # keep the one channel
+        if np.max(np.abs(data[:, 0])) >= CLIP_LEVEL:  # a sample reached full scale
+            self.clips += 1  # count it, so the level meter can show CLIP
         self.recent = np.concatenate((self.recent, data[:, 0]))[-SCOPE_SAMPLES:]  # and keep the newest stretch for the scope, whether or not anyone collects the rest
 
     def read(self):  # collect what has arrived
@@ -122,6 +135,10 @@ class AudioIn:  # the receiving side of the sound card
     def spectrum(self, top_hz=3000.0, points=512):  # what a scope display should draw right now
         """Return the spectrum of the newest audio: `points` levels in decibels from 0 Hz to `top_hz`."""
         return scope_spectrum(self.recent, CARD_RATE, top_hz, points)  # from the audio kept for the purpose
+
+    def level(self):  # how loud the input is right now
+        """Return (RMS, peak) in dBFS of the newest tenth of a second of input, before any processing."""
+        return level_dbfs(self.recent[-CARD_RATE // 10:])  # the last 4800 samples
 
     def flush(self):  # throw away what has arrived
         """Discard everything received so far (used after transmitting)."""
@@ -139,10 +156,18 @@ class AudioOut:  # the transmitting side of the sound card
 
     def __init__(self, device=None, gain=0.5):  # remember the device and the level
         self.device = device  # which output device
-        self.gain = gain  # how loud: 1.0 is full scale
+        self.gain = gain  # how loud: 1.0 is full scale (may be changed between transmissions, by the panel's slider)
+        self.playing = False  # True while a transmission is being played
+        self.last_peak_db = -120.0  # the peak level of the last transmission, in dBFS
 
     def play(self, audio):  # play and wait
         """Play `audio` (at 12,000 samples per second) and return when it has finished."""
         import sounddevice as sd  # the sound-card library
         padded = np.concatenate([np.zeros(int(LEAD_S * FS)), audio, np.zeros(int(TAIL_S * FS))])  # a little silence before, and more after
-        sd.play(to_card_rate(padded, self.gain), CARD_RATE, device=self.device, blocking=True, latency="high")  # convert, play with generous buffering, wait for the end
+        samples = to_card_rate(padded, self.gain)  # converted and scaled
+        self.last_peak_db = level_dbfs(samples)[1]  # how close to full scale it goes, for the transmit meter
+        self.playing = True  # the transmission is on its way
+        try:  # whatever happens...
+            sd.play(samples, CARD_RATE, device=self.device, blocking=True, latency="high")  # play with generous buffering, wait for the end
+        finally:  # ...note that it has ended
+            self.playing = False  # no longer playing

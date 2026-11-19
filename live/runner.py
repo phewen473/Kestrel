@@ -95,7 +95,7 @@ def describe(result):  # one line about a received frame
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -107,6 +107,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     whenever the link rules move to a working frequency or back; without
     it the station declines such moves. `on_heard`, if given, is called with
     the receiver's report on every frame that decodes, whoever sent it.
+    `on_frame`, if given, is called with every report, decoded or not (for
+    a detailed log). `on_transmit`, if given, is called with the
+    Transmission and True just after the transmitter is keyed, and with
+    the Transmission and False just after it is released. `on_tick`, if
+    given, is called with the station and the station's clock once every
+    loop, in this thread: the safe place for another part of the program
+    to ask the station to do something (beacon, call, broadcast).
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
@@ -134,9 +141,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         stamp(f"sending {tx.kind} at L{tx.level}, {tx.seconds:.1f} s  {tx.note}")  # tell the operator
         ptt.key()  # transmitter on
         try:  # whatever happens...
+            if on_transmit is not None:  # someone wants to know the transmitter is on
+                on_transmit(tx, True)  # tell them
             sink.play(tx.audio)  # send the audio
         finally:  # ...the transmitter must come off
             ptt.unkey()  # transmitter off
+            if on_transmit is not None:  # someone wants to know it is off again
+                on_transmit(tx, False)  # tell them
         last_sent[0] = now()  # remember when this transmission ended
         source.flush()  # throw away whatever was received meanwhile (it was this station's own signal)
         listener.clear()  # and forget it
@@ -146,6 +157,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         for heard in listener.feed(source.read()):  # every frame that has completed
             result = station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry)
             stamp(describe(result))  # tell the operator
+            if on_frame is not None:  # someone keeps a detailed log
+                on_frame(result)  # pass on every report, decoded or not
             if on_heard is not None and result.ok:  # somebody was heard clearly
                 on_heard(result)  # let the caller note who
             reply = station.handle(result, now())  # what the link rules say to do
@@ -155,6 +168,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         if getattr(source, "lost", 0) > lost:  # the sound card has dropped audio since the last look
             lost = source.lost  # remember the new count
             stamp(f"warning: the sound card lost some received audio ({lost} time(s) so far); a frame may fail and be asked for again")  # tell the operator
+        if on_tick is not None:  # another part of the program may have asked for something
+            on_tick(station, now())  # let it act, here in the station's own thread
         tx = station.poll(now())  # anything to send without having heard something?
         if tx is not None:  # yes
             transmit(tx)  # send it

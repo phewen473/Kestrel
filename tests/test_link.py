@@ -257,3 +257,57 @@ def test_station_refuses_to_call_itself():  # a directed call to one's own calls
     with pytest.raises(ValueError):  # it must refuse
         station.call_station("q1aaaa")  # its own callsign, typed in lower case
     assert station.role is None  # and it has not become a calling station
+
+
+def test_listening_station_beacons_once_and_listens_again():  # the panel's repeating beacon: one round at a time
+    a = Station("Q1AAAA", "EM92")  # a station that is listening
+    a.listen()  # answering beacons
+    a.beacon_once()  # the operator's timer asks for one beacon round
+    first = a.poll(0.0)  # the beacon
+    assert first.kind == "beacon"  # it goes out
+    assert a.poll(a.deadline + 0.1) is None and a.state == "RELEASED"  # nobody answers: one round only, no second beacon
+    assert any("no answer to the beacon" in line for line in a.log)  # and the log says so
+    a.new_contact()  # the live loop gets ready for the next contact
+    assert a.role == "answerer" and a.state == "IDLE" and not a.single  # listening again
+
+
+def test_one_beacon_round_that_is_answered_leads_to_a_contact_then_listening():  # an answered round
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens...
+    a.beacon_once()  # ...and makes one beacon round
+    b.listen()  # B is listening
+    a.queue("Hello from the repeating beacon.")  # A's traffic
+    run_link(a, b, Path(5.0), Path(5.0), seed=11)  # the contact
+    assert a.delivered == ["Hello from the repeating beacon."] and a.state == "RELEASED"  # delivered and closed
+    a.new_contact()  # ready for the next
+    assert a.role == "answerer" and not a.leads  # back to listening
+
+
+def test_listening_station_calls_once_and_listens_again():  # a directed call from a station that is listening
+    a = Station("Q1AAAA", "EM92")  # the station that calls
+    a.listen()  # it was listening
+    a.call_once("Q4DDD")  # it calls somebody who is not on the air
+    calls = 0  # count the calls
+    t = 0.0  # the clock
+    while a.state != "RELEASED" and calls < 10:  # until it gives up
+        tx = a.poll(t)  # anything to send?
+        if tx is not None:  # a call
+            calls += 1  # count it
+        t = (a.next_wake() or t) + 0.1  # move on to when it next needs attention
+    assert calls == 5 and a.state == "RELEASED"  # five calls, then it gives up
+    a.new_contact()  # ready again
+    assert a.role == "answerer" and a.target == ""  # listening, with no call outstanding
+
+
+def test_station_called_during_its_own_beacon_window_answers_the_call():  # a repeating beacon must not get in the way of being called
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens...
+    a.beacon_once()  # ...and is making one beacon round, with a wide reply window
+    a.wide = True  # (as after an unanswered beacon)
+    b.call_station("Q1AAAA")  # meanwhile B calls A by name
+    b.queue("Called you while you were beaconing.", to="Q1AAAA")  # with a message for it
+    run_link(a, b, Path(5.0), Path(5.0), seed=12)  # let it run
+    assert a.inbox == ["Called you while you were beaconing."] and b.delivered == a.inbox  # the call was taken and the message delivered
+    assert any("called by Q2BB" in line for line in a.log)  # A knew it was being called
+    a.new_contact()  # afterwards
+    assert a.role == "answerer"  # A listens again

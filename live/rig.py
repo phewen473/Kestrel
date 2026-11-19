@@ -178,6 +178,13 @@ class RigCtl:  # a connection to rigctld
         """
         self._set(f"M {mode} {int(passband_hz)}")  # mode and filter width
 
+    def level(self, name):  # read one of the radio's levels or meters
+        """Return a level by its Hamlib name: RFPOWER (power setting, 0 to 1 of full power), RFPOWER_METER_WATTS (power out, watts), ALC (0 to 1), SWR, STRENGTH (S-meter, dB relative to S9).
+
+        Raises RuntimeError if the radio, or this version of Hamlib, does not offer it.
+        """
+        return float(self._get(f"l {name}"))  # ask and convert
+
     def ptt(self, on):  # key or unkey the transmitter
         """Switch the transmitter on (True) or off (False)."""
         self._set(f"T {1 if on else 0}")  # 1 = transmit, 0 = receive

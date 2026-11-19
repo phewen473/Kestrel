@@ -1,17 +1,22 @@
-"""A small control panel for a live Kestrel station.
+"""The control panel for a live Kestrel station.
 
 Run from the repository root:
 
     python tools/kestrel_panel.py
     python tools/kestrel_panel.py --profile second    (a second panel with its own remembered settings, for a second radio)
 
-Enter your callsign, grid locator, sound devices and rig control once
-under the menu Settings > Rig Information. Then pick a frequency from the
-drop-down list (Kestrel's meeting frequencies, plus any of your own that
-you add) and press Monitor (receive only), Listen (answer beacons) or
-Beacon (call for a partner). Messages to send and messages received each
-have a list of their own. Your settings and your own frequencies are kept
-in the local/ folder, which Git ignores.
+The panel starts listening as soon as it opens (Settings > Operating
+chooses Listen, Monitor or nothing). Enter your callsign, grid locator,
+radio, sound devices and the rest once under the Settings menu; the
+first time, the panel opens Settings for you.
+
+Everything the panel does can be reached from its menus, with the
+keyboard alone: Alt and the underlined letter opens a menu, and the
+function keys and Ctrl shortcuts are listed under Help > Keyboard
+shortcuts.
+
+Your settings, saved contacts, the stations-heard log and the logbook
+are kept in the local/ folder, which Git ignores.
 
 Only transmit where your licence allows, with the published specification matching this program.
 """
@@ -19,11 +24,11 @@ Only transmit where your licence allows, with the published specification matchi
 import argparse  # reads the command-line options
 import json  # settings are kept in a small JSON file
 import os  # file paths
-import queue  # carries log lines from the working thread to the window
+import queue  # carries log lines and reports from the working thread to the window
 import subprocess  # asks Git which commit this is, for the About box
 import sys  # lets us add the repository root to the import path
 import threading  # the station runs in its own thread so the window stays responsive
-import time  # the clock, for the monitor
+import time  # clocks
 import tkinter as tk  # the window toolkit that comes with Python
 
 import numpy as np  # arrays, for the scope's picture
@@ -34,25 +39,45 @@ sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run 
 
 from link import Station  # the link rules  # noqa: E402
 from live import KIND, Listener, describe, plain_line, run_station, status_for  # the continuous receiver, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
+from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list and the working frequencies  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
-from modem.params import SPEC_VERSION  # the version of the specification the signal follows  # noqa: E402
+from modem.levels import LEVELS  # the speed levels, for how wide each signal is on the scope  # noqa: E402
+from modem.params import M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
 
+PROFILE = ""  # the name given with --profile, if any (set in main)
 SETTINGS_FILE = os.path.join(ROOT, "local", "panel.json")  # where the panel remembers its settings
-DEFAULTS = {"call": "", "grid": "", "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued)
-            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0}  # settings for a first run
+LOG_FOLDER = os.path.join(ROOT, "local", "logs")  # where the CSV and ADIF logbook files go
+BEACON_MIN, BEACON_MAX = 5, 60  # the repeating beacon may be set to no less than 5 and no more than 60 minutes
+AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, is between 15 minutes and 12 hours (0 turns it off)
+DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
+            "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
+            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
+            "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120,  # (continued: operating)
+            "log_level": "basic", "theme": "system",  # (continued: logging and looks)
+            "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
+START_NAMES = {"listen": "Listen (answer calls)", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
+LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
+THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
 NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tuned by hand
+LOCKED = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
+SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
+    ("F1", "this list"), ("F2", "Listen (answer calls)"), ("F3", "Monitor (receive only)"), ("F4", "Off (stop receiving and transmitting)"),  # (continued)
+    ("F5", "Beacon (call anyone) on or off"), ("F6", "Call the station in the To box"), ("F7", "End the contact"), ("F8", "Stations heard in the last 48 hours"),  # (continued)
+    ("F9", "Telemetry received"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
+    ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
+    ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
+    ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
+    ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"), ("Esc", "close a window"))  # the rest
 
 
 def load_settings():  # read the remembered settings
     """Return the saved settings, with defaults for anything missing."""
     settings = dict(DEFAULTS)  # start from the defaults
-    if os.path.exists(SETTINGS_FILE):  # something was saved
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as handle:  # open it
-            settings.update(json.load(handle))  # saved values replace the defaults
+    settings.update(read_json(SETTINGS_FILE, {}))  # saved values replace the defaults
     return settings  # the settings to use
 
 
@@ -102,12 +127,13 @@ def build_info():  # which build of the program this is
 
 
 def about_text():  # the words in Help > About
-    """Return the text of the About box: what Kestrel is, the signal version, the program build, and who began it."""
+    """Return the text of the About box: what Kestrel is, the signal and document versions, the program build, and who began it."""
     return (f"Kestrel (KES)\nAn adaptive amateur HF digital mode for short messages.\n\n"  # the name and what it is
-            f"Signal: specification version {SPEC_VERSION} (draft)\n"  # which version of the published description the signal follows
+            f"Signal version: {SIGNAL_VERSION}\n"  # the version of the transmitted signal
+            f"Specification: version {SPEC_VERSION} (draft)\n"  # which version of the published description the program follows
             f"Program: {build_info()}\n"  # which build of the program
             f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n\n"  # the Python it runs on
-            f"Stations must run the same signal version to hear each other.\n\n"  # the practical point
+            f"Stations must have the same signal version to hear each other.\n\n"  # the practical point
             f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licences
 
 
@@ -119,11 +145,26 @@ def device_choices(kind):  # the sound devices to offer in a drop-down list
     """
     column = 2 if kind == "input" else 3  # which channel count to check
     seen, choices = set(), []  # names already listed, and the list itself
-    for index, name, inputs, outputs in list_devices():  # every device
+    try:  # the sound library may be missing
+        found = list_devices()  # every device
+    except Exception:  # no sound library, or no sound system
+        found = []  # offer nothing; a name can still be typed
+    for index, name, inputs, outputs in found:  # every device
         if (inputs, outputs)[column - 2] > 0 and name not in seen:  # it can do the job and is not a repeat
             seen.add(name)  # remember the name
             choices.append(name)  # offer it by name
     return choices  # the list
+
+
+def signal_width_hz(level):  # how wide a Kestrel signal is at a given level
+    """Return the width in hertz of the 32 tones at speed level `level` (L0 is the narrowest)."""
+    spec = LEVELS[max(0, min(level, len(LEVELS) - 1))]  # the level's description
+    return M_TONES * spec.step * spec.bin_hz  # tones times their spacing
+
+
+def utc(seconds):  # a time for display
+    """Return `seconds` (since 1970) as a UTC date and time, the way an amateur log shows it."""
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
 class Panel:  # the control panel window
@@ -131,10 +172,14 @@ class Panel:  # the control panel window
 
     def __init__(self, root):  # build the window
         self.root = root  # the top-level window
-        self.settings = load_settings()  # remembered settings (callsign, grid, sound devices, rig control)
+        self.settings = load_settings()  # remembered settings (callsign, grid, sound devices, rig control, ...)
         self.lines = queue.Queue()  # log lines waiting to be shown
-        self.stop = threading.Event()  # set when the operator presses Stop
+        self.stop = threading.Event()  # set to stop the working thread
         self.worker = None  # the thread running the station, when there is one
+        self.mode = "off"  # what is running now: listen, monitor or off
+        self.next_mode = None  # a mode to start as soon as the running one has stopped
+        self.actions = []  # requests waiting for the station's own thread (a call, a broadcast), each a function that returns True once done
+        self.actions_lock = threading.Lock()  # the window adds requests while the station thread takes them
         self.outbox = []  # messages queued while no station is running, as (text, callsign it is for or "")
         self.shown_b = 0  # how many of the tracked station's received broadcasts are already in the list
         self.station = None  # the station that is running now, when there is one, so a message can be handed straight to it
@@ -149,17 +194,44 @@ class Panel:  # the control panel window
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
         self.rig_lock = threading.Lock()  # only one thread at a time may start or tune through rig control
-        root.title(f"Kestrel  -  signal v{SPEC_VERSION}")  # window title, with the signal version so two stations can be compared at a glance
+        self.beacon_wanted = False  # the repeating beacon is switched on (read by the station thread)
+        self.beacon_due = 0.0  # when the next beacon round is due, on the monotonic clock
+        self.beacon_note = ""  # what the repeating beacon is doing, for the label beside its button
+        self.last_input = time.monotonic()  # when the operator last pressed a key or used the mouse (for the beacon's automatic stop)
+        self.audio = None  # the sound-card input, while a station or the monitor is running
+        self.sink = None  # the sound-card output, while a station is running (its level follows the transmit slider)
+        self.tx_active = False  # True while the transmitter is keyed
+        self.tx_kind = ""  # what is being sent, while the transmitter is keyed
+        self.meters = {"watts": None, "alc": None, "swr": None, "set_w": None}  # the radio's readings: power out, ALC and SWR while transmitting, and the power setting
+        self.poller_stop = threading.Event()  # stops the thread that reads the radio's meters
+        self.marks = {}  # stations decoded recently, for the scope: callsign -> (audio frequency, width, when)
+        self.clips_seen = 0  # the input's clip count as of the last meter update
+        self.clip_until = 0.0  # show CLIP on the receive meter until this time
+        self.contact = None  # the contact in progress, for the logbook: a dict, or None
+        self.telemetry_in = []  # telemetry received: (time, callsign, parsed message)
+        self.awaiting_setup = False  # True when the panel is waiting for the first Settings to be saved before it starts
+        self.rx_level = None  # Windows' level control for the receive audio device, when it can be had
+        self.windows = {}  # windows of which only one may be open (stations heard, telemetry, settings), by name
+        self.base_khz = 0.0  # the calling frequency chosen, in kHz (kept here so the station thread need not read the window)
+        self.level_check = 0.0  # when Windows' receive level was last read back
+        self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
+        self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
+        self.colours = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colours
+        root.title(f"Kestrel  -  signal v{SIGNAL_VERSION}")  # window title, with the signal version so two stations can be compared at a glance
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
+        self.mode_var = tk.StringVar(value="off")  # the mode buttons and menu items share this
+        self.beacon_var = tk.BooleanVar(value=False)  # the beacon button and menu item share this
+        self.keep_open = tk.BooleanVar(value=bool(self.settings["keep_open"]))  # whether the lock is held after the traffic is done
+        self.details = tk.BooleanVar(value=False)  # whether the log shows the technical detail
+        self.theme_var = tk.StringVar(value=self.settings["theme"])  # the look chosen in the View menu
         self._menus()  # the menu bar
         top = ttk.Frame(root)  # the strip holding the status line and the station's own details
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))  # place it at the top
         top.columnconfigure(0, weight=1)  # the status line takes the spare width
-        self.plain_colour = root.cget("background")  # the window's ordinary background colour
-        self.status = tk.Label(top, text="NOT RUNNING", font=("Segoe UI", 15, "bold"), fg="black", anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of colour
+        self.status = tk.Label(top, text="OFF", font=("Segoe UI", 15, "bold"), anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of colour
         self.status.grid(row=0, column=0, sticky="ew")  # place it on the left
         self.me = ttk.Label(top, text="", font=("Segoe UI", 10))  # this station's callsign and grid locator
-        self.me.grid(row=0, column=1, sticky="e")  # place it on the right
+        self.me.grid(row=0, column=1, sticky="e", padx=(8, 0))  # place it on the right
         self.readings = ttk.Label(root, text="", font=("Segoe UI", 10))  # the partner, the last signal reading and the two speed levels
         self.readings.grid(row=1, column=0, sticky="ew", padx=8)  # place it under the status line
         tuning = ttk.Frame(root)  # the frequency row
@@ -171,87 +243,167 @@ class Panel:  # the control panel window
         ttk.Button(tuning, text="Add...", command=self.add_frequency).grid(row=0, column=2, padx=(6, 0))  # add a frequency of your own
         ttk.Button(tuning, text="Remove", command=self.remove_frequency).grid(row=0, column=3)  # remove one of your own
         self.frequency.bind("<<ComboboxSelected>>", lambda event: self.tune())  # choosing a frequency tunes the radio to it
-        actions = ttk.Frame(root)  # the row of main buttons
-        actions.grid(row=3, column=0, pady=4)  # place it
-        for text, mode in (("Monitor (receive only)", "monitor"), ("Listen (answer beacons)", "listen"), ("Beacon (call anyone)", "beacon"), ("Call station (To)", "call")):  # the four ways to run
-            ttk.Button(actions, text=text, command=lambda m=mode: self.start(m)).pack(side="left", padx=4)  # one button each
-        ttk.Button(actions, text="Stop", command=self.stop_station).pack(side="left", padx=12)  # the Stop button
+        operate = ttk.Frame(root)  # the row of operating controls
+        operate.grid(row=3, column=0, sticky="w", padx=8, pady=4)  # place it
+        ttk.Label(operate, text="Mode:").pack(side="left", padx=(0, 4))  # label for the mode choice
+        for mode, words in (("listen", "Listen (answer calls)  F2"), ("monitor", "Monitor (receive only)  F3"), ("off", "Off  F4")):  # the three modes
+            ttk.Radiobutton(operate, text=words, value=mode, variable=self.mode_var, command=lambda m=mode: self.set_mode(m)).pack(side="left", padx=4)  # one button each
+        ttk.Separator(operate, orient="vertical").pack(side="left", fill="y", padx=10)  # a divider
+        self.beacon_button = ttk.Checkbutton(operate, text="Beacon (call anyone)  F5", style="Toolbutton", variable=self.beacon_var, command=self.beacon_toggled)  # pushed in = repeating beacon on; pushed again = off
+        self.beacon_button.pack(side="left")  # place it
+        self.beacon_label = ttk.Label(operate, text="off", width=30)  # what the repeating beacon is doing
+        self.beacon_label.pack(side="left", padx=6)  # place it
+        ttk.Button(operate, text="Call station (To)  F6", command=self.call_to).pack(side="left", padx=4)  # call the station named in the To box
         options = ttk.Frame(root)  # the row of choices about how a contact is run
-        options.grid(row=4, column=0, pady=2)  # place it under the buttons
-        self.keep_open = tk.BooleanVar(value=bool(self.settings["keep_open"]))  # whether the lock is held after the traffic is done
+        options.grid(row=4, column=0, sticky="w", padx=8, pady=2)  # place it under the buttons
         ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
-        ttk.Button(options, text="End contact", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
+        ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
         ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
         self.working = ttk.Combobox(options, state="readonly", width=46)  # stay on the calling frequency, or move to a working frequency
         self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
         typing.grid(row=5, column=0, sticky="ew", padx=8, pady=4)  # place it
-        typing.columnconfigure(1, weight=0)  # the callsign box keeps its size...
-        typing.columnconfigure(3, weight=1)  # ...and the message box takes the spare width
+        typing.columnconfigure(4, weight=1)  # the message box takes the spare width
         ttk.Label(typing, text="To").grid(row=0, column=0, sticky="w", padx=(0, 6))  # label for the callsign box
         self.to = ttk.Combobox(typing, width=11)  # the callsign a message is for, or the station to call: type one, or pick a saved contact or a station heard; blank means whoever the partner is
         self.to.grid(row=0, column=1, sticky="w")  # place it
-        ttk.Label(typing, text="Message").grid(row=0, column=2, sticky="w", padx=(10, 6))  # label for the message box
+        self.to.bind("<Return>", lambda event: self.message.focus_set())  # Enter in the To box moves on to the message
+        self.quick_menu = tk.Menu(root, tearoff=False)  # the quick messages
+        quick = ttk.Menubutton(typing, text="Quick", menu=self.quick_menu)  # the button that opens them
+        quick.grid(row=0, column=2, padx=(8, 0))  # place it
+        ttk.Label(typing, text="Message").grid(row=0, column=3, sticky="w", padx=(10, 6))  # label for the message box
         self.message = ttk.Entry(typing)  # the message box
-        self.message.grid(row=0, column=3, sticky="ew")  # place it
+        self.message.grid(row=0, column=4, sticky="ew")  # place it
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
-        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=4, padx=(6, 0))  # add the message to the list to send
-        ttk.Button(typing, text="Broadcast to ALL", command=self.broadcast_message).grid(row=0, column=5, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
-        lists = ttk.Frame(root)  # the two message lists, side by side
+        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=5, padx=(6, 0))  # add the message to the list to send
+        ttk.Button(typing, text="Broadcast to ALL  F11", command=self.broadcast_message).grid(row=0, column=6, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
+        lists = ttk.Frame(root)  # the three lists, side by side
         lists.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # place them
-        lists.columnconfigure(0, weight=1)  # the two lists share the width
-        lists.columnconfigure(1, weight=1)  # equally
+        for column in range(3):  # the three lists share the width
+            lists.columnconfigure(column, weight=1)  # equally
         self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
         self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
-        lists.columnconfigure(2, weight=1)  # the third list shares the width too
         self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 100)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *)
         keep = ttk.Frame(self.stations.master)  # buttons under that list
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
         ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
-        ttk.Label(keep, text="double-click a callsign to put it in To").pack(side="left", padx=6)  # a hint
+        ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
         self.stations.bind("<Double-1>", lambda event: self.pick_station())  # a double-click chooses the callsign for the next message or call
+        self.stations.bind("<Return>", lambda event: self.pick_station())  # so does Enter
         for call in sorted(self.contacts):  # the saved contacts are listed from the start
             self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), "", "", "saved contact"))  # one row each
         self.refresh_to()  # offer them in the To box
         for item in read_json(side_file("_outbox.json"), []):  # messages left waiting when the panel was last closed
             self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", item.get("text", ""), "waiting"))  # back in the list
             self.outbox.append((item.get("text", ""), item.get("to", "")))  # and back in the queue for the next contact
-        bottom = ttk.Frame(root)  # the bottom strip: the log on the left, the scope on the right
+        bottom = ttk.Frame(root)  # the bottom strip: the log on the left, the scope and the level meters on the right
         bottom.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
         bottom.columnconfigure(0, weight=1)  # the log takes the spare width
         bottom.rowconfigure(0, weight=1)  # and the spare height
-        self._scope(bottom)  # build the scope
         activity = ttk.LabelFrame(bottom, text="Activity")  # the running log, in its own box
         activity.grid(row=0, column=0, sticky="nsew", padx=(0, 4))  # place it on the left
         activity.columnconfigure(0, weight=1)  # the log takes the width
         activity.rowconfigure(1, weight=1)  # and the spare height
-        self.details = tk.BooleanVar(value=False)  # whether the log shows the technical detail
         ttk.Checkbutton(activity, text="Show technical details", variable=self.details, command=self.redraw_log).grid(row=0, column=0, sticky="w", padx=4)  # the switch between the plain and the detailed log
-        self.log = tk.Text(activity, height=14, width=84, font=("Consolas", 9), state="disabled")  # the running log
+        self.log = tk.Text(activity, height=14, width=70, font=("Consolas", 9), state="disabled", relief="flat", borderwidth=0)  # the running log
         self.log.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)  # place it
         scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
+        self._scope(bottom)  # build the scope
+        self._meters(bottom)  # build the level meters and sliders
         root.rowconfigure(7, weight=1)  # the log stretches with the window
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
+        self.refresh_quick()  # fill the quick-message menu
         self.show_me()  # show this station's callsign and grid
+        self.colour_plain_widgets()  # colour the widgets the theme does not reach
+        self._shortcuts()  # the keyboard shortcuts
+        for event in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Motion>"):  # anything the operator does in the window...
+            root.bind_all(event, self.touched, add="+")  # ...counts as being at the station
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
         root.after(100, self.show_lines)  # start passing log lines to the window
         root.after(500, self.follow_station)  # start keeping the lists and readings up to date
         root.after(150, self.draw_scope)  # start drawing the scope
+        root.after(200, self.draw_meters)  # start drawing the level meters
+        root.after(300, lambda: theme.colour_window(root, self.colours))  # the title bar again, now the window is on screen
+        root.after(700, self.autostart)  # start listening, once the window is up
 
     # ---- building blocks ----
 
     def _menus(self):  # the menu bar
         bar = tk.Menu(self.root)  # the bar itself
+        file_menu = tk.Menu(bar, tearoff=False)  # the File menu
+        file_menu.add_command(label="Open the log folder", underline=5, command=self.open_logs)  # where the CSV and ADIF files are
+        file_menu.add_command(label="Open today's log", underline=5, command=lambda: self.open_path(self.logbook.csv_path()))  # the day's CSV file, in the spreadsheet program
+        file_menu.add_command(label="Open the contact log (ADIF)", underline=9, command=lambda: self.open_path(self.logbook.adif_path()))  # the ADIF file
+        file_menu.add_separator()  # a divider
+        file_menu.add_command(label="Exit", underline=1, accelerator="Alt+F4", command=self.close)  # close the panel
+        bar.add_cascade(label="File", underline=0, menu=file_menu)  # put the menu on the bar
+        operate = tk.Menu(bar, tearoff=False)  # the Operate menu
+        operate.add_radiobutton(label="Listen (answer calls)", underline=0, accelerator="F2", value="listen", variable=self.mode_var, command=lambda: self.set_mode("listen"))  # listen and answer
+        operate.add_radiobutton(label="Monitor (receive only)", underline=0, accelerator="F3", value="monitor", variable=self.mode_var, command=lambda: self.set_mode("monitor"))  # receive only
+        operate.add_radiobutton(label="Off", underline=1, accelerator="F4", value="off", variable=self.mode_var, command=lambda: self.set_mode("off"))  # neither
+        operate.add_separator()  # a divider
+        operate.add_checkbutton(label="Beacon (call anyone), repeating", underline=0, accelerator="F5", variable=self.beacon_var, command=self.beacon_toggled)  # the repeating beacon
+        operate.add_command(label="Call the station in To", underline=0, accelerator="F6", command=self.call_to)  # a directed call
+        operate.add_command(label="End contact", underline=0, accelerator="F7", command=self.end_contact)  # close the contact
+        operate.add_checkbutton(label="Keep contact open", underline=0, variable=self.keep_open)  # hold the lock until End contact
+        operate.add_separator()  # a divider
+        operate.add_command(label="Choose frequency", underline=7, accelerator="Ctrl+R", command=lambda: self.frequency.focus_set())  # go to the frequency list
+        operate.add_command(label="Previous frequency", underline=0, accelerator="Ctrl+Up", command=lambda: self.step_frequency(-1))  # one up the list
+        operate.add_command(label="Next frequency", underline=0, accelerator="Ctrl+Down", command=lambda: self.step_frequency(1))  # one down the list
+        operate.add_command(label="Add a frequency...", underline=0, command=self.add_frequency)  # one of the operator's own
+        operate.add_command(label="Remove this frequency", underline=0, command=self.remove_frequency)  # remove one of the operator's own
+        bar.add_cascade(label="Operate", underline=0, menu=operate)  # put the menu on the bar
+        messages = tk.Menu(bar, tearoff=False)  # the Messages menu
+        messages.add_command(label="Go to the To box", underline=10, accelerator="Ctrl+L", command=lambda: self.to.focus_set())  # who the message is for
+        messages.add_command(label="Go to the Message box", underline=10, accelerator="Ctrl+M", command=lambda: self.message.focus_set())  # the message
+        messages.add_command(label="Queue the message", underline=0, accelerator="Enter", command=self.queue_message)  # into the list to send
+        messages.add_command(label="Broadcast the message to ALL", underline=0, accelerator="F11", command=self.broadcast_message)  # to everyone
+        messages.add_separator()  # a divider
+        for number in (1, 2, 3):  # the three quick messages
+            messages.add_command(label=f"Quick message {number}", underline=14, accelerator=f"Ctrl+{number}", command=lambda n=number: self.use_quick(n))  # put it in the Message box
+        messages.add_separator()  # a divider
+        messages.add_command(label="Send telemetry to the station in To", underline=0, accelerator="Ctrl+4", command=self.send_telemetry)  # what this station hears, to one station
+        messages.add_command(label="Broadcast telemetry to ALL", underline=10, accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
+        bar.add_cascade(label="Messages", underline=0, menu=messages)  # put the menu on the bar
+        stations = tk.Menu(bar, tearoff=False)  # the Stations menu
+        stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
+        stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
+        stations.add_separator()  # a divider
+        stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
+        stations.add_command(label="Put the selected callsign in To", underline=0, accelerator="Enter", command=self.pick_station)  # use it
+        stations.add_command(label="Save the selected station as a contact", underline=0, command=self.save_contact)  # keep it
+        stations.add_command(label="Remove the selected contact", underline=0, command=self.remove_contact)  # forget it
+        bar.add_cascade(label="Stations", underline=0, menu=stations)  # put the menu on the bar
+        view = tk.Menu(bar, tearoff=False)  # the View menu
+        looks = tk.Menu(view, tearoff=False)  # the Theme submenu
+        for choice in theme.CHOICES:  # system, light, dark
+            looks.add_radiobutton(label=THEME_NAMES[choice], underline=0, value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
+        view.add_cascade(label="Theme", underline=0, menu=looks)  # put it in the View menu
+        view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
+        view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
+        bar.add_cascade(label="View", underline=0, menu=view)  # put the menu on the bar
         settings = tk.Menu(bar, tearoff=False)  # the Settings menu
-        settings.add_command(label="Rig Information...", command=self.rig_information)  # callsign, grid, radio type, serial ports, sound devices
-        bar.add_cascade(label="Settings", menu=settings)  # put the menu on the bar
+        for tab, words, key in ((0, "Station...", 0), (1, "Radio and rig control...", 0), (2, "Audio...", 0), (3, "Operating (start-up, beacon)...", 0), (4, "Logging...", 0), (5, "Quick messages...", 0), (6, "Appearance...", 1)):  # one item per tab of the Settings window
+            settings.add_command(label=words, underline=key, accelerator="F12" if tab == 0 else "", command=lambda t=tab: self.settings_window(t))  # open Settings at that tab
+        bar.add_cascade(label="Settings", underline=0, menu=settings)  # put the menu on the bar
         help_menu = tk.Menu(bar, tearoff=False)  # the Help menu
-        help_menu.add_command(label="About Kestrel", command=lambda: messagebox.showinfo("About Kestrel", about_text()))  # what this is, which version, and who began it
-        bar.add_cascade(label="Help", menu=help_menu)  # put the menu on the bar
+        help_menu.add_command(label="Keyboard shortcuts", underline=0, accelerator="F1", command=self.shortcuts_window)  # every key
+        help_menu.add_command(label="About Kestrel", underline=0, command=lambda: messagebox.showinfo("About Kestrel", about_text(), parent=self.root))  # what this is, which version, and who began it
+        bar.add_cascade(label="Help", underline=0, menu=help_menu)  # put the menu on the bar
         self.root.configure(menu=bar)  # give the window its menu bar
+
+    def _shortcuts(self):  # tie the keys to their jobs
+        keys = {"<F1>": self.shortcuts_window, "<F2>": lambda: self.set_mode("listen"), "<F3>": lambda: self.set_mode("monitor"), "<F4>": lambda: self.set_mode("off"),  # (continued)
+                "<F5>": self.beacon_key, "<F6>": self.call_to, "<F7>": self.end_contact, "<F8>": self.heard_window, "<F9>": self.telemetry_window,  # (continued)
+                "<F11>": self.broadcast_message, "<F12>": lambda: self.settings_window(0), "<Control-l>": lambda: self.to.focus_set(), "<Control-m>": lambda: self.message.focus_set(),  # (continued)
+                "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued)
+                "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set()}  # every shortcut
+        for key, job in keys.items():  # each one
+            self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
     def _list(self, parent, column, title, columns):  # a titled list with named columns
         frame = ttk.LabelFrame(parent, text=title)  # the box around the list
@@ -267,49 +419,270 @@ class Panel:  # the control panel window
         table.configure(yscrollcommand=scroll.set)  # tie the two together
         return table  # so rows can be added later
 
-    def _scope(self, parent):  # the scope: a spectrum trace above a waterfall of the receive audio
-        self.audio = None  # the sound-card input being shown, while a station or the monitor is running
+    # ---- the scope ----
+
+    def _scope(self, parent):  # the scope: a spectrum trace above a waterfall of the receive audio, with scales
         self.scope_w, self.trace_h, self.fall_h, self.top_hz = 512, 90, 150, 3000.0  # width in points, heights of the trace and the waterfall, and the highest frequency shown
+        self.left, self.right, self.above, self.below = 40, 40, 16, 18  # margins for the scales: dB on the left, seconds on the right, radio kHz above, audio Hz below
         steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfall
         self.palette = np.stack([np.interp(steps, [0, 0.35, 0.7, 1.0], channel) for channel in ([0, 0, 255, 255], [0, 40, 255, 60], [40, 200, 0, 0])], axis=1).astype("uint8")  # their colours: black, blue, yellow, red
         self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the waterfall picture, newest line at the top
-        frame = ttk.LabelFrame(parent, text="Scope  (receive audio, 0 to 3000 Hz; Kestrel sits between the dashed lines)")  # the box around the scope
-        frame.grid(row=0, column=1, sticky="ns")  # place it on the right
-        self.scope = tk.Canvas(frame, width=self.scope_w, height=self.trace_h + self.fall_h + 16, bg="black", highlightthickness=0)  # the drawing area
-        self.scope.grid(row=0, column=0, padx=4, pady=4)  # place it
+        self.line_s = 0.15  # seconds between waterfall lines, measured as the scope runs
+        self.last_line = None  # when the last waterfall line was drawn
+        self.scale_khz = None  # the radio frequency the top scale was last drawn for
+        frame = ttk.LabelFrame(parent, text="Scope  -  receive audio")  # the box around the scope
+        frame.grid(row=0, column=1, sticky="ns", padx=(0, 4))  # place it beside the log
+        width, height = self.left + self.scope_w + self.right, self.above + self.trace_h + self.fall_h + self.below  # the drawing area's size
+        self.scope = tk.Canvas(frame, width=width, height=height, bg="#0b0e12", highlightthickness=0)  # the drawing area
+        self.scope.grid(row=0, column=0, padx=4, pady=(4, 0))  # place it
         self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # the waterfall as a picture
-        self.fall_item = self.scope.create_image(0, self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
-        for hz in range(500, 3000, 500):  # a marker every 500 Hz
-            x = hz / self.top_hz * (self.scope_w - 1)  # where it falls across the display
-            edge = hz in (500, 2500)  # the two edges of a Kestrel signal
-            self.scope.create_line(x, 0, x, self.trace_h + self.fall_h, fill="#e0e0e0" if edge else "#404040", dash=(4, 3) if edge else (1, 4))  # a dashed line for an edge, a faint dotted one otherwise
-            self.scope.create_text(x, self.trace_h + self.fall_h + 8, text=str(hz), fill="#c0c0c0", font=("Segoe UI", 7))  # its frequency underneath
-        self.trace = self.scope.create_line(0, self.trace_h, self.scope_w, self.trace_h, fill="#7cfc00")  # the spectrum trace, flat until there is audio
+        self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
+        grey, faint, font = "#a8b0ba", "#3a414a", ("Segoe UI", 7)  # scale colours and lettering
+        for hz in range(0, 3001, 500):  # a mark every 500 Hz
+            x = self.x_for(hz)  # where it falls across the display
+            edge = hz in (500, 2500)  # the two edges of the Kestrel band
+            self.scope.create_line(x, self.above, x, self.above + self.trace_h + self.fall_h, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4))  # a dashed line for an edge, a faint dotted one otherwise
+            self.scope.create_text(x, height - self.below / 2, text=str(hz), fill=grey, font=font)  # its audio frequency underneath
+        self.scope.create_text(self.left + self.scope_w + self.right / 2, height - self.below / 2, text="Hz", fill=grey, font=font)  # the unit of the bottom scale
+        for db in (0, 25, 50):  # marks up the trace, in dB above the noise
+            y = self.y_for(db)  # where it falls
+            self.scope.create_line(self.left, y, self.left + self.scope_w, y, fill=faint, dash=(1, 4))  # a faint line across
+            self.scope.create_text(self.left - 4, y, text=f"{db:+d}" if db else "noise", anchor="e", fill=grey, font=font)  # its value
+        self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font=font)  # the unit of the left scale, in the top corner
+        self.trace = self.scope.create_line(self.left, self.y_for(0), self.left + self.scope_w, self.y_for(0), fill="#7cfc00")  # the spectrum trace, flat until there is audio
+        legend = ("Across: audio frequency in Hz (below) and the radio frequency each point is on, in kHz (above).\n"  # what the axes are
+                  "Trace: signal strength above the noise, in dB.  Waterfall: the last few seconds, newest at the top.\n"  # what the two parts show
+                  "Dashed lines: the Kestrel band, 500 to 2500 Hz.  Labels: stations decoded in the last minute.")  # the marks
+        ttk.Label(frame, text=legend, font=("Segoe UI", 8), justify="left").grid(row=1, column=0, sticky="w", padx=4, pady=(2, 4))  # the key
+
+    def x_for(self, hz):  # where an audio frequency falls across the scope
+        return self.left + hz / self.top_hz * (self.scope_w - 1)  # left margin plus the share of the width
+
+    def y_for(self, db):  # where a level above the noise falls on the trace
+        return self.above + self.trace_h - 3 - (db + 5.0) / 55.0 * (self.trace_h - 8)  # from 5 dB under the noise at the bottom to 50 dB above it at the top
+
+    def dial_hz(self):  # where the radio is tuned now (safe to call from any thread)
+        """Return the radio's dial frequency in hertz: the chosen calling frequency, moved to a working frequency if the contact has moved."""
+        station = self.station  # the running station, if any
+        return self.base_khz * 1000.0 + (station.offset_hz if station is not None else 0)  # the calling frequency plus any move
 
     def draw_scope(self):  # redraw the scope from the newest audio
         source = self.audio  # the sound-card input, if one is open
-        if source is not None:  # there is audio to show
-            try:  # the input may close while this runs
+        try:  # a hiccup in drawing must never stop the station
+            dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
+            if dial != self.scale_khz:  # the radio has moved since the top scale was drawn
+                self.scale_khz = dial  # remember where it is now
+                self.scope.delete("rf")  # remove the old labels
+                for hz in (500, 1500, 2500):  # three points across
+                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.1f}", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
+                self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the unit
+            if source is not None:  # there is audio to show
+                now = time.monotonic()  # the time of this line
+                if self.last_line is not None:  # not the first line
+                    self.line_s = 0.9 * self.line_s + 0.1 * (now - self.last_line)  # keep a running average of the time between lines
+                self.last_line = now  # remember it
                 levels = source.spectrum(self.top_hz, self.scope_w)  # the spectrum of the last sixth of a second, in decibels
                 floor = float(np.median(levels))  # the noise level, taken as the middle value
-                bright = np.clip((levels - (floor - 5.0)) / 55.0, 0.0, 1.0)  # each point on a scale from just under the noise to 50 dB above it
-                points = np.column_stack((np.arange(self.scope_w), self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
+                bright = np.clip((levels - (floor - 5.0)) / 55.0, 0.0, 1.0)  # each point on a scale from 5 dB under the noise to 50 dB above it
+                points = np.column_stack((self.left + np.arange(self.scope_w), self.above + self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
                 self.scope.coords(self.trace, *points)  # move the trace
                 self.fall = np.roll(self.fall, 1, axis=0)  # push the waterfall down one line
                 self.fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
                 self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
-            except Exception:  # a hiccup in drawing must never stop the station
-                pass  # try again next time
+            self.scope.delete("time")  # the seconds scale is redrawn each time, since the line rate is measured
+            x = self.left + self.scope_w + 4  # just right of the waterfall
+            for seconds in (0, 10, 20, 30, 40):  # a mark every ten seconds
+                y = self.above + self.trace_h + seconds / max(self.line_s, 0.05)  # how far down that is
+                if y <= self.above + self.trace_h + self.fall_h:  # it is on the waterfall
+                    self.scope.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font=("Segoe UI", 7), tags="time")  # label it
+            self.scope.delete("mark")  # the station labels are redrawn each time
+            now = time.monotonic()  # for their age
+            for call, (hz, width, when) in list(self.marks.items()):  # each station decoded recently
+                if now - when > 60.0:  # more than a minute ago
+                    del self.marks[call]  # forget it
+                    continue  # and move on
+                low, high = self.x_for(max(0.0, hz - width / 2)), self.x_for(min(self.top_hz, hz + width / 2))  # the signal's edges
+                self.scope.create_line(low, self.above + 14, low, self.above + 18, high, self.above + 18, high, self.above + 14, fill="#ffd166", tags="mark")  # a bracket over the signal
+                self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill="#ffd166", font=("Segoe UI", 8, "bold"), tags="mark")  # with the callsign above it
+        except Exception:  # anything at all
+            pass  # try again next time
         self.root.after(150, self.draw_scope)  # about seven times a second
+
+    # ---- the level meters ----
+
+    def _meters(self, parent):  # the receive and transmit level meters, each with its slider
+        frame = ttk.LabelFrame(parent, text="Levels")  # the box around them
+        frame.grid(row=0, column=2, sticky="ns")  # place it on the right
+        self.meter_h, self.meter_w = 220, 30  # the size of each meter
+        self.rx_meter = self._meter(frame, 0, "Receive\n(radio to PC)")  # the receive meter
+        self.tx_meter = self._meter(frame, 2, "Transmit\n(PC to radio)")  # the transmit meter
+        self.rx_value = tk.DoubleVar(value=0.5)  # the receive slider's position
+        self.rx_slider = ttk.Scale(frame, orient="vertical", from_=1.0, to=0.0, length=self.meter_h, variable=self.rx_value, command=lambda value: self.rx_level_moved())  # Windows' recording level for the receive device
+        self.rx_slider.grid(row=1, column=1, padx=(0, 6))  # beside the receive meter
+        self.tx_value = tk.DoubleVar(value=float(self.settings["gain"] or 0.25))  # the transmit slider's position
+        self.tx_slider = ttk.Scale(frame, orient="vertical", from_=1.0, to=0.0, length=self.meter_h, variable=self.tx_value, command=lambda value: self.tx_level_moved())  # the transmit audio level
+        self.tx_slider.grid(row=1, column=3, padx=(0, 6))  # beside the transmit meter
+        self.tx_slider.bind("<ButtonRelease-1>", lambda event: self.save_settings())  # remember the new level when the mouse lets go
+        self.tx_slider.bind("<KeyRelease>", lambda event: self.save_settings())  # or when the arrow key is released
+        self.rx_text = ttk.Label(frame, text="", font=("Segoe UI", 8), justify="center", width=14, anchor="center")  # the receive readings in words
+        self.rx_text.grid(row=2, column=0, columnspan=2, pady=(2, 0))  # under the receive meter
+        self.tx_text = ttk.Label(frame, text="", font=("Segoe UI", 8), justify="center", width=14, anchor="center")  # the transmit readings in words
+        self.tx_text.grid(row=2, column=2, columnspan=2, pady=(2, 0))  # under the transmit meter
+        ttk.Label(frame, text="Aim for the green band.\nRed or CLIP: lower the\nradio's USB audio output.", font=("Segoe UI", 8), justify="center").grid(row=3, column=0, columnspan=4, pady=(4, 4))  # how to use them
+        self.find_rx_level()  # find Windows' level control for the receive device
+
+    def _meter(self, frame, column, title):  # one vertical meter, scaled -60 to 0 dBFS
+        ttk.Label(frame, text=title, font=("Segoe UI", 8), justify="center").grid(row=0, column=column, columnspan=2, pady=(2, 2))  # its title
+        canvas = tk.Canvas(frame, width=self.meter_w + 28, height=self.meter_h, bg="#0b0e12", highlightthickness=0)  # the drawing area: the bar plus room for the scale
+        canvas.grid(row=1, column=column, padx=(6, 2))  # place it
+        x0, x1 = 26, 26 + self.meter_w  # the bar's left and right edges
+        for low, high, colour in ((-60, -30, "#20303a"), (-30, -15, "#16452a"), (-15, -6, "#4a4416"), (-6, 0, "#4a1c1c")):  # the zones: too low, aim here, getting loud, too loud
+            canvas.create_rectangle(x0, self.meter_y(high), x1, self.meter_y(low), fill=colour, outline="")  # each zone, dimly
+        canvas.create_rectangle(x0, self.meter_y(-15), x1, self.meter_y(-30), outline="#3fbf6f", width=1)  # the target band outlined
+        for db in (0, -6, -15, -30, -45, -60):  # the scale
+            canvas.create_line(x0 - 4, self.meter_y(db), x0, self.meter_y(db), fill="#a8b0ba")  # a tick
+            canvas.create_text(x0 - 6, self.meter_y(db), text=str(db), anchor="e", fill="#a8b0ba", font=("Segoe UI", 7))  # its value in dBFS
+        canvas.create_rectangle(x0 + 3, self.meter_y(-60), x1 - 3, self.meter_y(-60), fill="#3fbf6f", outline="", tags="bar")  # the level bar, empty to begin with
+        canvas.create_line(x0, self.meter_y(-60), x1, self.meter_y(-60), fill="#ffffff", width=2, tags="peak")  # the peak mark
+        canvas.create_text((x0 + x1) / 2, 8, text="", fill="#ff5555", font=("Segoe UI", 7, "bold"), tags="clip")  # CLIP, when the input is overdriven
+        return canvas  # for drawing on
+
+    def meter_y(self, db):  # where a level falls on a meter
+        return 4 + (min(0.0, max(-60.0, db)) / -60.0) * (self.meter_h - 8)  # 0 dBFS at the top, -60 at the bottom
+
+    def show_level(self, canvas, rms_db, peak_db, dim=False, clip=False):  # move one meter's bar and peak mark
+        colour = "#3fbf6f" if rms_db < -15 else ("#e0c040" if rms_db < -6 else "#e05050")  # green while in or under the target band, yellow when getting loud, red when too loud
+        if rms_db < -45:  # hardly any signal
+            colour = "#5a7a8a"  # grey-blue: too low to be useful
+        if dim:  # a setting, not a live reading
+            colour = "#4a5560"  # shown dimly
+        canvas.coords("bar", 29, self.meter_y(rms_db), 26 + self.meter_w - 3, self.meter_y(-60))  # the bar, from the bottom up to the RMS level
+        canvas.itemconfigure("bar", fill=colour)  # in its colour
+        canvas.coords("peak", 26, self.meter_y(peak_db), 26 + self.meter_w, self.meter_y(peak_db))  # the peak mark
+        canvas.itemconfigure("clip", text="CLIP" if clip else "")  # the overload warning
+
+    def draw_meters(self):  # bring both meters up to date
+        try:  # a hiccup must never stop the panel
+            source = self.audio  # the receive input, if open
+            if source is not None:  # receiving
+                rms, peak = source.level()  # how loud the input is
+                if source.clips > self.clips_seen:  # a sample has reached full scale since the last look
+                    self.clips_seen, self.clip_until = source.clips, time.monotonic() + 3.0  # show CLIP for three seconds
+                clip = time.monotonic() < self.clip_until  # still showing it
+                self.show_level(self.rx_meter, rms, peak, clip=clip)  # the receive meter
+                level = f"Windows level {self.rx_value.get() * 100:.0f}%" if self.rx_level is not None else "level: set in Windows"  # the slider's setting, or where to set it
+                self.rx_text.configure(text=f"{rms:.0f} dBFS avg\n{peak:.0f} peak\n{level}")  # in words
+            else:  # not receiving
+                self.show_level(self.rx_meter, -60.0, -60.0)  # empty
+                self.rx_text.configure(text="not receiving")  # say so
+            sink, gain = self.sink, max(self.tx_value.get(), 1e-4)  # the transmit output, and its level setting
+            if sink is not None and sink.playing:  # transmitting now
+                self.show_level(self.tx_meter, sink.last_peak_db - 3.0, sink.last_peak_db)  # the transmit audio's level (its average sits about 3 dB under its peak)
+            else:  # not transmitting
+                expected = 20.0 * np.log10(gain)  # the peak the next transmission will reach
+                self.show_level(self.tx_meter, expected - 3.0, expected, dim=True)  # shown dimly, as a setting
+            radio = []  # what the radio reports
+            if self.meters["watts"] is not None and self.tx_active:  # power out, while transmitting
+                radio.append(f"{self.meters['watts']:.0f} W out")  # in watts
+            elif self.meters["set_w"] is not None:  # the power setting
+                radio.append(f"power set {self.meters['set_w']:.0f} W")  # in watts
+            if self.meters["alc"] is not None and self.tx_active:  # ALC, while transmitting
+                radio.append(f"ALC {self.meters['alc']:.2f}")  # 0 to 1
+            if self.meters["swr"] is not None and self.tx_active:  # SWR, while transmitting
+                radio.append(f"SWR {self.meters['swr']:.1f}")  # standing-wave ratio
+            self.tx_text.configure(text=f"drive {gain * 100:.0f}%\n" + ("\n".join(radio) if radio else ("TRANSMITTING" if self.tx_active else "")))  # in words
+            if self.rx_level is not None and time.monotonic() - self.level_check > 3.0 and self.root.focus_get() is not self.rx_slider:  # every few seconds, unless the operator is using the slider
+                self.level_check = time.monotonic()  # remember when
+                self.rx_value.set(self.rx_level.get())  # follow any change made in Windows itself
+        except Exception:  # anything at all
+            pass  # try again next time
+        self.root.after(100, self.draw_meters)  # ten times a second
+
+    def find_rx_level(self):  # find Windows' level control for the receive device
+        self.rx_level = mixer.find(self.settings["audio_in"], "input")  # None if it cannot be had
+        if self.rx_level is not None:  # found
+            self.rx_value.set(self.rx_level.get())  # the slider shows Windows' setting
+            self.rx_slider.state(["!disabled"])  # and can be moved
+        else:  # not available
+            self.rx_slider.state(["disabled"])  # the slider does nothing, so it is greyed out
+
+    def rx_level_moved(self):  # the receive slider was moved
+        if self.rx_level is not None:  # Windows' control is available
+            try:  # Windows may refuse
+                self.rx_level.set(self.rx_value.get())  # set the device's recording level
+            except Exception:  # it did
+                pass  # the meter will show the level is unchanged
+
+    def tx_level_moved(self):  # the transmit slider was moved
+        gain = round(self.tx_value.get(), 3)  # the new level, 0 to 1
+        self.settings["gain"] = f"{gain:.3f}"  # remembered with the settings
+        if self.sink is not None:  # a station is running
+            self.sink.gain = gain  # its next transmission uses the new level
+
+    # ---- small helpers ----
+
+    def colour_plain_widgets(self):  # colour the widgets the theme cannot reach
+        c = self.colours  # the palette
+        theme.colour_window(self.root, c)  # the window's background and title bar
+        self.plain_colour = c["bg"]  # the status band's ordinary background
+        self.log.configure(background=c["text_bg"], foreground=c["text_fg"], insertbackground=c["text_fg"])  # the log
+        self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colours it
+        self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program colour)
+        theme.recolour_comboboxes(self.root, c)  # the open lists of the drop-downs
+        for window in self.windows.values():  # any extra windows that are open
+            if window.winfo_exists():  # still open
+                theme.colour_window(window, c)  # colour them too
+
+    def set_theme(self, choice):  # View > Theme
+        self.settings["theme"] = choice  # remember the choice
+        self.theme_var.set(choice)  # tick it in the menu
+        self.colours = theme.apply(self.root, choice)  # restyle every themed widget
+        self.colour_plain_widgets()  # and the rest
+        self.show_status(self.status.cget("text"), "plain")  # redraw the status band in the new colours
+        self.save_settings()  # keep it for next time
+
+    def window(self, name, title):  # a window of its own, one of a kind
+        """Return a new top-level window called `title`, closing any earlier one of the same `name`; Esc closes it."""
+        old = self.windows.get(name)  # an earlier one
+        if old is not None and old.winfo_exists():  # still open
+            old.destroy()  # close it
+        top = tk.Toplevel(self.root)  # the new window
+        top.title(title)  # its title
+        top.transient(self.root)  # it belongs to the main window
+        top.bind("<Escape>", lambda event: top.destroy())  # Esc closes it
+        theme.colour_window(top, self.colours)  # in the chosen look
+        self.windows[name] = top  # remember it
+        return top  # ready to fill
+
+    def touched(self, event=None):  # the operator pressed a key or used the mouse
+        self.last_input = time.monotonic()  # the station is attended
+
+    def open_path(self, path):  # open a file or folder in Windows' own program for it
+        if not os.path.exists(path):  # nothing there yet
+            messagebox.showinfo("Kestrel", f"There is nothing there yet:\n{os.path.basename(path)}\n\nIt is made when the first entry is logged.", parent=self.root)  # say so
+            return  # nothing to open
+        try:  # Windows may refuse
+            if sys.platform == "win32":  # Windows
+                os.startfile(path)  # open with the program Windows uses for it
+            else:  # elsewhere
+                subprocess.Popen(["xdg-open", path])  # the desktop's own choice
+        except OSError as problem:  # it could not be opened
+            messagebox.showerror("Kestrel", str(problem), parent=self.root)  # say why
+
+    def open_logs(self):  # File > Open the log folder
+        os.makedirs(LOG_FOLDER, exist_ok=True)  # make sure it exists
+        self.open_path(LOG_FOLDER)  # open it
 
     def show_notice(self, words):  # put up the idle-frequency warning (it does not hold anything up)
         self.close_notice()  # only one at a time
-        self.notice = tk.Toplevel(self.root)  # a small window of its own
-        self.notice.title("Kestrel - returning to the calling frequency")  # its title
+        self.notice = self.window("notice", "Kestrel - returning to the calling frequency")  # a small window of its own
         self.notice.attributes("-topmost", True)  # in front of everything, so it is seen
         ttk.Label(self.notice, text=words, wraplength=380, justify="left").pack(padx=16, pady=(14, 8))  # the warning
-        ttk.Button(self.notice, text="OK", command=self.close_notice).pack(pady=(0, 12))  # OK takes the window away; it does not stop the return
+        button = ttk.Button(self.notice, text="OK", command=self.close_notice)  # OK takes the window away; it does not stop the return
+        button.pack(pady=(0, 12))  # place it
+        button.focus_set()  # Enter or Space presses it
+        self.notice.bind("<Return>", lambda event: self.close_notice())  # Enter too
         self.notice.protocol("WM_DELETE_WINDOW", self.close_notice)  # so does its close box
         self.root.bell()  # a sound to draw attention
 
@@ -329,7 +702,7 @@ class Panel:  # the control panel window
         elif colour in ("dark orange", "red"):  # the link is in trouble, or something failed
             self.status.configure(text=words, bg="#c0392b" if colour == "red" else "#d98200", fg="white")  # white on red or amber
         else:  # every other state
-            self.status.configure(text=words, bg=self.plain_colour, fg=colour)  # coloured words on the ordinary background
+            self.status.configure(text=words, bg=self.plain_colour, fg=self.colours["accent"] if colour == "dark blue" else self.colours["fg"])  # coloured words on the ordinary background
 
     def say(self, text):  # add a line to the log (safe to call from any thread)
         self.lines.put(text)  # the window picks it up shortly
@@ -358,7 +731,7 @@ class Panel:  # the control panel window
             elif self.notice is not None and any(mark in line for mark in ("sending message", "received message", "back on the calling frequency", "contact closed")):  # traffic has resumed, or the return has happened
                 self.close_notice()  # the warning no longer applies
             state = status_for(line)  # does it mark a change of state?
-            if state is not None:  # yes
+            if state is not None and not (state[0] == "STOPPED" and self.next_mode is not None):  # yes (but a stop on the way to another mode is not worth showing)
                 self.show_status(state[0], state[1])  # show the new state in its colour
             elif "monitoring" in line.lower():  # the receive-only monitor has started
                 self.show_status("MONITORING  -  receive only", "dark blue")  # say so
@@ -367,18 +740,92 @@ class Panel:  # the control panel window
             self.log.see("end")  # keep the newest line in view
             self.log.configure(state="disabled")  # back to read-only
             try:  # also keep the full line in a file, so a run can be studied afterwards
-                with open(os.path.splitext(SETTINGS_FILE)[0] + ".log", "a", encoding="utf-8") as handle:  # the log file sits beside this panel's settings file
+                with open(side_file(".log"), "a", encoding="utf-8") as handle:  # the log file sits beside this panel's settings file
                     handle.write(f"{time.strftime('%Y-%m-%d')} {clock}  {line}\n")  # the line, with the date and time of day
             except OSError:  # the file could not be written
                 pass  # the window still shows the line, which is what matters
         self.root.after(100, self.show_lines)  # look again in a tenth of a second
 
+    # ---- what the working thread reports ----
+
+    def power_w(self):  # the transmit power to put in the log
+        """Return the power in watts: measured while transmitting if the radio says, else the radio's power setting, else None."""
+        if self.tx_active and self.meters["watts"] is not None:  # measured now
+            return self.meters["watts"]  # use it
+        return self.meters["set_w"]  # the setting, or None if unknown
+
+    def rig_name(self):  # the radio, for the log
+        return self.settings["rig_text"] or (self.settings["rig_model"].split("  ", 1)[-1] if self.settings["rig_model"] else "")  # the operator's description, else the rig type
+
     def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
         call = (result.fields or {}).get("origin") or (result.origin if result.frame_type == 1 else "")  # the callsign it carries: in a beacon, an answer, an identification or a fully addressed message
-        if call:  # it names its sender
-            self.heard.put((call, (result.fields or {}).get("grid", ""), result.snr_db, KIND.get(result.frame_type, "frame")))  # pass it to the window
+        station = self.station  # the running station, if any
+        if not call and station is not None and result.link == station.link and station.partner:  # a frame inside the present contact carries only the link number
+            call = station.partner  # it is from the partner
+        if not call:  # it names nobody
+            return  # nothing to note
+        grid = (result.fields or {}).get("grid", "")  # its grid locator, if it carries one
+        kind = KIND.get(result.frame_type, "frame")  # what it was
+        self.heard.put((call, grid, result.snr_db, kind))  # pass it to the window
+        self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
+        self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
+        self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
+                           level=f"L{result.level}", snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name())  # the logbook, from the advanced level up
 
-    def follow_station(self):  # keep the message lists and the readings in step with the station
+    def log_frame(self, result):  # every report from the receiver (called from the working thread), for the verbose log
+        if not self.logbook.wants("frame"):  # not logging at that level
+            return  # nothing to do
+        name = KIND.get(result.frame_type, "frame")  # the kind of frame
+        rx = self.audio.level()[0] if self.audio is not None else None  # the input level
+        self.logbook.write("frame", direction="RX", station=self.settings["call"], text=f"{name} {'decoded' if result.ok else 'failed: ' + str(result.reason)}", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
+                           level=f"L{result.level}", snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(), rx_input_dbfs=rx, detail=describe(result))  # every detail
+
+    def transmitting(self, tx, keyed):  # the transmitter went on or off (called from the working thread)
+        self.tx_active, self.tx_kind = keyed, tx.kind if keyed else ""  # note it, for the meters
+        if not keyed:  # it has just gone off
+            self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=self.meters["watts"], alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
+            return  # nothing more
+        event = {"beacon": "beacon", "call": "call", "broadcast": "broadcast"}.get(tx.kind, "sent")  # beacons, calls and broadcasts are logged from advanced up; other frames only in verbose
+        station = self.station  # the running station
+        to = "ALL" if tx.kind in ("beacon", "broadcast") else (station.partner if station is not None else "")  # who it was for
+        self.logbook.write(event, direction="TX", station=self.settings["call"], **{"from": self.settings["call"]}, to=to, text=f"{tx.kind} {tx.note}".strip(), dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
+                           level=f"L{tx.level}", rig=self.rig_name(), power_w=self.power_w(), tx_audio=round(20.0 * np.log10(max(float(self.settings["gain"] or 0.25), 1e-4)), 1))  # what went out
+
+    def poll_radio(self, address):  # read the radio's power setting and meters (a thread of its own while a station runs)
+        try:  # rig control may refuse
+            rig = RigCtl(address)  # a connection of its own, so it never gets in the way of tuning and keying
+        except (OSError, ValueError):  # no connection
+            return  # no readings, then
+        unsupported = set()  # readings this radio or Hamlib has refused
+        last_setting = 0.0  # when the power setting was last read
+
+        def read(name):  # one reading, or None
+            if name in unsupported:  # refused before
+                return None  # do not ask again
+            try:  # the radio may not have it
+                return rig.level(name)  # the reading
+            except (OSError, RuntimeError, ValueError):  # it does not
+                unsupported.add(name)  # remember that
+                return None  # no reading
+
+        try:  # until told to stop
+            while not self.poller_stop.is_set():  # the station is running
+                if self.tx_active:  # transmitting: read the meters
+                    self.meters["watts"], self.meters["alc"], self.meters["swr"] = read("RFPOWER_METER_WATTS"), read("ALC"), read("SWR")  # power out, ALC and SWR
+                    time.sleep(0.7)  # a little under once a second
+                    continue  # and again
+                if time.monotonic() - last_setting > 20.0:  # every twenty seconds while receiving
+                    setting = read("RFPOWER")  # the power setting, 0 to 1 of full power
+                    if setting is not None:  # the radio said
+                        self.meters["set_w"] = setting * float(self.settings["max_power_w"] or 100)  # in watts
+                    last_setting = time.monotonic()  # remember when
+                time.sleep(0.5)  # a short nap
+        finally:  # always hang up
+            rig.close()  # close the connection
+
+    # ---- keeping the window in step with the station ----
+
+    def follow_station(self):  # keep the message lists, the readings, the beacon and the logbook in step with the station
         while not self.heard.empty():  # every station heard since the last look
             call, grid, snr, kind = self.heard.get()  # who, where, how strong, and what it sent
             values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
@@ -390,8 +837,13 @@ class Panel:  # the control panel window
                 self.refresh_to()  # and offer it in the To box
         station = self.tracked  # the station being followed, running or just finished
         if station is not None:  # there is one
+            self.follow_contact(station)  # the logbook's view of the contact
             while self.marked < len(station.delivered):  # a message has been delivered since the last look
-                self._advance(station.delivered[self.marked], "delivered " + time.strftime("%H:%M"))  # mark its row
+                text = station.delivered[self.marked]  # which one
+                self._advance(text, "delivered " + time.strftime("%H:%M"))  # mark its row
+                if self.contact is not None:  # in a contact
+                    self.contact["sent"] += 1  # count it
+                self.logbook.write("message", direction="TX", station=self.settings["call"], **{"from": self.settings["call"]}, to=station.partner, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1), level=f"L{station.tx_level}", rig=self.rig_name(), power_w=self.power_w())  # the logbook
                 self.marked += 1  # one more accounted for
             if station.plan and self.station is station:  # a message is on its way right now
                 self._advance(station.plan_text, "sending")  # show that on its row
@@ -403,12 +855,20 @@ class Panel:  # the control panel window
                 origin, dest, text = station.bulletins[self.shown_b]  # who sent it, who it was for, and what it says
                 self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} to {dest}", text))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
+                self.logbook.write("broadcast" if dest == "ALL" else "message", direction="RX", station=self.settings["call"], **{"from": origin}, to=dest, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
+                self.note_telemetry(origin, text)  # it may be telemetry
                 self.shown_b += 1  # one more shown
             while self.shown < len(station.inbox):  # a message has arrived since the last look
-                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), station.partner, station.inbox[self.shown]))  # add it to the received list
+                text = station.inbox[self.shown]  # the message
+                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), station.partner, text))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
+                snr = station.history[-1][0] if station.history else None  # the latest reading of the partner's signal
+                if self.contact is not None:  # in a contact
+                    self.contact["received"] += 1  # count it
+                self.logbook.write("message", direction="RX", station=self.settings["call"], **{"from": station.partner}, to=self.settings["call"], text=text, dial_khz=round(self.dial_hz() / 1000.0, 1), level=f"L{station.want}", snr_db=snr, rig=self.rig_name())  # the logbook
+                self.note_telemetry(station.partner, text)  # it may be telemetry
                 self.shown += 1  # one more shown
-            if self.station is station and station.state in ("LOCKED", "DEGRADED", "REACQUIRE"):  # in a contact
+            if self.station is station and station.state in LOCKED:  # in a contact
                 where = f" on the working frequency ({station.offset_hz / 1000.0:+.1f} kHz)" if station.offset_hz else ""  # say so when the pair have left the calling frequency
                 if station.state == "LOCKED":  # the link is healthy
                     self.show_status(f"LOCKED with {station.partner}{where}  -  link held, speed adjusting to keep it clear" if not where else f"LOCKED with {station.partner}{where}", "dark green")  # solid green
@@ -423,14 +883,471 @@ class Panel:  # the control panel window
                 self.readings.configure(text=f"Link:  {heard}     |     you send at L{station.tx_level}     |     partner sends at L{station.want}     |     to send: {len(station.outbox)}     received: {len(station.inbox)}")  # the link at a glance
             else:  # not in a contact
                 self.readings.configure(text="")  # nothing to report
+        self.follow_beacon()  # the repeating beacon's label, and its automatic stop
         self.root.after(500, self.follow_station)  # look again in half a second
+
+    def follow_contact(self, station):  # notice a contact starting and ending, for the logbook
+        running = self.station is station  # the station is still on the air
+        in_contact = running and station.state in LOCKED and bool(station.partner)  # a contact is under way
+        if in_contact and (self.contact is None or self.contact["call"] != station.partner):  # a new contact
+            if self.contact is not None:  # the previous one ended unseen
+                self.finish_contact()  # log it
+            grid = self.contacts.get(station.partner, {}).get("grid", "") or (self.stations.set(self.heard_rows[station.partner], "grid") if station.partner in self.heard_rows else "")  # its grid locator, if known
+            self.contact = {"call": station.partner, "start": time.time(), "end": time.time(), "dial_khz": self.dial_hz() / 1000.0, "grid": grid, "sent": 0, "received": 0, "best_level": 0, "snr": None}  # the contact so far
+            self.logbook.write("contact start", direction="--", station=self.settings["call"], **{"from": self.settings["call"]}, to=station.partner, text=f"locked; role {station.role}", dial_khz=round(self.dial_hz() / 1000.0, 1), rig=self.rig_name(), power_w=self.power_w())  # the logbook
+        if in_contact:  # under way
+            self.contact["end"] = time.time()  # it lasts at least until now
+            self.contact["best_level"] = max(self.contact["best_level"], station.tx_level, station.want)  # the fastest level used
+            if station.history:  # the partner has been measured
+                self.contact["snr"] = station.history[-1][0]  # the latest reading
+        elif self.contact is not None:  # it has ended
+            self.finish_contact()  # log it
+
+    def finish_contact(self):  # a contact has ended: the logbook and the ADIF file
+        record = dict(self.contact, end=time.time(), my_call=self.settings["call"], my_grid=self.settings["grid"], power_w=self.meters["set_w"], rig=self.rig_name(), signal=SIGNAL_VERSION)  # everything the ADIF record needs
+        self.contact = None  # no contact now
+        self.logbook.write("contact end", direction="--", station=self.settings["call"], **{"from": self.settings["call"]}, to=record["call"], text=f"{record['sent']} sent, {record['received']} received, {record['end'] - record['start']:.0f} s", dial_khz=round(record["dial_khz"], 1), snr_db=record["snr"], level=f"L{record['best_level']}", rig=record["rig"], power_w=record["power_w"])  # the logbook
+        self.logbook.contact(record)  # and the contacts file
+
+    def follow_beacon(self):  # the label beside the beacon button, and the automatic stop
+        if not self.beacon_wanted:  # off
+            self.beacon_label.configure(text="off")  # say so
+            return  # nothing more
+        if self.mode == "off" and self.next_mode is None and (self.worker is None or not self.worker.is_alive()):  # the station has stopped (a problem, or the operator)
+            self.beacon_var.set(False)  # release the button
+            self.beacon_off("repeating beacon stopped: the station is not running")  # nothing can be sent
+            return  # done
+        every = int(self.settings["beacon_every_min"])  # minutes between rounds
+        stop_after = int(self.settings["beacon_autostop_min"])  # minutes without the operator before it stops itself (0 = never)
+        idle = time.monotonic() - self.last_input  # how long since a key or the mouse was used
+        if stop_after and idle >= stop_after * 60:  # nobody has been at the station for too long
+            self.beacon_var.set(False)  # release the button
+            self.beacon_off(f"repeating beacon stopped: no keyboard or mouse use for {stop_after} minutes")  # and stop, saying why
+            self.show_status("BEACON STOPPED  -  nobody at the station", "dark orange")  # on the band too
+            return  # done
+        note = self.beacon_note  # what the station thread says
+        if note == "waiting":  # idle and waiting for the next round
+            left = max(0, int(self.beacon_due - time.monotonic()))  # seconds to go
+            note = f"next beacon in {left // 60}:{left % 60:02d}"  # as minutes and seconds
+        self.beacon_label.configure(text=f"every {every} min: {note}")  # show it
+
+    # ---- the station's own thread asks here what the window wants ----
+
+    def tick(self, station, now):  # called by the live loop once every tenth of a second, in the station's own thread
+        with self.actions_lock:  # take the waiting requests
+            waiting, self.actions = self.actions, []  # all of them
+        left = [action for action in waiting if not action(station)]  # do each; keep any that cannot be done yet
+        with self.actions_lock:  # put back the ones still waiting
+            self.actions = left + self.actions  # ahead of any added meanwhile
+        if not self.beacon_wanted:  # the repeating beacon is off
+            return  # nothing more to do
+        every_s = 60.0 * int(self.settings["beacon_every_min"])  # seconds between rounds
+        clock = time.monotonic()  # the clock the due time is kept on
+        in_contact = station.state in LOCKED or station.role == "caller" or (station.role == "answerer" and station.pending is not None)  # a contact under way, a directed call, or an answer waiting to be confirmed
+        if in_contact:  # busy with another station
+            self.beacon_due = clock + every_s  # the interval starts again once the contact is over
+            self.beacon_note = "paused during the contact"  # say so
+        elif station.role == "beaconer":  # a beacon round is under way
+            self.beacon_note = "beaconing now, listening for answers"  # say so
+        elif station.state == "IDLE" and station.pending is None and not station.broadcasts and clock >= self.beacon_due:  # free, and the round is due
+            station.beacon_once()  # one beacon, with its reply window, then back to listening
+            self.beacon_due = clock + every_s  # the next one
+            self.beacon_note = "beaconing now, listening for answers"  # say so
+        else:  # waiting for the next round
+            self.beacon_note = "waiting"  # the window works out the time left
+
+    def ask_station(self, action, words):  # hand a request to the station's own thread
+        with self.actions_lock:  # one at a time
+            self.actions.append(action)  # the station thread does it at its next look
+        if words:  # something to tell the operator
+            self.say(words)  # tell them
+
+    # ---- operating ----
+
+    def in_contact(self):  # is a contact under way?
+        station = self.station  # the running station, if any
+        return station is not None and station.state in LOCKED  # locked, or trying to keep the lock
+
+    def autostart(self):  # the panel has just opened
+        mode = self.settings["start_mode"]  # what to do on opening
+        if mode == "off":  # nothing
+            self.show_status("OFF  -  press F2 to listen", "plain")  # say how to start
+            return  # done
+        if self.missing_setup(mode):  # the settings are not filled in yet
+            self.awaiting_setup = True  # start once they are saved
+            self.show_status("SETTINGS NEEDED  -  fill them in to start", "dark orange")  # say so
+            messagebox.showinfo("Kestrel", "Welcome to Kestrel.\n\nEnter your callsign, grid locator, radio and sound devices in Settings. The panel starts listening as soon as you save them.", parent=self.root)  # explain
+            self.settings_window(0)  # open Settings
+            return  # wait for the save
+        self.set_mode(mode)  # start
+
+    def missing_setup(self, mode):  # what a mode needs that has not been set
+        """Return True if `mode` cannot start because the callsign, grid or receive audio device has not been set."""
+        if not self.settings["audio_in"]:  # every mode needs the receive audio
+            return True  # missing
+        return mode == "listen" and not (self.settings["call"] and self.settings["grid"] and self.settings["audio_out"])  # listening (which may transmit) needs a callsign, a locator and the transmit audio too
+
+    def set_mode(self, mode):  # Listen, Monitor or Off was chosen
+        self.mode_var.set(mode)  # show the choice on the buttons and in the menu
+        if mode == self.mode and (mode == "off" or (self.worker is not None and self.worker.is_alive())):  # already doing that
+            return  # nothing to change
+        if self.in_contact() and not messagebox.askyesno("Kestrel", f"A contact with {self.station.partner} is in progress. Stop it without closing it properly?", parent=self.root):  # do not drop a contact by accident
+            self.mode_var.set(self.mode)  # put the buttons back
+            return  # leave it running
+        if mode != "listen" and self.beacon_wanted:  # the repeating beacon needs a listening station
+            self.beacon_var.set(False)  # release its button
+            self.beacon_off("repeating beacon stopped")  # and stop it
+        if self.worker is not None and self.worker.is_alive():  # something is running
+            self.next_mode = mode  # start the new mode once it has stopped
+            self.stop.set()  # ask it to stop
+            self.root.after(100, self._when_stopped)  # and watch for that
+        else:  # nothing is running
+            self._begin(mode)  # start straight away
+
+    def _when_stopped(self):  # waiting for the running mode to stop before starting another
+        if self.worker is not None and self.worker.is_alive():  # not yet
+            self.root.after(100, self._when_stopped)  # look again shortly
+            return  # wait
+        mode, self.next_mode = self.next_mode, None  # the mode to start
+        if mode is not None:  # there is one
+            self._begin(mode)  # start it
+
+    def _begin(self, mode):  # start a mode, with nothing else running
+        self.mode = mode  # what is running now
+        self.mode_var.set(mode)  # show it
+        if mode == "off":  # nothing to run
+            self.show_status("OFF  -  not receiving or transmitting", "plain")  # say so
+            return  # done
+        if self.missing_setup(mode):  # something is not set
+            self.mode = "off"  # cannot start
+            self.mode_var.set("off")  # show it
+            messagebox.showinfo("Kestrel", "Enter your callsign, grid locator and sound devices first, under Settings.", parent=self.root)  # say so
+            self.awaiting_setup = True  # start once they are saved
+            self.settings_window(0)  # and open the window
+            return  # nothing started
+        try:  # the chosen sound devices may have gone away
+            job = self.prepare()  # everything the working thread needs
+        except ValueError as problem:  # a device is not connected
+            self.mode = "off"  # cannot start
+            self.mode_var.set("off")  # show it
+            messagebox.showerror("Kestrel", f"{problem}. Choose the sound devices under Settings > Audio.", parent=self.root)  # say which, and where to fix it
+            return  # nothing started
+        self.worker = threading.Thread(target=self.run, args=(mode, job), daemon=True)  # the working thread, with everything it needs
+        self.worker.start()  # go
+
+    def ensure_listening(self, why):  # a request needs a station that can transmit
+        """Make sure Listen is running (switching to it if needed) and return True; False if it cannot be started."""
+        if self.mode == "listen" and self.next_mode is None:  # already listening
+            return True  # fine
+        if self.missing_setup("listen"):  # cannot transmit yet
+            messagebox.showinfo("Kestrel", "Enter your callsign, grid locator and sound devices first, under Settings.", parent=self.root)  # say so
+            self.settings_window(0)  # open the window
+            return False  # nothing started
+        self.say(f"switching to Listen to {why}")  # explain
+        self.set_mode("listen")  # switch
+        return self.mode_var.get() == "listen"  # unless the operator backed out
+
+    def beacon_key(self):  # F5: the same as pressing the beacon button
+        self.beacon_var.set(not self.beacon_var.get())  # push it in or out
+        self.beacon_toggled()  # and act on it
+
+    def beacon_toggled(self):  # the beacon button was pushed in or out
+        if not self.beacon_var.get():  # pushed out
+            self.beacon_off("repeating beacon stopped by the operator")  # stop
+            return  # done
+        if not self.ensure_listening("beacon"):  # the beacon needs a listening station
+            self.beacon_var.set(False)  # release the button
+            return  # nothing started
+        every = max(BEACON_MIN, min(BEACON_MAX, int(self.settings["beacon_every_min"])))  # the interval, kept within its limits
+        self.settings["beacon_every_min"] = every  # and stored that way
+        self.beacon_due = time.monotonic()  # the first round goes as soon as the station is free
+        self.beacon_note = "starting"  # until the station thread takes over
+        self.last_input = time.monotonic()  # the operator is here now
+        self.beacon_wanted = True  # on
+        stop_after = int(self.settings["beacon_autostop_min"])  # the automatic stop
+        self.say(f"repeating beacon on: every {every} minutes" + (f", stopping by itself after {stop_after} minutes with no keyboard or mouse use" if stop_after else ""))  # confirm
+        self.logbook.write("run", station=self.settings["call"], text=f"repeating beacon on, every {every} min", dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
+
+    def beacon_off(self, words):  # stop the repeating beacon (a round already under way finishes)
+        if self.beacon_wanted:  # it was on
+            self.beacon_wanted = False  # off
+            self.say(words)  # say why
+            self.logbook.write("run", station=self.settings["call"], text=words, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
+        self.beacon_note = ""  # nothing to show
+        self.beacon_label.configure(text="off")  # beside the button
+
+    def call_to(self):  # call the station named in the To box
+        target = self.to.get().strip().upper()  # who to call
+        if not target:  # nobody
+            messagebox.showinfo("Kestrel", "Type the callsign to call in the To box first (Ctrl+L).", parent=self.root)  # say so
+            return  # nothing to do
+        if target == self.settings["call"].strip().upper():  # this station's own callsign
+            messagebox.showinfo("Kestrel", f"{target} is this station's own callsign.\n\nPut the callsign of the station you want to reach in the To box. Only a station using exactly that callsign will answer.", parent=self.root)  # say so, and what to do
+            return  # nothing to do
+        if not self.ensure_listening(f"call {target}"):  # a call needs a listening station
+            return  # nothing started
+
+        def call(station):  # done in the station's own thread
+            if station.state != "IDLE" or station.pending is not None or station.role != "answerer":  # busy
+                return False  # try again shortly
+            station.call_once(target)  # call, then go back to listening
+            return True  # done
+
+        self.ask_station(call, f"calling {target} as soon as the station is free" if self.in_contact() else "")  # hand it over
+
+    def end_contact(self):  # the End contact button
+        station = self.station  # the station running at this moment, if any
+        if station is None or station.state not in LOCKED:  # there is no contact to end
+            self.say("no contact in progress")  # say so
+            return  # nothing to do
+        station.end()  # close once any traffic under way is finished
+        self.say("ending the contact: closing identification will be sent when the current exchange is done")  # confirm
+
+    def queue_message(self):  # add the typed message to the list to send
+        text = self.message.get().strip()  # what was typed
+        if text and self.queue_text(text, self.to.get().strip().upper()):  # it was accepted
+            self.message.delete(0, "end")  # clear the box
+
+    def queue_text(self, text, to):  # queue a message for a station (or for whoever the partner is)
+        """Queue `text` for `to` (a callsign, or "" for the partner); return True if it was accepted."""
+        if to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
+            messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.", parent=self.root)  # say so, and what to do
+            return False  # refused
+        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", text, "waiting"))  # show it in the list
+        self.to_send.yview_moveto(1.0)  # keep the newest row in view
+        station = self.station  # the station running at this moment, if any
+        if station is not None:  # one is running
+            station.queue(text, to=to or None)  # hand it the message now; it goes when the right station is the partner
+            self.say(f"queued{' for ' + to if to else ''}: {text}")  # confirm
+        else:  # nothing is running
+            self.outbox.append((text, to))  # keep it for the next time Listen runs
+            self.say(f"queued for the next contact{' with ' + to if to else ''}: {text}")  # confirm
+        self.save_outbox()  # a waiting message is kept even if the panel is closed
+        return True  # accepted
+
+    def broadcast_message(self):  # send the typed message to every station listening
+        text = self.message.get().strip()  # what was typed
+        if not text:  # nothing was
+            messagebox.showinfo("Kestrel", "Type the message to broadcast first (Ctrl+M).", parent=self.root)  # say so
+            return  # nothing to do
+        if self.broadcast_text(text):  # it was sent on its way
+            self.message.delete(0, "end")  # clear the box
+
+    def broadcast_text(self, text):  # send a message to every station listening
+        """Broadcast `text` to ALL after the operator confirms; return True if it was sent on its way."""
+        if not messagebox.askokcancel("Kestrel", "This will TRANSMIT the message to all stations at the slowest level, with no acknowledgment.\nCheck on the scope that the frequency is clear. Continue?", parent=self.root):  # a last check before transmitting
+            return False  # the operator backed out
+        if not self.ensure_listening("broadcast"):  # a broadcast needs a station that can transmit
+            return False  # nothing started
+        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), "ALL", text, "broadcast when idle"))  # show it in the list
+        self.to_send.yview_moveto(1.0)  # keep the newest row in view
+        self.ask_station(lambda station: station.broadcast(text) or True, f"broadcast queued: {text}")  # the station sends it as soon as no contact is in progress
+        return True  # on its way
+
+    # ---- quick messages and telemetry ----
+
+    def telemetry_text(self, prefix=""):  # what this station hears, as a telemetry message
+        heard = telemetry.summarize(self.heardlog.snapshot(), time.time())  # the last half hour
+        return telemetry.build(self.settings["grid"], self.power_w(), heard, prefix=prefix)  # the message
+
+    def expand(self, template):  # fill in a quick message
+        """Return `template` with {call}, {name}, {grid}, {rig}, {power}, {to} and {telemetry} filled in."""
+        power = self.power_w()  # the transmit power, if known
+        values = {"call": self.settings["call"], "name": self.settings["name"], "grid": self.settings["grid"], "rig": self.rig_name(),  # (continued)
+                  "power": f"{power:.0f}" if power is not None else "?", "to": self.to.get().strip().upper(), "telemetry": ""}  # the values
+        if "{telemetry}" in template:  # telemetry wanted
+            values["telemetry"] = self.telemetry_text()  # built now, from the latest receptions
+        try:  # the template may have a mistake in it
+            text = template.format(**values)  # filled in
+        except (KeyError, ValueError, IndexError):  # an unknown {name}, or a stray brace
+            text = template  # sent as written
+        return " ".join(text.split())[:telemetry.MAX_CHARS]  # tidy spacing, and no longer than one message
+
+    def refresh_quick(self):  # (re)fill the quick-message menu
+        self.quick_menu.delete(0, "end")  # empty it
+        for number in (1, 2, 3):  # each quick message
+            preview = self.settings[f"quick{number}"]  # its template
+            self.quick_menu.add_command(label=f"{number}:  {preview}", underline=0, accelerator=f"Ctrl+{number}", command=lambda n=number: self.use_quick(n))  # put it in the Message box
+        self.quick_menu.add_separator()  # a divider
+        self.quick_menu.add_command(label="Send telemetry to the station in To", accelerator="Ctrl+4", command=self.send_telemetry)  # what this station hears
+        self.quick_menu.add_command(label="Broadcast telemetry to ALL", accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
+        self.quick_menu.add_separator()  # a divider
+        self.quick_menu.add_command(label="Change the quick messages...", command=lambda: self.settings_window(5))  # Settings, at the quick-message tab
+
+    def use_quick(self, number):  # put a quick message in the Message box
+        self.message.delete(0, "end")  # clear the box
+        self.message.insert(0, self.expand(self.settings[f"quick{number}"]))  # the filled-in message
+        self.message.focus_set()  # ready for Enter (queue) or F11 (broadcast)
+        self.message.icursor("end")  # with the cursor at the end, for any change
+
+    def send_telemetry(self):  # send telemetry to the station in the To box (or to the partner)
+        self.queue_text(self.telemetry_text(), self.to.get().strip().upper())  # queued like any other message
+
+    def broadcast_telemetry(self):  # send telemetry to everyone
+        self.broadcast_text(self.telemetry_text())  # broadcast like any other message
+
+    def note_telemetry(self, sender, text):  # a received message may be telemetry
+        info = telemetry.parse(text)  # read it
+        if info is None:  # not telemetry
+            return  # nothing to do
+        self.telemetry_in.append((time.time(), sender, info))  # keep it
+        self.logbook.write("telemetry", direction="RX", station=self.settings["call"], **{"from": sender}, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
+        self.say(f"telemetry from {sender}: hears {info['count']} station(s); see Stations > Telemetry received (F9)")  # tell the operator
+
+    # ---- extra windows ----
+
+    def table(self, parent, columns, height=14):  # a list with headings that sort when clicked
+        frame = ttk.Frame(parent)  # holds the list and its scroll bar
+        frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))  # fill the window
+        tree = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=height)  # the list
+        for name, heading, width in columns:  # each column
+            tree.heading(name, text=heading, anchor="w", command=lambda n=name: self.sort_table(tree, n))  # a click sorts by it
+            tree.column(name, width=width, anchor="w", stretch=(name in ("list", "detail")))  # its width
+        tree.pack(side="left", fill="both", expand=True)  # place it
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)  # a scroll bar
+        scroll.pack(side="right", fill="y")  # beside it
+        tree.configure(yscrollcommand=scroll.set)  # tie the two together
+        return tree  # for filling
+
+    def sort_table(self, tree, column):  # sort a list by one column (again to reverse)
+        rows = [(tree.set(row, column), row) for row in tree.get_children("")]  # the column's values
+        backwards = getattr(tree, "_sorted", None) == column  # the same column twice: reverse
+        tree._sorted = None if backwards else column  # remember for next time
+
+        def key(item):  # numbers as numbers, words as words
+            text = item[0].replace(" dB", "").replace("L", "").replace("W", "").strip()  # drop units
+            try:  # a number?
+                return (0, float(text), "")  # sorts numerically
+            except ValueError:  # words
+                return (1, 0.0, item[0])  # sorts alphabetically
+
+        for index, (_, row) in enumerate(sorted(rows, key=key, reverse=backwards)):  # in the new order
+            tree.move(row, "", index)  # move each row
+
+    def heard_window(self):  # Stations > Stations heard (last 48 hours)
+        top = self.window("heard", "Kestrel - stations heard in the last 48 hours")  # the window
+        every = tk.BooleanVar(value=False)  # show each reception, or one row per station
+        holder = ttk.Frame(top)  # holds the list, which is rebuilt when the choice changes
+        holder.pack(fill="both", expand=True)  # fill the window
+        tree_box = {}  # the list now shown
+
+        def fill():  # (re)build the list
+            for child in holder.winfo_children():  # the old list
+                child.destroy()  # goes
+            self.heardlog.prune()  # forget anything older than 48 hours
+            if every.get():  # every reception
+                tree = self.table(holder, (("time", "Time (UTC)", 120), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("khz", "Frequency kHz", 100)))  # the columns
+                for record in reversed(self.heardlog.snapshot()):  # newest first
+                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", f"L{record.get('level', 0)}", record.get("kind", ""), f"{record.get('dial_khz', 0):.1f}"))  # one row
+            else:  # one row per station
+                tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("khz", "Frequency kHz", 100)))  # the columns
+                for row in self.heardlog.summary():  # most recent first
+                    tree.insert("", "end", values=(row["call"], row["grid"], utc(row["last"]), utc(row["first"]), row["count"], f"{row['last_snr']:+.0f} dB", f"{row['best_snr']:+.0f} dB", f"L{row['best_level']}", f"{row['dial_khz']:.1f}"))  # one row
+            tree.bind("<Double-1>", lambda event: use())  # a double-click puts the callsign in To
+            tree.bind("<Return>", lambda event: use())  # so does Enter
+            tree_box["tree"] = tree  # remember it
+            children = tree.get_children()  # its rows
+            if children:  # there are some
+                tree.focus(children[0])  # the first row has the keyboard
+                tree.selection_set(children[0])  # and is selected
+            tree.focus_set()  # the list has the keyboard
+
+        def chosen():  # the callsign of the selected row
+            tree = tree_box["tree"]  # the list
+            rows = tree.selection()  # the selected rows
+            return tree.set(rows[0], "call") if rows else ""  # its callsign
+
+        def use():  # put the selected callsign in To
+            call = chosen()  # which one
+            if call:  # one is selected
+                self.to.set(call)  # into the To box
+                top.destroy()  # close the window
+                self.message.focus_set()  # ready to type a message
+
+        def keep():  # save the selected callsign as a contact
+            call = chosen()  # which one
+            if call:  # one is selected
+                grid = next((row["grid"] for row in self.heardlog.summary() if row["call"] == call), "")  # its grid, if known
+                self.contacts[call] = {"grid": grid}  # remember it
+                write_json(CONTACTS_FILE, self.contacts)  # save the list
+                if call in self.heard_rows:  # on the main list
+                    self.stations.set(self.heard_rows[call], "saved", "*")  # mark it
+                else:  # not yet
+                    self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, grid, "", "", "saved contact"))  # add it
+                self.refresh_to()  # offer it in the To box
+                self.say(f"{call} saved as a contact")  # confirm
+
+        buttons = ttk.Frame(top)  # the row of buttons
+        buttons.pack(fill="x", padx=8, pady=(0, 8))  # at the bottom
+        ttk.Checkbutton(buttons, text="Show every reception", underline=5, variable=every, command=fill).pack(side="left")  # one row per station, or every reception
+        ttk.Button(buttons, text="Put in To", underline=0, command=use).pack(side="left", padx=(12, 4))  # use the selected callsign
+        ttk.Button(buttons, text="Save as contact", underline=0, command=keep).pack(side="left", padx=4)  # keep it
+        ttk.Button(buttons, text="Refresh", underline=0, command=fill).pack(side="left", padx=4)  # bring the list up to date
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
+        top.bind("<Alt-e>", lambda event: (every.set(not every.get()), fill()))  # Alt+E: every reception
+        top.bind("<Alt-p>", lambda event: use())  # Alt+P: put in To
+        top.bind("<Alt-s>", lambda event: keep())  # Alt+S: save as contact
+        top.bind("<Alt-r>", lambda event: fill())  # Alt+R: refresh
+        fill()  # fill it the first time
+
+    def telemetry_window(self):  # Stations > Telemetry received
+        top = self.window("telemetry", "Kestrel - telemetry: who hears whom")  # the window
+        ttk.Label(top, text="Each station's telemetry lists the stations it heard in the half hour before it was sent. The station that hears the most stations, and hears them best,\nis the natural choice for net control. This station's own figures, from the last half hour, are on the first row. Click a heading to sort.", justify="left").pack(anchor="w", padx=8, pady=(8, 0))  # what it shows
+        tree = self.table(top, (("call", "Station", 90), ("when", "Received (UTC)", 120), ("grid", "Grid", 60), ("power", "Power", 60), ("count", "Hears", 50), ("median", "Median signal", 100), ("list", "Stations it hears (signal, fastest level)", 420)))  # the columns
+        rows = [(time.time(), (self.settings["call"] or "this station") + " (now)", telemetry.parse(self.telemetry_text()))]  # this station's own figures first
+        rows += sorted(self.telemetry_in, key=lambda item: telemetry.score(item[2]), reverse=True)  # then what others have sent, best first
+        latest = {}  # keep only the newest telemetry from each station
+        for when, call, info in rows:  # each message
+            if call not in latest or when > latest[call][0]:  # the newest from this station
+                latest[call] = (when, info)  # keep it
+        for call, (when, info) in latest.items():  # one row each
+            count, median = telemetry.score(info)  # the comparison figures
+            heard = ", ".join(f"{name} {snr:+d} L{level}" for name, snr, level in info["stations"])  # the stations it hears
+            tree.insert("", "end", values=(call, utc(when), info["grid"], f"{info['power_w']:.0f} W" if info["power_w"] is not None else "?", count, f"{median:+.0f} dB" if info["stations"] else "", heard))  # one row
+        tree.bind("<Double-1>", lambda event: use())  # a double-click puts the callsign in To
+        tree.bind("<Return>", lambda event: use())  # so does Enter
+
+        def use():  # put the selected station in To
+            rows = tree.selection()  # the selected row
+            if rows and not tree.set(rows[0], "call").endswith("(now)"):  # another station
+                self.to.set(tree.set(rows[0], "call"))  # into the To box
+                top.destroy()  # close the window
+
+        children = tree.get_children()  # its rows
+        if children:  # there are some
+            tree.focus(children[0])  # the first row has the keyboard
+            tree.selection_set(children[0])  # and is selected
+        tree.focus_set()  # the list has the keyboard
+        buttons = ttk.Frame(top)  # the row of buttons
+        buttons.pack(fill="x", padx=8, pady=(0, 8))  # at the bottom
+        ttk.Button(buttons, text="Send our telemetry to To", command=self.send_telemetry).pack(side="left")  # send this station's own
+        ttk.Button(buttons, text="Broadcast our telemetry", command=self.broadcast_telemetry).pack(side="left", padx=4)  # to everyone
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
+
+    def shortcuts_window(self):  # Help > Keyboard shortcuts
+        top = self.window("keys", "Kestrel - keyboard shortcuts")  # the window
+        tree = self.table(top, (("key", "Key", 170), ("detail", "Does", 430)), height=len(SHORTCUTS))  # the list
+        for key, job in SHORTCUTS:  # each shortcut
+            tree.insert("", "end", values=(key, job))  # one row
+        tree.focus_set()  # the list has the keyboard
+        ttk.Button(top, text="Close", command=top.destroy).pack(pady=(0, 8))  # close the window
+
+    def focus_stations(self):  # Ctrl+G: the stations list on the main window
+        self.stations.focus_set()  # the list has the keyboard
+        children = self.stations.get_children()  # its rows
+        if children and not self.stations.focus():  # nothing has the keyboard's attention yet
+            self.stations.focus(children[0])  # the first row
+            self.stations.selection_set(children[0])  # selected
+
+    # ---- the stations list and the outbox ----
 
     def refresh_to(self):  # (re)fill the To box's list
         self.to["values"] = sorted(self.contacts) + [call for call in self.heard_rows if call not in self.contacts]  # saved contacts first, then the other stations heard
 
-    def pick_station(self):  # a callsign in the stations list was double-clicked
+    def pick_station(self):  # a callsign in the stations list was chosen
         for row in self.stations.selection()[:1]:  # the row chosen
             self.to.set(self.stations.set(row, "who"))  # its callsign goes into the To box
+            self.message.focus_set()  # ready to type a message
 
     def save_contact(self):  # keep the selected callsigns as contacts
         for row in self.stations.selection():  # each selected row
@@ -467,10 +1384,8 @@ class Panel:  # the control panel window
 
     # ---- settings ----
 
-    def rig_information(self):  # the Settings > Rig Information dialog
-        dialog = tk.Toplevel(self.root)  # a window of its own
-        dialog.title("Rig Information")  # its title
-        dialog.transient(self.root)  # it belongs to the main window
+    def settings_window(self, tab=0):  # the Settings window, open at one of its tabs
+        dialog = self.window("settings", "Kestrel - Settings")  # a window of its own
         program = self.settings["rigctld"] or find_rigctld()  # the rig control program: the one chosen before, else one found on this computer
         models = [f"{number}  {name}" for number, name in list_models(program)] if program else []  # every radio type it knows, as "number  name"
         try:  # the serial port list needs the pyserial package
@@ -479,28 +1394,41 @@ class Panel:  # the control panel window
         except ImportError:  # pyserial is not installed
             ports = []  # the operator can still type a port name
         boxes = {}  # the controls, by setting name
+        book = ttk.Notebook(dialog)  # the tabs
+        book.pack(fill="both", expand=True, padx=10, pady=(10, 4))  # fill the window
+        book.enable_traversal()  # Ctrl+Tab moves between the tabs
 
-        def group(title, row):  # a titled box for one group of settings
-            frame = ttk.LabelFrame(dialog, text=title)  # the box
-            frame.grid(row=row, column=0, sticky="ew", padx=10, pady=6)  # place it
+        def page(title):  # one tab
+            frame = ttk.Frame(book, padding=8)  # its contents
+            book.add(frame, text=title, underline=0)  # add it (Alt and its first letter opens it)
             return frame  # for its rows
 
-        def field(frame, row, name, label, choices=None, editable=False, width=30):  # one labelled setting
+        def field(frame, row, name, label, choices=None, editable=False, width=30, names=None):  # one labelled setting
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=3)  # the label
+            value = str(self.settings[name])  # the present value, as text
+            if names is not None:  # a choice shown in words
+                choices, value = list(names.values()), names.get(self.settings[name], list(names.values())[0])  # the words, and the present one
             if choices is None:  # a text box
                 box = ttk.Entry(frame, width=width)  # the box
-                box.insert(0, self.settings[name])  # its present value
+                box.insert(0, value)  # its present value
             else:  # a drop-down list
                 box = ttk.Combobox(frame, state="normal" if editable else "readonly", values=choices, width=width)  # the list (some may also be typed into)
-                box.set(self.settings[name] if (editable or self.settings[name] in choices) and self.settings[name] else (choices[0] if choices else ""))  # the present choice, else the first
+                box.set(value if (editable or value in choices) and value else (choices[0] if choices else ""))  # the present choice, else the first
             box.grid(row=row, column=1, sticky="w", padx=8, pady=3)  # place it
-            boxes[name] = box  # keep it
+            boxes[name] = (box, names)  # keep it, with its words if any
             return box  # for any extra wiring
 
-        station = group("Station", 0)  # who and where
+        def note(frame, row, words):  # a line of explanation
+            ttk.Label(frame, text=words, font=("Segoe UI", 8), justify="left").grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))  # in small letters
+
+        station = page("Station")  # who and where
         field(station, 0, "call", "Callsign", width=14)  # callsign
         field(station, 1, "grid", "Grid locator", width=10)  # grid locator
-        radio = group("Radio", 1)  # the radio and how the computer reaches it
+        field(station, 2, "name", "Your name (for quick messages)", width=20)  # the operator's name
+        field(station, 3, "rig_text", "Rig description (for quick messages and the log)", width=30)  # the radio and antenna, as the operator wants them described
+        field(station, 4, "max_power_w", "Radio's full power, watts", width=8)  # to turn the radio's power setting into watts
+        note(station, 5, "The power shown and logged is read from the radio through rig control, when the radio and Hamlib allow it.")  # where the power comes from
+        radio = page("Radio")  # the radio and how the computer reaches it
         rig_box = field(radio, 0, "rig_model", "Rig type", [NO_RIG] + models, editable=True, width=44)  # the radio type, from the rig control program's own list
         if not self.settings["rig_model"]:  # none chosen yet
             rig_box.set(NO_RIG)  # start at "no rig control"
@@ -508,15 +1436,9 @@ class Panel:  # the control panel window
         field(radio, 1, "cat_port", "CAT serial port", ports, editable=True, width=14)  # the serial port that carries CAT control
         field(radio, 2, "cat_baud", "CAT speed (baud)", ["4800", "9600", "19200", "38400", "57600", "115200"], width=14)  # its speed
         field(radio, 3, "cat_handshake", "CAT handshake", ["none", "hardware"], width=14)  # RTS/CTS handshaking, for radios that want it
-        ptt_box = field(radio, 4, "ptt", "Key the transmitter (PTT) by", list(PTT_NAMES.values()), width=30)  # how the transmitter is keyed
-        ptt_box.set(PTT_NAMES.get(self.settings["ptt"], PTT_NAMES["none"]))  # the present method, in plain words
+        field(radio, 4, "ptt", "Key the transmitter (PTT) by", names=PTT_NAMES, width=30)  # how the transmitter is keyed
         field(radio, 5, "port", "PTT serial port (for RTS or DTR)", ports, editable=True, width=14)  # the port whose RTS or DTR line keys the radio
-        audio = group("Audio", 2)  # the sound devices and level
-        field(audio, 0, "audio_in", "Audio from radio", device_choices("input"), width=52)  # the receive audio device
-        field(audio, 1, "audio_out", "Audio to radio", device_choices("output"), width=52)  # the transmit audio device
-        field(audio, 2, "gain", "Transmit audio level (0 to 1)", width=8)  # how loud the transmit audio is
-        extra = group("Rig control program", 3)  # where rigctld is, or one already running
-        path_box = field(extra, 0, "rigctld", "rigctld program", width=52)  # the rig control program's file
+        path_box = field(radio, 6, "rigctld", "rigctld program", width=52)  # the rig control program's file
         if not self.settings["rigctld"] and program:  # none chosen, but one was found
             path_box.insert(0, program)  # offer it
 
@@ -526,31 +1448,94 @@ class Panel:  # the control panel window
                 path_box.delete(0, "end")  # clear the box
                 path_box.insert(0, chosen)  # show the choice
 
-        ttk.Button(extra, text="Browse...", command=browse).grid(row=0, column=2, padx=(0, 8))  # find the program by hand
-        field(extra, 1, "rig", "or one already running at (host:port)", width=22)  # an outside rigctld, used only when no rig type is chosen
+        ttk.Button(radio, text="Browse...", command=browse).grid(row=6, column=2, padx=(0, 8))  # find the program by hand
+        field(radio, 7, "rig", "or one already running at (host:port)", width=22)  # an outside rigctld, used only when no rig type is chosen
+        audio = page("Audio")  # the sound devices and level
+        field(audio, 0, "audio_in", "Audio from radio", device_choices("input"), width=52)  # the receive audio device
+        field(audio, 1, "audio_out", "Audio to radio", device_choices("output"), width=52)  # the transmit audio device
+        note(audio, 2, "Set the levels with the two sliders beside the meters on the main window (Ctrl+J).\nThe receive slider changes Windows' recording level for the device; the transmit slider sets the drive to the radio.")  # where the levels are
+        operating = page("Operating")  # what the panel does
+        field(operating, 0, "start_mode", "When the panel opens", names=START_NAMES, width=30)  # listen, monitor or nothing
+        field(operating, 1, "beacon_every_min", f"Repeating beacon: minutes between beacons ({BEACON_MIN} to {BEACON_MAX})", width=6)  # the interval
+        field(operating, 2, "beacon_autostop_min", f"Stop the repeating beacon after this many minutes with\nno keyboard or mouse use ({AUTOSTOP_MIN} to {AUTOSTOP_MAX}; 0 = never)", width=6)  # the automatic stop
+        note(operating, 3, "The repeating beacon starts only when you press its button (F5). Each round is one beacon and its reply window;\nit pauses during a contact and the interval starts again when the contact ends. Press the button again to stop.")  # how it works
+        logging = page("Logging")  # the logbook
+        field(logging, 0, "log_level", "Level of detail", names=LOG_NAMES, width=56)  # basic, advanced or verbose
+        note(logging, 1, f"Logs are kept in {LOG_FOLDER}:\none CSV file per UTC day (opens in a spreadsheet), and an ADIF file of completed contacts for logging programs.")  # where
+        ttk.Button(logging, text="Open the log folder", command=self.open_logs).grid(row=2, column=0, sticky="w", padx=8)  # look at them
+        quick = page("Quick messages")  # the quick messages
+        for number in (1, 2, 3):  # each one
+            field(quick, number - 1, f"quick{number}", f"Quick message {number}", width=60)  # its template
+        note(quick, 3, "These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}\nTelemetry lists the stations heard in the last 30 minutes, strongest first, with their signal and fastest level.")  # the names that fill in
+        looks = page("Appearance")  # the look
+        field(looks, 0, "theme", "Theme", names=THEME_NAMES, width=30)  # system, light or dark
 
         def save():  # the Save button
-            for name, box in boxes.items():  # every setting
-                self.settings[name] = box.get() if name in ("audio_in", "audio_out") else box.get().strip()  # take its value (device names are kept exactly, spaces and all)
-            if self.settings["rig_model"] == NO_RIG:  # no rig control wanted
-                self.settings["rig_model"] = ""  # stored as blank
-            self.settings["ptt"] = next((key for key, words in PTT_NAMES.items() if words == self.settings["ptt"]), "none")  # the keying method back in its short form
+            new = dict(self.settings)  # a copy to fill in
+            for name, (box, names) in boxes.items():  # every setting
+                value = box.get() if name in ("audio_in", "audio_out") else box.get().strip()  # its value (device names are kept exactly, spaces and all)
+                if names is not None:  # shown in words
+                    value = next((key for key, words in names.items() if words == value), self.settings[name])  # back to its short form
+                new[name] = value  # keep it
+            if new["rig_model"] == NO_RIG:  # no rig control wanted
+                new["rig_model"] = ""  # stored as blank
+            try:  # the numbers must be numbers, within their limits
+                every, stop_after, full = int(new["beacon_every_min"]), int(new["beacon_autostop_min"]), float(new["max_power_w"] or 100)  # read them
+            except ValueError:  # not numbers
+                messagebox.showerror("Kestrel", "The beacon minutes and the full power must be numbers.", parent=dialog)  # say so
+                return  # leave the window open
+            if not BEACON_MIN <= every <= BEACON_MAX:  # outside the allowed range
+                messagebox.showerror("Kestrel", f"The repeating beacon can be set to no less than {BEACON_MIN} and no more than {BEACON_MAX} minutes.", parent=dialog)  # say so
+                book.select(3)  # show the tab
+                return  # leave the window open
+            if stop_after and not AUTOSTOP_MIN <= stop_after <= AUTOSTOP_MAX:  # outside its range (0 means never)
+                messagebox.showerror("Kestrel", f"The automatic stop must be between {AUTOSTOP_MIN} and {AUTOSTOP_MAX} minutes, or 0 for never.", parent=dialog)  # say so
+                book.select(3)  # show the tab
+                return  # leave the window open
+            new["beacon_every_min"], new["beacon_autostop_min"], new["max_power_w"] = every, stop_after, f"{full:g}"  # stored as numbers
+            new["call"], new["grid"] = new["call"].upper(), new["grid"][:2].upper() + new["grid"][2:4] + new["grid"][4:].lower()  # callsign in capitals; locator written the usual way
+            restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
+            self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
+            self.logbook.level = new["log_level"]  # the logbook's level of detail
+            if new["theme"] != self.theme_var.get():  # a different look
+                self.set_theme(new["theme"])  # apply it
             self.show_me()  # show the callsign and grid at the top
-            dialog.destroy()  # close the dialog
+            self.refresh_quick()  # the quick messages may have changed
+            self.find_rx_level()  # the receive device may have changed
+            self.logbook.write("settings", station=new["call"], text="settings saved", detail=self.settings_summary())  # the verbose log keeps a record
+            dialog.destroy()  # close the window
+            if self.awaiting_setup and not self.missing_setup(new["start_mode"] if new["start_mode"] != "off" else "monitor"):  # the panel was waiting for these
+                self.awaiting_setup = False  # no longer waiting
+                if new["start_mode"] != "off":  # it should be running
+                    self.set_mode(new["start_mode"])  # start it
+            elif restart and self.mode != "off":  # a running station needs the new settings
+                if self.in_contact():  # but not in the middle of a contact
+                    self.say("the new radio and audio settings take effect when the station next starts (F2)")  # say when
+                else:  # free to restart
+                    self.say("starting again with the new settings")  # say so
+                    mode = self.mode  # the mode to come back to
+                    self.mode = "restart"  # so set_mode does not think nothing has changed
+                    self.set_mode(mode)  # restart
 
         buttons = ttk.Frame(dialog)  # the row of buttons
-        buttons.grid(row=4, column=0, sticky="e", padx=10, pady=8)  # place it at the bottom right
-        ttk.Button(buttons, text="Save", command=save).pack(side="left", padx=4)  # keep the changes
-        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left")  # drop the changes
-        ttk.Label(dialog, text="Changes take effect the next time a frequency is chosen or Monitor, Listen or Beacon is pressed.").grid(row=5, column=0, sticky="w", padx=10, pady=(0, 8))  # when the settings are used
+        buttons.pack(fill="x", padx=10, pady=(4, 10))  # at the bottom
+        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")  # drop the changes
+        ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=4)  # keep the changes
+        dialog.bind("<Return>", lambda event: save())  # Enter saves
+        book.select(min(max(tab, 0), 6))  # open at the tab asked for
+        dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
+
+    def settings_summary(self):  # the settings in use, for the verbose log
+        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "log_level")  # the ones that bear on a transmission
+        return "; ".join(f"{key}={self.settings[key]}" for key in keys)  # as one line
 
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)
         """Return a rigctld address, starting rigctld for the chosen radio if needed; "" when the radio is tuned by hand."""
         if settings["rig_model"] and settings["cat_port"]:  # a radio type and its serial port are chosen
             program = settings["rigctld"] or find_rigctld()  # the rig control program
             if not program:  # there is none
-                raise RuntimeError("the rig control program (rigctld) was not found; choose it under Settings > Rig Information")  # say what to do
+                raise RuntimeError("the rig control program (rigctld) was not found; choose it under Settings > Radio")  # say what to do
             return self.rigs.ensure(program, settings["rig_model"].split()[0], settings["cat_port"], settings["cat_baud"] or 38400, settings["cat_handshake"])  # start it if it is not already running
         return settings["rig"]  # an outside rigctld, or nothing
 
@@ -558,9 +1543,7 @@ class Panel:  # the control panel window
         self.settings["frequency"] = self.frequency.current()  # the frequency now selected
         self.settings["keep_open"] = bool(self.keep_open.get())  # whether contacts are kept open
         self.settings["working"] = self.working.current()  # the working-frequency choice
-        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)  # create local/ if needed
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as handle:  # open the settings file
-            json.dump(self.settings, handle, indent=2)  # save, readably
+        write_json(SETTINGS_FILE, self.settings)  # save, readably
 
     # ---- frequencies ----
 
@@ -568,6 +1551,7 @@ class Panel:  # the control panel window
         self.entries = all_frequencies()  # the presets and the operator's own
         self.frequency["values"] = [describe_frequency(entry) for entry in self.entries]  # one line each
         self.frequency.current(min(max(select, 0), len(self.entries) - 1))  # select the wanted line
+        self.base_khz = self.selected()["dial_khz"]  # the calling frequency, for the station thread and the scope
         self.refresh_working(self.settings["working"])  # and offer the working frequencies that go with it
 
     def refresh_working(self, select=0):  # (re)fill the working-frequency choice for the selected calling frequency
@@ -579,11 +1563,16 @@ class Panel:  # the control panel window
         self.working.current(select if 0 <= select < len(choices) else 0)  # the remembered choice, if it still exists
 
     def selected(self):  # the frequency entry now selected
-        return self.entries[self.frequency.current()]  # by its position in the list
+        return self.entries[max(0, self.frequency.current())]  # by its position in the list
+
+    def step_frequency(self, step):  # Ctrl+Up or Ctrl+Down: the previous or next frequency in the list
+        index = self.frequency.current() + step  # the neighbour
+        if 0 <= index < len(self.entries):  # inside the list
+            self.frequency.current(index)  # select it
+            self.tune()  # and go there
 
     def add_frequency(self):  # ask for a frequency of the operator's own
-        dialog = tk.Toplevel(self.root)  # a small window
-        dialog.title("Add a frequency")  # its title
+        dialog = self.window("add", "Add a frequency")  # a small window
         boxes = []  # the four text boxes
         for row, (label, value) in enumerate((("Band (for example 17 m)", ""), ("Dial frequency in kHz (USB)", ""), ("Radio mode", "PKTUSB"), ("Note", ""))):  # the four things asked for
             ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)  # the label
@@ -591,6 +1580,7 @@ class Panel:  # the control panel window
             box.insert(0, value)  # its starting text
             box.grid(row=row, column=1, padx=6, pady=3)  # place it
             boxes.append(box)  # keep it
+        boxes[0].focus_set()  # start in the first box
 
         def save():  # the Save button
             try:  # the entry may be refused
@@ -602,21 +1592,29 @@ class Panel:  # the control panel window
             self.refresh_frequencies(len(all_frequencies()) - 1)  # show the list with the new entry selected
 
         ttk.Button(dialog, text="Save", command=save).grid(row=4, column=1, sticky="e", padx=6, pady=6)  # the Save button
+        dialog.bind("<Return>", lambda event: save())  # Enter saves
 
     def remove_frequency(self):  # remove the selected frequency, if it is one of the operator's own
         entry = self.selected()  # what is selected
         if entry["builtin"]:  # a preset
-            messagebox.showinfo("Kestrel", "Kestrel's own meeting frequencies cannot be removed.")  # say so
+            messagebox.showinfo("Kestrel", "Kestrel's own meeting frequencies cannot be removed.", parent=self.root)  # say so
             return  # nothing to do
         remove_user_frequency(self.frequency.current() - (len(self.entries) - len(user_frequencies())))  # its position among the operator's own
         self.refresh_frequencies(0)  # show the list again
 
     def tune(self):  # a frequency was chosen from the list: tune the radio to it
-        if self.worker is not None and self.worker.is_alive() and self.station is not None:  # a station is on the air
-            self.say("frequency change ignored while the station is running; press Stop first")  # moving mid-contact would drop the partner
+        if self.in_contact():  # moving mid-contact would drop the partner
+            messagebox.showinfo("Kestrel", "A contact is in progress. End it (F7) before changing frequency.", parent=self.root)  # say so
+            self.frequency.current(self.settings["frequency"])  # put the list back
             return  # leave the radio where it is
         self.refresh_working(0)  # a new calling frequency has its own working frequencies; start at "stay"
+        self.base_khz = self.selected()["dial_khz"]  # the new calling frequency
         self.save_settings()  # remember the choice
+        if self.worker is not None and self.worker.is_alive():  # a station or the monitor is running: start it again on the new frequency (it tunes the radio as it starts)
+            mode = self.mode  # the mode to come back to
+            self.mode = "restart"  # so set_mode does not think nothing has changed
+            self.set_mode(mode)  # restart
+            return  # done
         threading.Thread(target=self._tune_job, args=(dict(self.settings), self.selected()), daemon=True).start()  # tune in the background, so the window does not freeze while the radio answers
 
     def _tune_job(self, settings, entry):  # the background part of tuning
@@ -639,70 +1637,6 @@ class Panel:  # the control panel window
 
     # ---- running ----
 
-    def queue_message(self):  # add the typed message to the list to send
-        text = self.message.get().strip()  # what was typed
-        to = self.to.get().strip().upper()  # who it is for, if anyone in particular
-        if text and to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
-            messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.")  # say so, and what to do
-            return  # leave the message in the box
-        if text:  # something was
-            self.message.delete(0, "end")  # clear the box
-            self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", text, "waiting"))  # show it in the list
-            self.to_send.yview_moveto(1.0)  # keep the newest row in view
-            station = self.station  # the station running at this moment, if any
-            if station is not None:  # one is running
-                station.queue(text, to=to or None)  # hand it the message now; it goes when the right station is the partner
-                self.say(f"queued with the running station{' for ' + to if to else ''}: {text}")  # confirm
-            else:  # nothing is running
-                self.outbox.append((text, to))  # keep it for the next Listen, Beacon or Call
-                self.say(f"queued for the next contact{' with ' + to if to else ''}: {text}")  # confirm
-            self.save_outbox()  # a waiting message is kept even if the panel is closed
-
-    def broadcast_message(self):  # send the typed message to every station listening
-        text = self.message.get().strip()  # what was typed
-        if not text:  # nothing was
-            messagebox.showinfo("Kestrel", "Type the message to broadcast first.")  # say so
-            return  # nothing to do
-        station = self.station  # the station running at this moment, if any
-        if station is None and self.worker is not None and self.worker.is_alive():  # the receive-only monitor is running
-            messagebox.showinfo("Kestrel", "Monitor is receive only. Press Stop, then Broadcast to ALL.")  # say so
-            return  # nothing to do
-        if not messagebox.askokcancel("Kestrel", "This will TRANSMIT the message to all stations at the slowest level, with no acknowledgment.\nCheck on the scope that the frequency is clear. Continue?"):  # a last check before transmitting
-            return  # the operator backed out
-        self.message.delete(0, "end")  # clear the box
-        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), "ALL", text, "broadcast" if station is None else "broadcast when idle"))  # show it in the list
-        self.to_send.yview_moveto(1.0)  # keep the newest row in view
-        if station is not None:  # a station is running
-            station.broadcast(text)  # it goes out as soon as no contact is in progress
-            self.say(f"broadcast queued: {text}")  # confirm
-        else:  # nothing is running: start a short run that only sends the broadcast
-            self.start("broadcast", confirmed=True, text=text)  # go
-
-    def start(self, mode, confirmed=False, text=""):  # one of the main buttons (or a broadcast with nothing running)
-        if self.worker is not None and self.worker.is_alive():  # already running
-            messagebox.showinfo("Kestrel", "Already running. Press Stop first.")  # say so
-            return  # nothing to do
-        if mode != "monitor" and not (self.settings["call"] and self.settings["grid"]):  # transmitting needs a callsign and a locator
-            messagebox.showinfo("Kestrel", "Enter your callsign and grid locator first, under Settings > Rig Information.")  # say so
-            self.rig_information()  # and open the dialog
-            return  # nothing more to do
-        if mode == "call" and not self.to.get().strip():  # a directed call needs somebody to call
-            messagebox.showinfo("Kestrel", "Type the callsign to call in the To box first.")  # say so
-            return  # nothing to do
-        if mode == "call" and self.to.get().strip().upper() == self.settings["call"].strip().upper():  # the To box holds this station's own callsign
-            messagebox.showinfo("Kestrel", f"{self.settings['call']} is this station's own callsign.\n\nPut the callsign of the station you want to reach in the To box. Only a station using exactly that callsign will answer.")  # say so, and what to do
-            return  # nothing to do
-        if mode != "monitor" and not confirmed and not messagebox.askokcancel("Kestrel", "This station will TRANSMIT on the radio's frequency. Continue?"):  # a last check before transmitting
-            return  # the operator backed out
-        try:  # the chosen sound devices may have gone away
-            job = self.prepare()  # everything the working thread needs
-            job["target"], job["broadcast"] = self.to.get().strip().upper(), text  # the station to call, and the broadcast to send, when those are what was asked for
-        except ValueError as problem:  # a device is not connected
-            messagebox.showerror("Kestrel", f"{problem}. Choose the sound devices under Settings > Rig Information.")  # say which, and where to fix it
-            return  # nothing started
-        self.worker = threading.Thread(target=self.run, args=(mode, job), daemon=True)  # the working thread, with everything it needs
-        self.worker.start()  # go
-
     def prepare(self):  # gather what the working thread needs (it must not read the window's controls itself)
         """Save the settings and return a dict of everything a run needs."""
         self.save_settings()  # remember the settings
@@ -716,101 +1650,102 @@ class Panel:  # the control panel window
         job["move_hz"] = offsets[self.working.current() - 1] if self.working.current() > 0 else None  # the one chosen, or none
         return job  # ready for the working thread
 
-    def end_contact(self):  # the End contact button
-        station = self.station  # the station running at this moment, if any
-        if station is None or station.state not in ("LOCKED", "DEGRADED", "REACQUIRE"):  # there is no contact to end
-            self.say("no contact in progress")  # say so
-            return  # nothing to do
-        station.end()  # close once any traffic under way is finished
-        self.say("ending the contact: closing identification will be sent when the current exchange is done")  # confirm
-
-    def stop_station(self):  # the Stop button
-        self.stop.set()  # the working thread sees this within a tenth of a second
-        self.say("stopping...")  # confirm
-
-    def run(self, mode, job):  # the working thread: runs the monitor or the station
+    def run(self, mode, job):  # the working thread: runs the monitor or the listening station
         source = rig = ptt = None  # nothing opened yet
+        poller = None  # the radio-meter thread, once started
+        self.poller_stop.clear()  # the meter thread may run
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
-            self.audio = source  # let the scope show what it hears
-            if mode == "monitor":  # receive only
-                listener = Listener()  # the continuous receiver
-                watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
-                self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
-                self.say("monitoring: receive only, nothing will be transmitted")  # opening line
-                while not self.stop.is_set():  # until Stop
-                    for heard in listener.feed(source.read()):  # every frame that has completed
-                        self.say(describe(heard.result))  # show it
-                        if heard.result.ok:  # it decoded
-                            self.note_heard(heard.result)  # add its sender to the stations heard
-                            watcher.handle(heard.result, time.monotonic())  # and let the watcher collect any broadcast
-                    time.sleep(0.1)  # a tenth of a second between looks
-                return  # done
+            self.audio = source  # let the scope and the meter show what it hears
             with self.rig_lock:  # one user of rig control at a time while it starts and tunes
                 address = self.rig_address(job)  # start or find rig control for the chosen radio
                 if address:  # rig control is set up
                     rig = RigCtl(address)  # connect to rigctld
                     self._tune(rig, job["entry"])  # go to the selected frequency
+            if address:  # the radio can be read
+                poller = threading.Thread(target=self.poll_radio, args=(address,), daemon=True)  # read its power setting and meters
+                poller.start()  # in the background
+            self.logbook.write("run", station=job["call"], text=f"{mode} started", dial_khz=job["entry"]["dial_khz"], rig=self.rig_name())  # the logbook
+            self.logbook.write("settings", station=job["call"], text=f"settings at the start of {mode}", dial_khz=job["entry"]["dial_khz"], detail=self.settings_summary())  # the verbose log keeps a record
+            if mode == "monitor":  # receive only
+                listener = Listener()  # the continuous receiver
+                watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
+                self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
+                self.outbox = job["messages"] + self.outbox  # messages wait for the next time Listen runs
+                self.say("monitoring: receive only, nothing will be transmitted")  # opening line
+                while not self.stop.is_set():  # until stopped
+                    for heard in listener.feed(source.read()):  # every frame that has completed
+                        self.say(describe(heard.result))  # show it
+                        self.log_frame(heard.result)  # the verbose log
+                        if heard.result.ok:  # it decoded
+                            self.note_heard(heard.result)  # add its sender to the stations heard
+                            watcher.handle(heard.result, time.monotonic())  # and let the watcher collect any broadcast
+                    time.sleep(0.1)  # a tenth of a second between looks
+                return  # done
             ptt = Ptt(job["ptt"], job["port"] or None, rig=rig)  # the transmit switch
-            sink = AudioOut(job["out"], float(job["gain"]))  # the playing side
+            self.sink = AudioOut(job["out"], float(job["gain"] or 0.25))  # the playing side, at the slider's level
             station = Station(job["call"], job["grid"], close_when_done=not job["keep_open"])  # the link rules for this station, holding the lock open if asked
             station.move_to_hz = job["move_hz"] if rig is not None else None  # the working frequency to propose once locked (only when the radio can be retuned)
             base_hz = job["entry"]["dial_khz"] * 1000.0  # the calling frequency, in hertz
             retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move the radio to a working frequency and back
-            if mode == "beacon":  # call for anyone
-                station.beacon()  # by beaconing
-            elif mode == "call":  # call one station by name
-                station.call_station(job["target"])  # only that station answers
-            elif mode == "listen":  # wait to be called
-                station.listen()  # answers beacons and directed calls
-            else:  # a broadcast and nothing else
-                station.broadcast(job["broadcast"])  # queue it; the station sends it at once, since it is idle
+            station.listen()  # answers beacons and directed calls
             for text, to in job["messages"]:  # the queued messages
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
-            run_station(station, source, sink, ptt, say=self.say, stay_on=(mode == "listen"), should_stop=(lambda: self.stop.is_set() or (mode == "broadcast" and not station.broadcasts)), retune=retune, on_heard=self.note_heard)  # the live loop (a broadcast-only run ends when the broadcast has gone)
+            run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick)  # the live loop, until stopped
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
-            if mode == "broadcast":  # a broadcast-only run
-                self._advance(job["broadcast"], "sent " + time.strftime("%H:%M"))  # mark the broadcast as sent
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
                 rig.set_frequency(base_hz)  # put the radio back on the calling frequency
                 self.say("radio back on the calling frequency")  # confirm
             self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)")  # the outcome for sent traffic
         except Exception as problem:  # report any failure instead of dying silently
             self.say(f"stopped by a problem: {problem}")  # what went wrong
+            self.mode = "off"  # nothing is running now
+            self.root.after(0, lambda: self.mode_var.set("off"))  # show it (from the window's own thread)
         finally:  # always tidy up
             self.station = None  # no station is running any more, whatever happened
+            self.poller_stop.set()  # stop reading the radio's meters
+            self.tx_active = False  # the transmitter is off
+            self.sink = None  # nothing to transmit with
             if ptt is not None:  # a transmit switch was opened
                 ptt.close()  # make sure the transmitter is off
+            if poller is not None:  # the meter thread was started
+                poller.join(timeout=3)  # let it hang up first
             if rig is not None:  # rig control was opened
                 rig.close()  # hang up
             self.audio = None  # the scope has nothing to show any more
             if source is not None:  # recording was started
                 source.close()  # release the sound device
+            self.logbook.write("run", station=job["call"], text=f"{mode} stopped", dial_khz=job["entry"]["dial_khz"])  # the logbook
             self.say("stopped")  # closing line
 
     def close(self):  # the window is being closed
         self.stop.set()  # stop the station
+        self.beacon_wanted = False  # and the repeating beacon
+        if self.contact is not None:  # a contact was under way
+            self.finish_contact()  # log what there is of it
         self.save_settings()  # remember the settings
         self.save_outbox()  # and the messages still waiting
+        if self.worker is not None:  # a station or the monitor was running
+            self.worker.join(timeout=3)  # give it a moment to unkey and release the sound card
         self.rigs.stop()  # stop the rig control program this panel started
         self.root.destroy()  # close the window
 
 
 def main():  # the script itself
     """Open the panel."""
-    global SETTINGS_FILE  # a named profile keeps its settings in a file of its own
+    global SETTINGS_FILE, PROFILE  # a named profile keeps its settings in a file of its own
     parser = argparse.ArgumentParser(description="Kestrel control panel")  # the command-line reader
     parser.add_argument("--profile", default="", help="a name for a second set of remembered settings, for running one panel per radio")  # optional profile name
-    profile = "".join(c for c in parser.parse_args().profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
-    if profile:  # a profile was named
-        SETTINGS_FILE = os.path.join(ROOT, "local", f"panel_{profile}.json")  # its own settings file
+    PROFILE = "".join(c for c in parser.parse_args().profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
+    if PROFILE:  # a profile was named
+        SETTINGS_FILE = os.path.join(ROOT, "local", f"panel_{PROFILE}.json")  # its own settings file
     root = tk.Tk()  # the window
     Panel(root)  # its contents
-    if profile:  # a profile was named
-        root.title(f"Kestrel - {profile}  -  signal v{SPEC_VERSION}")  # show which panel this is, and the signal version
+    if PROFILE:  # a profile was named
+        root.title(f"Kestrel - {PROFILE}  -  signal v{SIGNAL_VERSION}")  # show which panel this is, and the signal version
     root.mainloop()  # run until closed
 
 

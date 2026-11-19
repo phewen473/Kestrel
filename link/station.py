@@ -33,6 +33,7 @@ from modem import (  # the modem: frames, reports, planner
 from modem.address import clean_call  # tidies a callsign
 from modem.params import (  # frame type numbers and the airtime limit
     AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS, MSG_ID_BITS,  # (continued)
+    SNR_FLOOR_DB,  # (continued)
 )  # end of the import list
 from modem.text import pick_size_class  # which frame size a piece of text needs
 
@@ -135,6 +136,7 @@ class Station:  # the link rules for one station
         self.proposed_move = False  # True for the station that asked for the move (it watches for an idle working frequency)
         self.last_traffic = 0.0  # when a message frame last went either way (or when the pair arrived on the working frequency)
         self.idle_warned = False  # True once the operator has been warned that an idle working frequency is about to be given up
+        self.single = False  # True while a listening station makes one beacon round or one directed call, after which it listens again
 
     # ---- starting up ----
 
@@ -154,6 +156,17 @@ class Station:  # the link rules for one station
         self.role = "caller"  # this station sends directed calls
         self.target = clean_call(target)  # to this callsign
         self.leads = False  # the station that is called keeps the turn in a clash
+
+    def beacon_once(self):  # a listening station calls for a partner once, then listens again
+        """Send one beacon (with its reply window) from a station that is otherwise listening; whatever happens, it goes back to listening afterwards."""
+        self.beacon()  # become the calling station for now
+        self.beacons = BEACON_TRIES - 1  # one beacon only: an unanswered one ends the round
+        self.single = True  # and return to answering once this round or its contact is over
+
+    def call_once(self, target):  # a listening station calls one station by name, then listens again
+        """Call `target` from a station that is otherwise listening; after the contact, or after the calls go unanswered, it listens again."""
+        self.call_station(target)  # become the calling station for now (refuses this station's own callsign)
+        self.single = True  # and return to answering afterwards
 
     def queue(self, text, to=None):  # hand the station a message to send
         """Add a message to the outbox. With `to`, it is sent only when that callsign is the partner."""
@@ -345,6 +358,8 @@ class Station:  # the link rules for one station
         self.proposed_move, self.idle_warned = False, False  # no move has been asked for in the next contact yet
         self.leads, self.calls = self.role == "beaconer", 0  # the beaconing station leads again; no calls outstanding
         self.close_when_done = not self.keep_open  # an earlier end() applied to that contact only
+        if self.single:  # that was a single beacon round or directed call from a listening station
+            self.single, self.role, self.leads, self.target = False, "answerer", False, ""  # listen again
 
     def _release(self, now, why):  # the contact is over
         if self.partner:  # there was a partner
@@ -425,8 +440,18 @@ class Station:  # the link rules for one station
             self._say(now, f"{'broadcast' if result.dest == 'ALL' else 'message'} from {result.origin}: {whole[:40]!r}")  # explain
         return None  # nobody acknowledges these
 
+    @staticmethod  # needs nothing from the station itself
+    def _is_call(result):  # does an answer frame carry a directed call rather than a reply to a beacon?
+        """Return True if the answer's channel report carries no measurement (SNR at the bottom of the scale, fading at its largest): the mark of a directed call (Section 6.11)."""
+        report = result.fields["report"]  # the report the frame carries
+        return report.snr_db <= SNR_FLOOR_DB and not report.fade_index < 1.5  # nothing measured (a missing fading reading arrives as the largest value)
+
     def _on_answer(self, result, now):  # an answer was heard
-        if self.role == "answerer" and self.state == "IDLE" and self.pending is None and result.dest == self.call:  # an answer nobody asked for, addressed to this listening station: a directed call
+        answering_call = self.role == "answerer" and self.pending is None  # a listening station with nothing under way
+        beaconing_call = self.role == "beaconer" and self.pending == "answer" and self._is_call(result)  # or one waiting in its own reply window, called by name instead of answered
+        if self.state == "IDLE" and result.dest == self.call and (answering_call or beaconing_call):  # a directed call to this station
+            if beaconing_call:  # it was in the middle of a beacon round
+                self.candidates, self.role = [], "answerer" if self.single else self.role  # the round is over (a single round from a listening station goes back to listening afterwards)
             self._say(now, f"called by {result.origin}")  # explain
             self.leads = True  # the called station takes the beaconing station's part from here on
             self._lock_with(result, now)  # lock with the caller (the plain confirmation it prepares is replaced below)
@@ -710,7 +735,7 @@ class Station:  # the link rules for one station
         self.last_ident = now  # the call carries this station's callsign
         if self.calls == 1:  # the first call
             self._say(now, f"calling {self.target}")  # explain
-        audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level)  # an answer frame nobody asked for is a directed call
+        audio = build_answer(self.partner, self.call, ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0), self.levels, level=self.tx_level)  # an answer frame nobody asked for, carrying no measurement and asking for L0, is a directed call
         return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
 
     def _beacon(self, now):  # send a beacon
