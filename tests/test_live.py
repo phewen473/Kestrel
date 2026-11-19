@@ -195,3 +195,14 @@ def test_working_frequencies_for_a_calling_frequency():  # the working frequenci
             working = signal_khz(entry["dial_khz"] + offset / 1000.0)  # where its signal sits
             assert working[1] <= calling[0] or working[0] >= calling[1]  # it does not overlap the calling frequency
     assert working_offsets_hz({"band": "17 m", "dial_khz": 18106.0, "builtin": False}) == [2500, -2500]  # an operator's own frequency gets the next channel up and down
+
+
+def test_scope_spectrum_shows_a_tone_where_it_is():  # the scope's spectrum puts a tone at the right place and level
+    import numpy as np  # arrays
+    from live.audio import SCOPE_SAMPLES, scope_spectrum  # the function under test
+    t = np.arange(SCOPE_SAMPLES) / 48000.0  # the sample times at the sound card's rate
+    levels = scope_spectrum(0.5 * np.sin(2 * np.pi * 1500.0 * t), 48000.0, 3000.0, 512)  # a half-scale tone at 1500 Hz
+    peak = int(np.argmax(levels))  # where the display is brightest
+    assert abs(peak * 3000.0 / 511 - 1500.0) < 10.0  # within a few hertz of 1500
+    assert abs(levels[peak] - 20 * np.log10(0.5)) < 3.0  # and about 6 dB below full scale, as a half-scale tone should be (a display point may fall between two frequency bins)
+    assert levels[60] < levels[peak] - 60  # far from the tone the display is dark

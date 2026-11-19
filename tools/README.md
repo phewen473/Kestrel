@@ -72,6 +72,7 @@ python tools/live_frequencies.py                                       (show the
 - **Keep contact open / End contact / Once locked:** tick "Keep contact open" to hold the lock after the traffic is done, so either station can send whenever a message is typed; "End contact" closes it properly. "Once locked" chooses whether the pair stay on the calling frequency or move to a working frequency and return at the end (needs rig control; a partner that cannot retune simply declines).
 - **Stations heard:** every callsign decoded on the frequency, with grid, signal strength and time, whether or not this station is in a contact. Beacons, answers and identifications carry callsigns; message frames between other stations do not.
 - **Messages to send / Messages received:** two lists. A message to send shows as waiting, sending, then delivered with the time. A message typed while the station is running goes into the contact in progress.
+- **Scope:** a spectrum trace and waterfall of the receive audio from 0 to 3000 Hz, running whenever Monitor, Listen or Beacon is on. Dashed lines mark 500 and 2500 Hz, the edges of a Kestrel signal, so a receive filter that is too narrow or off-centre shows at a glance.
 - **Activity:** the log in plain words; "Show technical details" shows every measurement and field. The full log is also kept in `local/panel.log` (or `local/panel_NAME.log` for a named profile).
 
 Settings, your own frequencies and the log are kept in `local/`, which Git ignores.

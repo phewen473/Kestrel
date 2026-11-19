@@ -76,6 +76,22 @@ def to_card_rate(audio, gain=0.5):  # 12,000 samples per second up to 48,000, re
     return (gain * resample_poly(audio, FACTOR, 1)).astype(np.float32)  # four times as many samples, as 32-bit floats
 
 
+SCOPE_SAMPLES = 8192  # how much recent audio the scope looks at (about a sixth of a second at the card's rate)
+
+
+def scope_spectrum(samples, rate=CARD_RATE, top_hz=3000.0, points=512):  # the spectrum a scope display draws
+    """Return `points` levels in decibels covering 0 Hz to `top_hz`, from a stretch of audio at `rate` samples per second.
+
+    The audio is windowed so that a strong tone does not smear across the
+    display, and the levels are relative to full scale.
+    """
+    window = np.hanning(len(samples))  # a smooth window
+    power = np.abs(np.fft.rfft(samples * window)) ** 2 / (np.sum(window) ** 2 / 4.0)  # power at each frequency, where a full-scale tone reads 1
+    hz = np.arange(len(power)) * rate / len(samples)  # the frequency of each bin
+    wanted = np.linspace(0.0, top_hz, points)  # the frequencies the display shows
+    return 10.0 * np.log10(np.interp(wanted, hz, power) + 1e-12)  # the level at each, in decibels
+
+
 class AudioIn:  # the receiving side of the sound card
     """Opens an input device and collects what it hears; read() returns everything new, at 12,000 samples per second."""
 
@@ -84,6 +100,7 @@ class AudioIn:  # the receiving side of the sound card
         self.chunks = queue.Queue()  # audio waiting to be collected
         self.decimator = Decimator()  # the rate converter
         self.lost = 0  # how many times the sound card reported that it had to drop audio
+        self.recent = np.zeros(SCOPE_SAMPLES, dtype="float32")  # the newest audio at the card's rate, for a scope display
         self.stream = sd.InputStream(samplerate=CARD_RATE, channels=1, dtype="float32", device=device, callback=self._arrived, latency="high")  # one channel, at the card's rate, with generous buffering so a busy program does not lose audio
         self.stream.start()  # begin recording
 
@@ -91,6 +108,7 @@ class AudioIn:  # the receiving side of the sound card
         if status.input_overflow:  # the sound card had to throw audio away because it was not collected in time
             self.lost += 1  # count it, so the operator can be told
         self.chunks.put(data[:, 0].copy())  # keep the one channel
+        self.recent = np.concatenate((self.recent, data[:, 0]))[-SCOPE_SAMPLES:]  # and keep the newest stretch for the scope, whether or not anyone collects the rest
 
     def read(self):  # collect what has arrived
         """Return all audio received since the last call, at 12,000 samples per second."""
@@ -100,6 +118,10 @@ class AudioIn:  # the receiving side of the sound card
         if not blocks:  # nothing new
             return np.zeros(0)  # nothing back
         return self.decimator.process(np.concatenate(blocks))  # one stretch of audio, converted
+
+    def spectrum(self, top_hz=3000.0, points=512):  # what a scope display should draw right now
+        """Return the spectrum of the newest audio: `points` levels in decibels from 0 Hz to `top_hz`."""
+        return scope_spectrum(self.recent, CARD_RATE, top_hz, points)  # from the audio kept for the purpose
 
     def flush(self):  # throw away what has arrived
         """Discard everything received so far (used after transmitting)."""

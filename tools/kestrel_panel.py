@@ -24,6 +24,8 @@ import sys  # lets us add the repository root to the import path
 import threading  # the station runs in its own thread so the window stays responsive
 import time  # the clock, for the monitor
 import tkinter as tk  # the window toolkit that comes with Python
+
+import numpy as np  # arrays, for the scope's picture
 from tkinter import filedialog, messagebox, ttk  # file chooser, message boxes and the themed widgets
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repository root (one level above tools/)
@@ -138,13 +140,18 @@ class Panel:  # the control panel window
         self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 80), ("text", "Message", 250)))  # incoming messages
         lists.columnconfigure(2, weight=1)  # the third list shares the width too
         self.stations = self._list(lists, 2, "Stations heard", (("who", "Callsign", 90), ("grid", "Grid", 50), ("snr", "Signal", 60), ("time", "Last heard", 70), ("text", "Sending", 110)))  # every callsign heard on the frequency, in a contact or not
-        activity = ttk.LabelFrame(root, text="Activity")  # the running log, in its own box
-        activity.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
+        bottom = ttk.Frame(root)  # the bottom strip: the log on the left, the scope on the right
+        bottom.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
+        bottom.columnconfigure(0, weight=1)  # the log takes the spare width
+        bottom.rowconfigure(0, weight=1)  # and the spare height
+        self._scope(bottom)  # build the scope
+        activity = ttk.LabelFrame(bottom, text="Activity")  # the running log, in its own box
+        activity.grid(row=0, column=0, sticky="nsew", padx=(0, 4))  # place it on the left
         activity.columnconfigure(0, weight=1)  # the log takes the width
         activity.rowconfigure(1, weight=1)  # and the spare height
         self.details = tk.BooleanVar(value=False)  # whether the log shows the technical detail
         ttk.Checkbutton(activity, text="Show technical details", variable=self.details, command=self.redraw_log).grid(row=0, column=0, sticky="w", padx=4)  # the switch between the plain and the detailed log
-        self.log = tk.Text(activity, height=12, width=118, font=("Consolas", 9), state="disabled")  # the running log
+        self.log = tk.Text(activity, height=14, width=84, font=("Consolas", 9), state="disabled")  # the running log
         self.log.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)  # place it
         scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
@@ -155,6 +162,7 @@ class Panel:  # the control panel window
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
         root.after(100, self.show_lines)  # start passing log lines to the window
         root.after(500, self.follow_station)  # start keeping the lists and readings up to date
+        root.after(150, self.draw_scope)  # start drawing the scope
 
     # ---- building blocks ----
 
@@ -181,6 +189,42 @@ class Panel:  # the control panel window
         scroll.grid(row=0, column=1, sticky="ns")  # place it beside the list
         table.configure(yscrollcommand=scroll.set)  # tie the two together
         return table  # so rows can be added later
+
+    def _scope(self, parent):  # the scope: a spectrum trace above a waterfall of the receive audio
+        self.audio = None  # the sound-card input being shown, while a station or the monitor is running
+        self.scope_w, self.trace_h, self.fall_h, self.top_hz = 512, 90, 150, 3000.0  # width in points, heights of the trace and the waterfall, and the highest frequency shown
+        steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfall
+        self.palette = np.stack([np.interp(steps, [0, 0.35, 0.7, 1.0], channel) for channel in ([0, 0, 255, 255], [0, 40, 255, 60], [40, 200, 0, 0])], axis=1).astype("uint8")  # their colours: black, blue, yellow, red
+        self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the waterfall picture, newest line at the top
+        frame = ttk.LabelFrame(parent, text="Scope  (receive audio, 0 to 3000 Hz; Kestrel sits between the dashed lines)")  # the box around the scope
+        frame.grid(row=0, column=1, sticky="ns")  # place it on the right
+        self.scope = tk.Canvas(frame, width=self.scope_w, height=self.trace_h + self.fall_h + 16, bg="black", highlightthickness=0)  # the drawing area
+        self.scope.grid(row=0, column=0, padx=4, pady=4)  # place it
+        self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # the waterfall as a picture
+        self.fall_item = self.scope.create_image(0, self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
+        for hz in range(500, 3000, 500):  # a marker every 500 Hz
+            x = hz / self.top_hz * (self.scope_w - 1)  # where it falls across the display
+            edge = hz in (500, 2500)  # the two edges of a Kestrel signal
+            self.scope.create_line(x, 0, x, self.trace_h + self.fall_h, fill="#e0e0e0" if edge else "#404040", dash=(4, 3) if edge else (1, 4))  # a dashed line for an edge, a faint dotted one otherwise
+            self.scope.create_text(x, self.trace_h + self.fall_h + 8, text=str(hz), fill="#c0c0c0", font=("Segoe UI", 7))  # its frequency underneath
+        self.trace = self.scope.create_line(0, self.trace_h, self.scope_w, self.trace_h, fill="#7cfc00")  # the spectrum trace, flat until there is audio
+
+    def draw_scope(self):  # redraw the scope from the newest audio
+        source = self.audio  # the sound-card input, if one is open
+        if source is not None:  # there is audio to show
+            try:  # the input may close while this runs
+                levels = source.spectrum(self.top_hz, self.scope_w)  # the spectrum of the last sixth of a second, in decibels
+                floor = float(np.median(levels))  # the noise level, taken as the middle value
+                bright = np.clip((levels - (floor - 5.0)) / 55.0, 0.0, 1.0)  # each point on a scale from just under the noise to 50 dB above it
+                points = np.column_stack((np.arange(self.scope_w), self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
+                self.scope.coords(self.trace, *points)  # move the trace
+                self.fall = np.roll(self.fall, 1, axis=0)  # push the waterfall down one line
+                self.fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
+                self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
+                self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
+            except Exception:  # a hiccup in drawing must never stop the station
+                pass  # try again next time
+        self.root.after(150, self.draw_scope)  # about seven times a second
 
     def show_me(self):  # show this station's own details at the top right
         call, grid = self.settings["call"] or "no callsign set", self.settings["grid"]  # what is set so far
@@ -517,6 +561,7 @@ class Panel:  # the control panel window
         source = rig = ptt = None  # nothing opened yet
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
+            self.audio = source  # let the scope show what it hears
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
                 self.say("monitoring: receive only, nothing will be transmitted")  # opening line
@@ -558,6 +603,7 @@ class Panel:  # the control panel window
                 ptt.close()  # make sure the transmitter is off
             if rig is not None:  # rig control was opened
                 rig.close()  # hang up
+            self.audio = None  # the scope has nothing to show any more
             if source is not None:  # recording was started
                 source.close()  # release the sound device
             self.say("stopped")  # closing line
