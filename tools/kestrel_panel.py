@@ -114,6 +114,7 @@ class Panel:  # the control panel window
         self.history = []  # every log line so far, as (time of day, line), so the log can be redrawn plain or in detail
         self.heard = queue.Queue()  # reports of stations heard, waiting to go into the list (filled by the working thread)
         self.heard_rows = {}  # callsign -> its row in the stations-heard list
+        self.notice = None  # the warning window about an idle working frequency, while one is showing
         self.contacts = read_json(CONTACTS_FILE, {})  # saved contacts: callsign -> {"grid": locator}
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
@@ -272,6 +273,21 @@ class Panel:  # the control panel window
                 pass  # try again next time
         self.root.after(150, self.draw_scope)  # about seven times a second
 
+    def show_notice(self, words):  # put up the idle-frequency warning (it does not hold anything up)
+        self.close_notice()  # only one at a time
+        self.notice = tk.Toplevel(self.root)  # a small window of its own
+        self.notice.title("Kestrel - returning to the calling frequency")  # its title
+        self.notice.attributes("-topmost", True)  # in front of everything, so it is seen
+        ttk.Label(self.notice, text=words, wraplength=380, justify="left").pack(padx=16, pady=(14, 8))  # the warning
+        ttk.Button(self.notice, text="OK", command=self.close_notice).pack(pady=(0, 12))  # OK takes the window away; it does not stop the return
+        self.notice.protocol("WM_DELETE_WINDOW", self.close_notice)  # so does its close box
+        self.root.bell()  # a sound to draw attention
+
+    def close_notice(self):  # take the idle-frequency warning away
+        if self.notice is not None:  # one is showing
+            self.notice.destroy()  # close it
+            self.notice = None  # none is showing now
+
     def show_me(self):  # show this station's own details at the top right
         call, grid = self.settings["call"] or "no callsign set", self.settings["grid"]  # what is set so far
         self.me.configure(text=f"{call}   {grid}")  # callsign and grid locator
@@ -307,6 +323,10 @@ class Panel:  # the control panel window
             clock = time.strftime("%H:%M:%S")  # the time of day it arrived
             self.history.append((clock, line))  # remember it, so the log can be redrawn
             del self.history[:-2000]  # keep only the last two thousand lines
+            if "returning to the calling frequency in one minute" in line:  # this station moved the contact and the working frequency has gone idle
+                self.show_notice("No messages have passed for four minutes on the working frequency.\n\nIn one minute this contact will be closed and both stations will return to the calling frequency.\n\nSend a message to keep the contact here.")  # warn the operator
+            elif self.notice is not None and any(mark in line for mark in ("sending message", "received message", "back on the calling frequency", "contact closed")):  # traffic has resumed, or the return has happened
+                self.close_notice()  # the warning no longer applies
             state = status_for(line)  # does it mark a change of state?
             if state is not None:  # yes
                 self.show_status(state[0], state[1])  # show the new state in its colour

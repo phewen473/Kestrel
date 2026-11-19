@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.18 (draft) - 18 November 2026
+
+- No frame is changed from 0.17.
+- An idle working frequency is given up: after 5 minutes with no message frame, the station that proposed the move closes the contact and both return to the meeting frequency. Its operator is warned one minute before (Section 6.10).
+
 ## 0.17 (draft) - 18 November 2026
 
 - No frame format is changed from 0.16. Two existing frames gain a use each (Section 6.11).

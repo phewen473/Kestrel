@@ -40,7 +40,7 @@ from .adapt import cap_level, common_levels, supported_level, wanted_level  # sp
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_S, WIDE_SLOTS,  # (continued)
-    REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S,  # (continued)
+    REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the station has a partner
@@ -132,6 +132,9 @@ class Station:  # the link rules for one station
         self.settle_until = None  # after an agreed move: when to probe for the partner on the working frequency
         self.arriving = False  # True while that first probe on the working frequency is unanswered
         self.await_since = None  # after moving at the partner's request: when this station began waiting for it on the working frequency
+        self.proposed_move = False  # True for the station that asked for the move (it watches for an idle working frequency)
+        self.last_traffic = 0.0  # when a message frame last went either way (or when the pair arrived on the working frequency)
+        self.idle_warned = False  # True once the operator has been warned that an idle working frequency is about to be given up
 
     # ---- starting up ----
 
@@ -285,6 +288,7 @@ class Station:  # the link rules for one station
         audio = build_frame(item["text"], self.tx_level, item["part"], item["parts"], link=self.link, msg_id=self.current_id, want_level=self.want)  # the message frame, carrying the level this station wants from its partner
         note = f"msg {self.current_id} part {item['part'] + 1}/{item['parts']}"  # which frame this is
         self.idle_told = False  # traffic is moving, so the lock is not idle
+        self.last_traffic, self.idle_warned = now, False  # a message frame is going out: the idle clock starts again
         return self._send(now, audio, "message", self.tx_level, "ack", control_seconds(FRAME_TYPE_ACK, self.want), note)  # wait for its acknowledgment
 
     def _next(self, now):  # decide what to send when the turn is this station's
@@ -313,6 +317,7 @@ class Station:  # the link rules for one station
     def _propose_move(self, now):  # ask the partner to change to the working frequency
         self.move_tries += 1  # count the proposal
         steps = int(round(self.move_to_hz / MOVE_STEP_HZ)) & 0xFFFF  # the offset as a signed 16-bit count of 100 Hz steps
+        self.proposed_move = True  # this station asked for the move, so it will watch for the working frequency going idle
         if self.move_tries == 1:  # the first time
             self._say(now, f"proposing a move to the working frequency ({self.move_to_hz / 1000.0:+.1f} kHz)")  # explain
         return self._ack(now, steps, OFFER_MOVE, ACK_LINK, "move", "move", control_seconds(FRAME_TYPE_ACK, self.want))  # the proposal travels in the message-number field
@@ -335,6 +340,7 @@ class Station:  # the link rules for one station
         self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
         self.quiet, self.moved, self.move_tries, self.settle_until, self.arriving, self.await_since = False, False, 0, None, False, None  # no idle lock, no move under way
         self.idle_told = False  # nothing has been said about being idle
+        self.proposed_move, self.idle_warned = False, False  # no move has been asked for in the next contact yet
         self.leads, self.calls = self.role == "beaconer", 0  # the beaconing station leads again; no calls outstanding
         self.close_when_done = not self.keep_open  # an earlier end() applied to that contact only
 
@@ -550,6 +556,7 @@ class Station:  # the link rules for one station
             self.moved = True  # the move is agreed
             self._retune(now, offset_hz)  # change frequency now
             self.settle_until = now + MOVE_SETTLE_S  # then give both radios a moment before probing
+            self.last_traffic, self.idle_warned = now, False  # the idle clock for the working frequency starts now
             self.my_turn = True  # this station speaks first on the new frequency
             self._say(now, f"partner agreed; moving {offset_hz / 1000.0:+.1f} kHz to the working frequency")  # explain
             return None  # nothing to send until the radios have settled
@@ -577,6 +584,7 @@ class Station:  # the link rules for one station
         self.peer_empty = False  # and has traffic
         self.quiet = False  # the lock is no longer idle
         self.idle_told = False  # and the partner will need telling when it is again
+        self.last_traffic, self.idle_warned = now, False  # a message frame has come in: the idle clock starts again
         self.tx_level = cap_level(result.want_level, self.allowed)  # every message frame says which level its sender wants back
         self._note(result, failed=False)  # take in the measurements
         status = ACK_OK  # this frame was received
@@ -613,6 +621,14 @@ class Station:  # the link rules for one station
         """Return a Transmission if the station should transmit now (a first frame, or a retry after a timeout), else None."""
         if self.state == "RELEASED":  # the contact is over
             return None  # nothing to send
+        if self._watching_idle():  # this station moved the contact to a working frequency and is keeping it open
+            idle = now - self.last_traffic  # how long since a message went either way
+            if idle >= WORKING_IDLE_S:  # five minutes with no messages
+                self._say(now, "no messages for five minutes on the working frequency; closing the contact and returning to the calling frequency")  # explain
+                self.close_when_done = True  # close properly; both stations return when the contact ends
+            elif idle >= WORKING_IDLE_S - WORKING_WARN_S and not self.idle_warned:  # one minute to go
+                self.idle_warned = True  # warn once
+                self._say(now, "no messages for four minutes; returning to the calling frequency in one minute unless a message is sent")  # the operator's warning
         if self.pending is not None:  # waiting for a reply
             if now < self.deadline:  # and there is still time
                 return None  # keep waiting
@@ -652,8 +668,18 @@ class Station:  # the link rules for one station
     def _quiet_gap(self):  # how long an idle station waits before taking the turn for itself
         return control_seconds(FRAME_TYPE_IDENT, self.want) + TURNAROUND_S + self.reply_margin  # long enough for a closing identification from the partner to arrive first
 
+    def _watching_idle(self):  # is this station the one that gives up an idle working frequency?
+        return bool(self.offset_hz) and self.proposed_move and self.state in LOCKED_STATES and not self.close_when_done  # on a working frequency it asked for, locked, and keeping the contact open
+
     def next_wake(self):  # when should poll() be called again?
         """Return the time at which this station next needs attention, or None if it is waiting to hear something."""
+        usual = self._usual_wake()  # the next moment the ordinary rules need attention
+        if not self._watching_idle():  # no idle working frequency to watch
+            return usual  # nothing to add
+        idle_at = self.last_traffic + (WORKING_IDLE_S if self.idle_warned else WORKING_IDLE_S - WORKING_WARN_S)  # when the warning, or the closing, falls due
+        return idle_at if usual is None else min(usual, idle_at)  # whichever comes first
+
+    def _usual_wake(self):  # the next moment the ordinary rules need attention
         if self.state == "RELEASED":  # the contact is over
             return None  # never
         if self.pending is not None:  # waiting for a reply
@@ -726,6 +752,7 @@ class Station:  # the link rules for one station
             self.moved = True  # the partner may have agreed without being heard, in which case it has already moved
             self._retune(now, self.move_to_hz)  # so go and look for it on the working frequency
             self.settle_until = now + MOVE_SETTLE_S  # after the radio has settled
+            self.last_traffic, self.idle_warned = now, False  # the idle clock for the working frequency starts now
             self._say(now, "no reply to the move; looking for the partner on the working frequency")  # explain
             return None  # the probe follows
         if waited_for == "probe":  # a reacquire probe went unanswered

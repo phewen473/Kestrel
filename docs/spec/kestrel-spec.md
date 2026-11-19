@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.17 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.18 (draft), 18 November 2026.** In first on-air tests since 18 November 2026. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -363,6 +363,7 @@ A long contact on a meeting frequency keeps others from calling there. Once lock
 - **Meeting again.** The proposing station changes frequency when it hears the agreement, waits 3 seconds, and sends a probe (status 3, part number 2) at the level in use. The partner answers as for any probe, both start their measurements afresh, and the contact carries on. If the probe goes unanswered the usual reacquiring rule applies (Section 6.5), on the working frequency.
 - **A lost agreement.** If a proposal gets no reply it is sent once more. If that also gets no reply, the proposing station goes to the working frequency anyway and probes there, in case its partner agreed without being heard.
 - **Giving up.** A station that has moved at its partner's request and hears nothing from it on the working frequency for 150 seconds releases the lock.
+- **An idle working frequency.** On a working frequency, the station that proposed the move watches the time since a message frame last went in either direction (or since the pair arrived). Keep-alive exchanges do not count. After 5 minutes with no message frame it closes the contact in the ordinary way, with closing identifications, and both stations return to the meeting frequency. One minute beforehand it warns its own operator, who may keep the contact on the working frequency by sending a message.
 - **Returning.** When the contact ends for any reason, each station returns to the meeting frequency: after its closing identification has been sent, or at once if the lock is released without one.
 - **Listen first.** The operator of the proposing station is responsible for choosing a working frequency that is clear. An automatic check is **TBD**.
 

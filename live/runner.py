@@ -28,6 +28,8 @@ def status_for(line):  # the station's state, as far as one log line shows it
     if found:  # yes
         receive = f", receiving at L{found.group(3)}" if found.group(3) else ""  # the level asked of the partner, when the line gives it
         return f"LOCKED with {found.group(1)}  -  sending at L{found.group(2)}{receive}", "dark green"  # locked, and at what speeds
+    if "returning to the calling frequency in one minute" in line:  # the working frequency has gone idle
+        return "WORKING FREQUENCY IDLE  -  returning to the calling frequency in one minute", "dark orange"  # warn on the band too
     if "partner found on the working frequency" in line:  # the pair have met again after changing frequency
         return "LOCKED on the working frequency", "dark green"  # locked there
     if "reacquired" in line:  # the partner was found again after a gap

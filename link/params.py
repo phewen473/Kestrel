@@ -32,3 +32,5 @@ MOVE_WAIT_S = 150.0  # a station that has moved and hears nothing from its partn
 CALL_TRIES = 5  # times a directed call is sent without a reply before the calling station gives up
 BROADCAST_LEVEL = 0  # the speed level a broadcast to everyone is sent at unless the operator chooses another (the slowest reaches the furthest)
 BROADCAST_LIFE_HOURS = 2  # lifetime written into a broadcast frame (it is not forwarded, so the shortest value is used)
+WORKING_IDLE_S = 300.0  # on a working frequency, a contact with no message traffic for this long is closed and both stations return to the calling frequency
+WORKING_WARN_S = 60.0  # the operator of the station that proposed the move is warned this long before that happens
