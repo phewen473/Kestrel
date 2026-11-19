@@ -642,6 +642,9 @@ class Panel:  # the control panel window
     def queue_message(self):  # add the typed message to the list to send
         text = self.message.get().strip()  # what was typed
         to = self.to.get().strip().upper()  # who it is for, if anyone in particular
+        if text and to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
+            messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.")  # say so, and what to do
+            return  # leave the message in the box
         if text:  # something was
             self.message.delete(0, "end")  # clear the box
             self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", text, "waiting"))  # show it in the list
@@ -685,6 +688,9 @@ class Panel:  # the control panel window
             return  # nothing more to do
         if mode == "call" and not self.to.get().strip():  # a directed call needs somebody to call
             messagebox.showinfo("Kestrel", "Type the callsign to call in the To box first.")  # say so
+            return  # nothing to do
+        if mode == "call" and self.to.get().strip().upper() == self.settings["call"].strip().upper():  # the To box holds this station's own callsign
+            messagebox.showinfo("Kestrel", f"{self.settings['call']} is this station's own callsign.\n\nPut the callsign of the station you want to reach in the To box. Only a station using exactly that callsign will answer.")  # say so, and what to do
             return  # nothing to do
         if mode != "monitor" and not confirmed and not messagebox.askokcancel("Kestrel", "This station will TRANSMIT on the radio's frequency. Continue?"):  # a last check before transmitting
             return  # the operator backed out

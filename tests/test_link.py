@@ -249,3 +249,11 @@ def test_unanswered_beacon_is_followed_by_a_wide_reply_window():  # the caller's
     second = caller.poll(caller.deadline + 0.1)  # nobody answered (or the answers spoiled one another), so it calls again
     assert second.kind == "beacon" and second.note == "wide window" and caller.wide  # this time asking for four reply slots
     assert second.seconds == first.seconds  # the same length of beacon; only its window flag differs
+
+
+def test_station_refuses_to_call_itself():  # a directed call to one's own callsign can never be answered
+    import pytest  # for checking that an error is raised
+    station = Station("Q1AAAA", "EM92")  # a station
+    with pytest.raises(ValueError):  # it must refuse
+        station.call_station("q1aaaa")  # its own callsign, typed in lower case
+    assert station.role is None  # and it has not become a calling station

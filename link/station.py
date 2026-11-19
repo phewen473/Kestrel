@@ -149,6 +149,8 @@ class Station:  # the link rules for one station
 
     def call_station(self, target):  # become a station that calls one particular station
         """Call `target` by name instead of beaconing; only that station answers."""
+        if clean_call(target) == self.call:  # a station cannot call itself: nobody else would answer to that name
+            raise ValueError(f"{self.call} is this station's own callsign; call the other station's")  # refuse, and say why
         self.role = "caller"  # this station sends directed calls
         self.target = clean_call(target)  # to this callsign
         self.leads = False  # the station that is called keeps the turn in a clash
