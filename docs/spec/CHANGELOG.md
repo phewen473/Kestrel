@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.24 (draft) - 19 November 2026
+
+- **Signal version 0.24** (only the two test stations are affected).
+- Just listen (Section 6.11): a listening station may be set to transmit nothing by itself. It then takes, by itself, only directed calls that answer something its operator started: from anyone within 5 minutes of its own last beacon, and from a station it called within 5 minutes. Other calls are shown to the operator, who responds with a call back.
+- Call back (6.11): a station making a directed call that receives a directed call from the station it is calling takes it as the answer and completes the lock as a called station.
+
 ## 0.23 (draft) - 19 November 2026
 
 - **The call-up has changed. Signal version 0.23; stations following 0.22 or earlier cannot work reliably with 0.23 stations.** (Only the two test stations had the earlier versions.)

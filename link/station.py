@@ -40,7 +40,7 @@ from modem.text import pick_size_class  # which frame size a piece of text needs
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
-    MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S,  # (continued)
+    MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
     REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
@@ -143,6 +143,9 @@ class Station:  # the link rules for one station
         self.idle_warned = False  # True once the operator has been warned that an idle working frequency is about to be given up
         self.single = False  # True while a listening station makes one beacon round or one directed call, after which it listens again
         self.answer_beacons = True  # a listening station answers beacons by itself; when False the operator chooses, and replies with a directed call
+        self.answer_calls = True  # a listening station answers directed calls by itself; when False only calls it is expecting are answered, and the operator chooses for the rest
+        self.last_beacon_t = -1e9  # when this station last beaconed (directed calls from anyone are expected for a while afterwards)
+        self.called_t = {}  # callsign -> when this station last called it (a call back from it is expected for a while afterwards)
         self.callup = CALLUP_LEVEL if CALLUP_LEVEL in self.levels else 0  # the level the next beacon or directed call goes at: the middle level first, L0 if that brings no reply
         self.beacon_sent_at = 0  # the level of the beacon now waiting for answers
         self.heard_at = {}  # callsign -> (time, report) of the last frame heard from it that named it, for the report a directed call carries
@@ -461,12 +464,20 @@ class Station:  # the link rules for one station
         """Return True if the answer frame's directed-call flag is set (Section 6.11)."""
         return bool(result.fields.get("directed"))  # the flag says so
 
+    def expects_call_from(self, call, now):  # is a directed call from this station one this station asked for?
+        """Return True if this station beaconed recently, or called `call` recently, so a directed call from `call` answers something the operator started."""
+        return now - self.last_beacon_t <= EXPECT_S or now - self.called_t.get(call, -1e9) <= EXPECT_S  # a recent beacon, or a recent call to that station
+
     def _on_answer(self, result, now):  # an answer was heard
-        answering_call = self.role == "answerer" and self.pending is None  # a listening station with nothing under way
+        wanted = self.answer_calls or self.expects_call_from(result.origin, now)  # this station takes the call by itself, or it is a reply to something its operator started
+        answering_call = self.role == "answerer" and self.pending is None and self._is_call(result) and wanted  # a listening station with nothing under way
         beaconing_call = self.role == "beaconer" and self.pending == "answer" and self._is_call(result)  # or one waiting in its own reply window, called by name instead of answered
-        if self.state == "IDLE" and result.dest == self.call and (answering_call or beaconing_call):  # a directed call to this station
+        called_back = self.role == "caller" and self._is_call(result) and result.origin == self.target  # or one calling that very station, which calls back instead of confirming (its operator chose to respond)
+        if self.state == "IDLE" and result.dest == self.call and (answering_call or beaconing_call or called_back):  # a directed call to this station that it takes
             if beaconing_call:  # it was in the middle of a beacon round
                 self.candidates, self.role = [], "answerer" if self.single else self.role  # the round is over (a single round from a listening station goes back to listening afterwards)
+            if called_back:  # its own call has been answered by a call back
+                self.pending = None  # stop waiting for a confirmation
             self._say(now, f"called by {result.origin}")  # explain
             self.leads = True  # the called station takes the beaconing station's part from here on
             self._lock_with(result, now)  # lock with the caller (the plain confirmation it prepares is replaced below)
@@ -744,6 +755,7 @@ class Station:  # the link rules for one station
             self._release(now, f"no answer from {self.target}")  # give up
             return None  # nothing to send
         self.calls += 1  # count the call
+        self.called_t[self.target] = now  # a call back from that station is expected for a while
         self.partner = self.target  # the station being called
         self.link = link_id(self.partner, self.call)  # link number: the called station takes the beaconing station's place, so it comes first
         self.allowed = list(self.levels)  # the called station's levels are not known yet; assume it has the same
@@ -761,6 +773,7 @@ class Station:  # the link rules for one station
 
     def _beacon(self, now):  # send a beacon
         self.beacons += 1  # count it
+        self.last_beacon_t = now  # directed calls from anyone are expected for a while
         self.last_ident = now  # a beacon carries the callsign
         self.candidates = []  # a new reply window starts empty
         self.beacon_sent_at = self.callup  # the middle level first; L0 after that brings no answer

@@ -356,3 +356,31 @@ def test_directed_call_carries_a_reading_so_the_first_message_is_fast():  # no L
     first = next(e for e in events if e["kind"] == "message")  # B's first message
     assert call["level"] == 2 and first["level"] >= 2  # the call went at the middle level, and the message at least as fast
     assert a.inbox == ["Straight to a fast level."]  # and it arrived
+
+
+def test_station_that_just_listens_is_called_and_calls_back():  # Listen means just listen (spec 0.24)
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    a.listen()  # A listens...
+    a.call_once("Q2BB")  # ...and its operator calls B by name
+    a.queue("Thanks for calling back.", to="Q2BB")  # with a message for B
+    b.listen()  # B listens...
+    b.answer_calls = b.answer_beacons = False  # ...and does not answer anything by itself
+    call = a.poll(0.0)  # A's call
+    assert b.handle(b.hear(call.audio), call.seconds + 1.0) is None and b.state == "IDLE"  # B stays silent; its operator is shown the call
+    b.call_once("Q1AAAA")  # B's operator presses Respond: a call back
+    run_link(a, b, Path(5.0), Path(5.0), seed=23, start_s=call.seconds + 8.0)  # A, still calling B, takes the call back as the answer
+    assert b.inbox == ["Thanks for calling back."]  # the message arrived
+
+
+def test_station_that_just_listens_accepts_a_reply_to_its_own_beacon():  # what the operator started is still answered
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "FN31")  # two stations
+    for station in (a, b):  # both just listen
+        station.listen()  # listening
+        station.answer_calls = station.answer_beacons = False  # answering nothing by themselves
+    a.beacon_once()  # A's operator beacons once
+    a.queue("Reply to my beacon.")  # with a message for whoever responds
+    beacon = a.poll(0.0)  # the L2 beacon
+    assert b.handle(b.hear(beacon.audio), beacon.seconds + 1.0) is None  # B stays silent: its operator is shown the beacon
+    b.call_once("Q1AAAA")  # a minute later B's operator presses Respond
+    run_link(a, b, Path(5.0), Path(5.0), seed=24, start_s=beacon.seconds + 60.0)  # A's round is over by then, but it beaconed recently, so it takes the call
+    assert b.inbox == ["Reply to my beacon."]  # the message arrived

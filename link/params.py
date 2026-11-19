@@ -10,6 +10,7 @@ BEACON_TRIES = 5  # beacons sent without an answer before the station gives up
 REPLY_SLOT_S = 42.0  # length of one reply slot after an L0 beacon: an answer at L0 (39.6 s) plus a short gap
 REPLY_SLOT_GAP_S = 2.4  # the gap: a reply slot is an answer at the beacon's level plus this (42 s at L0, 11.3 s at L2)
 CALLUP_LEVEL = 2  # a call-up (beacon or directed call) is tried first at this level; if it brings no reply, it is sent again at L0
+EXPECT_S = 300.0  # a station that just beaconed, or just called a station, accepts a directed call (from anyone after a beacon, from that station after a call) for this long, even when it does not answer calls by itself
 HEARD_FOR_CALL_S = 600.0  # a directed call carries the caller's reading of the called station if it heard that station within this many seconds
 WIDE_SLOTS = 4  # reply slots after a beacon that asks for a wide window (a plain beacon has one)
 STEP_UP_CLEAN = 2  # clean frames in a row before the receiver asks for a faster level
