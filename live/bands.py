@@ -14,6 +14,7 @@ Always listen first: the segments are shared with other data modes.
 """
 
 import json  # the operator's own frequencies are kept in a small JSON file
+from live.paths import data_dir  # where the operator's own files go  # noqa: E402
 import os  # file paths
 
 SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency allowed for (the fastest level reaches down to about 800 Hz)
@@ -69,7 +70,7 @@ def in_automatic_segment(dial):  # may an unattended station use this dial frequ
     return any(start <= low and high <= end for start, end in AUTOMATIC_SEGMENTS_KHZ)  # wholly inside any one segment
 
 
-USER_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local", "frequencies.json")  # the operator's own list: local/frequencies.json (Git ignores local/)
+USER_FILE = os.path.join(data_dir(), "frequencies.json")  # the operator's own list: local/frequencies.json from the source folder (Git ignores local/), or in the user's profile when installed
 
 
 def builtin_frequencies():  # the presets, as list entries

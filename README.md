@@ -4,6 +4,10 @@ Kestrel is an adaptive amateur-radio HF digital mode for short text messages, up
 
 **Status: draft design, not yet on the air.** This repository holds the public technical description of the mode, as called for by FCC rule 97.309(a)(4). The specification is versioned so that what is published always matches what is transmitted.
 
+## Installing on Windows
+
+For a PC with nothing on it, build the setup program described in `packaging/README.md` (`packaging\windows\build_windows.ps1`) and run it: it installs Kestrel with its own Python and Hamlib's rig control program.
+
 ## What Kestrel does
 
 - **Short messages:** free text, up to 200 characters of 7-bit ASCII, control characters included, sent in 50-, 100-, 150- or 200-character frames. Ordinary English text is compressed when that lets it fit a smaller frame.
@@ -128,6 +132,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-19: Windows setup program (packaging/): a self-contained installer with its own Python and Hamlib's rigctld, for a PC with nothing on it; installed copies keep each user's settings and logs in %LOCALAPPDATA%\Kestrel; Kestrel.exe --check.
 - 2026-11-19, spec v0.25: Available / Unavailable switch (Ctrl+U): when away, beacons are presence beacons and a call by name gets one short "not available" reply; every station's status shows in Stations heard.
 - 2026-11-19, spec v0.24: Listen just listens (nothing sent unless the operator starts it; calls to you are shown for Respond); a calling station takes a call back as the answer.
 - 2026-11-19, spec v0.23 (new signal version): call-up at L2 first, L0 if unanswered; reply slots sized to the level; straight to the measured level at lock; directed-call flag carrying the caller's reading.

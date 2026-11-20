@@ -26,9 +26,15 @@ HIDDEN = {"creationflags": 0x08000000} if sys.platform == "win32" else {}  # on 
 def find_rigctld(extra_folders=()):  # look for the rigctld program
     """Return the path of a rigctld program, or "" if none is found.
 
-    The search path is tried first, then any `extra_folders`, then the bin
+    The copy installed with Kestrel (hamlib/bin beside the program) is tried
+    first, then the search path, then any `extra_folders`, then the bin
     folder of any WSJT-X installed in the usual place on Windows.
     """
+    from live.paths import app_dir  # where the installed program is
+    for name in RIGCTLD_NAMES:  # each name it goes by
+        bundled = os.path.join(app_dir(), "hamlib", "bin", name)  # the copy installed with Kestrel
+        if os.path.isfile(bundled):  # it is there
+            return bundled  # use it: it is the version Kestrel was tested with
     for name in RIGCTLD_NAMES:  # each name it goes by
         found = shutil.which(name)  # on the search path?
         if found:  # yes

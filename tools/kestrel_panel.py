@@ -36,6 +36,8 @@ from tkinter import filedialog, messagebox, ttk  # file chooser, message boxes a
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repository root (one level above tools/)
 sys.path.insert(0, ROOT)  # make "live", "link" and "modem" importable when run as a script
+from live.paths import code_dir, data_dir  # where the program's files and the operator's files are  # noqa: E402
+ROOT = code_dir()  # the program's own files: the repository root, or the installed bundle
 
 from link import Station  # the link rules  # noqa: E402
 from live import KIND, Listener, call_request, describe, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
@@ -48,8 +50,8 @@ from modem.levels import LEVELS  # the speed levels, for how wide each signal is
 from modem.params import M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
-SETTINGS_FILE = os.path.join(ROOT, "local", "panel.json")  # where the panel remembers its settings
-LOG_FOLDER = os.path.join(ROOT, "local", "logs")  # where the CSV and ADIF logbook files go
+SETTINGS_FILE = os.path.join(data_dir(), "panel.json")  # where the panel remembers its settings (local/ from the source folder; the user's profile when installed)
+LOG_FOLDER = os.path.join(data_dir(), "logs")  # where the CSV and ADIF logbook files go
 BEACON_MIN, BEACON_MAX = 5, 60  # the repeating beacon may be set to no less than 5 and no more than 60 minutes
 AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, is between 15 minutes and 12 hours (0 turns it off)
 DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
@@ -108,7 +110,7 @@ def write_json(path, data):  # write a small JSON file
         pass  # carry on; the window still holds the information
 
 
-CONTACTS_FILE = os.path.join(ROOT, "local", "contacts.json")  # the operator's saved contacts, shared by every panel on this computer
+CONTACTS_FILE = os.path.join(data_dir(), "contacts.json")  # the operator's saved contacts, shared by every panel on this computer
 
 
 def build_info():  # which build of the program this is
@@ -1863,14 +1865,67 @@ class Panel:  # the control panel window
         self.root.destroy()  # close the window
 
 
+def self_check():  # Kestrel.exe --check: is everything the program needs present?
+    """Check the libraries, the sound system, rigctld and the data folder; write a report to kestrel_check.txt in the data folder. Return 0 if all is well, 1 if not."""
+    lines, ok = [about_text().splitlines()[0], f"Signal version {SIGNAL_VERSION}, specification {SPEC_VERSION}, {build_info()}"], True  # the report so far, and whether all is well
+
+    def note(passed, words):  # one line of the report
+        nonlocal ok  # the overall result
+        ok = ok and passed  # a failure spoils it
+        lines.append(("OK    " if passed else "FAIL  ") + words)  # the line
+
+    note(True, f"data folder: {data_dir()}")  # where settings and logs go
+    try:  # the numerical libraries
+        import scipy.signal  # noqa: F401  # filtering, used by the modem
+        note(True, f"numpy {np.__version__}, scipy {scipy.__version__}")  # present
+    except Exception as problem:  # missing
+        note(False, f"numpy/scipy: {problem}")  # say so
+    try:  # the sound system
+        devices = list_devices()  # every sound device
+        note(bool(devices), f"sound system: {sum(1 for d in devices if d[2] > 0)} input and {sum(1 for d in devices if d[3] > 0)} output devices")  # how many
+    except Exception as problem:  # no sound library or no sound system
+        note(False, f"sound system: {problem}")  # say so
+    program = find_rigctld()  # the rig control program
+    models = list_models(program) if program else []  # the radios it knows
+    note(bool(program) and bool(models), f"rigctld: {os.path.basename(program) if program else 'not found'}, {len(models)} radio types")  # found and working (the name only: no folder names in the report)
+    try:  # serial ports, for CAT
+        from serial.tools import list_ports  # pyserial
+        note(True, f"serial ports: {', '.join(sorted(p.device for p in list_ports.comports())) or 'none at present'}")  # what is plugged in
+    except Exception as problem:  # pyserial missing
+        note(False, f"serial ports: {problem}")  # say so
+    try:  # the window toolkit
+        probe = tk.Tk()  # a window
+        probe.withdraw()  # never shown
+        probe.destroy()  # and gone
+        note(True, f"window toolkit: Tk {tk.TkVersion}")  # present
+    except Exception as problem:  # no display, or Tk missing
+        note(False, f"window toolkit: {problem}")  # say so
+    lines.append("RESULT: " + ("everything Kestrel needs is present" if ok else "something is missing (see FAIL lines)"))  # the verdict
+    report = "\n".join(lines) + "\n"  # as text
+    try:  # keep a copy where the operator can find it
+        with open(os.path.join(data_dir(), "kestrel_check.txt"), "w", encoding="utf-8") as handle:  # the report file
+            handle.write(report)  # write it
+    except OSError:  # it could not be written
+        pass  # the console copy will do
+    try:  # a windowed program may have no console to print to
+        print(report)  # show it
+    except Exception:  # no console
+        pass  # the file has it
+    return 0 if ok else 1  # the exit code
+
+
 def main():  # the script itself
     """Open the panel."""
     global SETTINGS_FILE, PROFILE  # a named profile keeps its settings in a file of its own
     parser = argparse.ArgumentParser(description="Kestrel control panel")  # the command-line reader
     parser.add_argument("--profile", default="", help="a name for a second set of remembered settings, for running one panel per radio")  # optional profile name
-    PROFILE = "".join(c for c in parser.parse_args().profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
+    parser.add_argument("--check", action="store_true", help="check the installation (libraries, sound system, rigctld) without opening the window, and write the result to kestrel_check.txt in the data folder")  # the installation check
+    args = parser.parse_args()  # read the options
+    if args.check:  # just check the installation
+        sys.exit(self_check())  # and stop, with 0 if everything was found
+    PROFILE = "".join(c for c in args.profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
     if PROFILE:  # a profile was named
-        SETTINGS_FILE = os.path.join(ROOT, "local", f"panel_{PROFILE}.json")  # its own settings file
+        SETTINGS_FILE = os.path.join(data_dir(), f"panel_{PROFILE}.json")  # its own settings file
     root = tk.Tk()  # the window
     Panel(root)  # its contents
     if PROFILE:  # a profile was named

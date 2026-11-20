@@ -76,3 +76,15 @@ def test_theme_choice_resolves():  # the look chosen
     assert theme.resolve("dark") == "dark" and theme.resolve("light") == "light" and theme.resolve("nonsense") == "light"  # a direct choice
     assert theme.resolve("system") in ("dark", "light")  # whatever the computer is set to
     assert os.name != "nt" or isinstance(theme.system_prefers_dark(), bool)  # on Windows the registry can be read
+
+
+def test_installed_program_keeps_operator_files_in_the_user_profile(monkeypatch, tmp_path):  # an installed copy cannot write beside its own files
+    import sys  # the "frozen" mark PyInstaller sets
+    from live import paths  # the rule under test
+    assert paths.data_dir().endswith("local")  # from the source folder: local/ beside the code
+    monkeypatch.setattr(sys, "frozen", True, raising=False)  # pretend to be the installed build
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))  # a stand-in for the user's profile (used on Windows)
+    monkeypatch.setenv("HOME", str(tmp_path))  # and for the home folder (used elsewhere)
+    folder = paths.data_dir()  # where the installed program keeps the operator's files
+    assert folder.startswith(str(tmp_path)) and os.path.isdir(folder)  # in the profile, created when first needed
+    assert os.listdir(folder) == []  # and empty: a fresh installation carries nobody's settings

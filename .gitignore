@@ -14,3 +14,8 @@ results/demo.wav
 .livetest/
 # scripts and settings for one particular station (callsign, sound devices, serial ports)
 local/
+# the Windows installer build: downloads and intermediate files
+packaging/cache/
+# PyInstaller's working folders
+build/
+dist/
