@@ -9,9 +9,16 @@ The words come from:
   - the build computer itself: its name, the user's name and profile folder;
   - an optional private list, one word per line, kept outside the
     repository (the build script passes packaging/cache/private_words.txt,
-    which Git ignores, so the private words are never published);
+    which Git ignores, so the private words are never published). A line
+    starting "own:" holds an ordinary word (a first name, say) that is
+    looked for only in Kestrel's own files, since ordinary words turn up
+    by chance inside the bundled libraries; every other line (computer
+    and network names, folders, addresses) is looked for everywhere;
   - --allow WORD=FILE: a word allowed in files whose name contains FILE
-    (the originator credit in the About box and NOTICE, for example).
+    (the originator credit in the About box and NOTICE, for example);
+  - --credit-files PART,PART: files holding the originator credit (and the
+    project's public address), where the builder's user name may appear
+    because it is part of that address.
 
     python privacy_scan.py FOLDER [--words FILE] [--allow WORD=PART ...]
 
@@ -23,9 +30,20 @@ import os  # file paths and the environment
 import sys  # the exit code
 
 
+OWN_PARTS = ("README", "docs", "SOURCE.txt", "mod_link", "mod_live", "mod_modem", "mod_sim", "kestrel_panel", "VERSION")  # Kestrel's own files (not the bundled libraries), by parts of their names
+
+
+def is_own(relative, unpacked=False):  # is a file one of Kestrel's own, rather than a bundled library's?
+    """Return True for Kestrel's own documents and code; `unpacked` files are modules taken out of the program."""
+    name = relative.lower()  # compared without case
+    if unpacked:  # a module taken out of the program
+        return any(part.lower() in name for part in OWN_PARTS[3:])  # one of Kestrel's own packages
+    return not name.startswith("_internal") and any(part.lower() in name for part in OWN_PARTS[:3])  # outside the libraries folder, and one of our documents
+
+
 def words_to_find(word_file):  # the words to look for
-    """Return the list of words: the build computer's own names plus the private list."""
-    words = set()  # no repeats
+    """Return (words to look for everywhere, words to look for only in Kestrel's own files, the builder's user name)."""
+    words, own = set(), set()  # no repeats
     for name in ("COMPUTERNAME", "USERNAME", "USERDOMAIN"):  # the computer and the user
         value = os.environ.get(name, "").strip()  # its value here
         if len(value) >= 3 and value.upper() not in ("WORKGROUP",):  # long enough to mean something, and not Windows' default group
@@ -37,17 +55,19 @@ def words_to_find(word_file):  # the words to look for
         with open(word_file, "r", encoding="utf-8") as handle:  # read it
             for line in handle:  # each line
                 word = line.strip()  # the word
-                if word and not word.startswith("#"):  # not blank, not a comment
-                    words.add(word)  # look for it
-    return sorted(words, key=str.lower)  # the list
+                if word.startswith("own:"):  # an ordinary word
+                    own.add(word[4:].strip())  # only in Kestrel's own files
+                elif word and not word.startswith("#"):  # not blank, not a comment
+                    words.add(word)  # look for it everywhere
+    return sorted(words, key=str.lower), sorted(own - words, key=str.lower), os.environ.get("USERNAME", "").strip()  # the lists, and the user name
 
 
-def scan(folder, words, allowed):  # look through every file
-    """Return a list of (file, word) found; `allowed` maps a lower-case word to file-name parts where it may appear."""
-    patterns = []  # (word, its lower-case bytes in plain text, in 16-bit text)
-    for word in words:  # each word
+def scan(folder, words, allowed, own_words=(), unpacked=False):  # look through every file
+    """Return a list of (file, word) found; `allowed` maps a lower-case word to file-name parts where it may appear; `own_words` are looked for only in Kestrel's own files."""
+    patterns = []  # (word, its lower-case bytes in plain text, in 16-bit text, only in our own files?)
+    for word in list(words) + list(own_words):  # each word
         low = word.lower()  # compared without case
-        patterns.append((word, low.encode("utf-8"), low.encode("utf-16-le")))  # both encodings
+        patterns.append((word, low.encode("utf-8"), low.encode("utf-16-le"), word in own_words))  # both encodings
     found = []  # what turned up
     for top, _, files in os.walk(folder):  # every folder
         for name in files:  # every file
@@ -57,7 +77,10 @@ def scan(folder, words, allowed):  # look through every file
                     data = handle.read().lower()  # compared without case (only ASCII letters change)
             except OSError:  # unreadable
                 continue  # skip it
-            for word, plain, wide in patterns:  # each word
+            relative = os.path.relpath(path, folder)  # the file's name within the folder
+            for word, plain, wide, own_only in patterns:  # each word
+                if own_only and not is_own(relative, unpacked):  # an ordinary word, and this is a library's file
+                    continue  # not looked for here
                 if plain in data or wide in data:  # present
                     places = allowed.get(word.lower(), [])  # where it is allowed
                     if not any(part.lower() in name.lower() for part in places):  # not one of those
@@ -117,20 +140,23 @@ def main():  # the script itself
     parser.add_argument("folder", help="the finished program folder")  # what to scan
     parser.add_argument("--words", default="", help="a private word list, one per line")  # extra words
     parser.add_argument("--allow", action="append", default=[], help="WORD=PART: WORD may appear in files whose name contains PART")  # exceptions
+    parser.add_argument("--credit-files", default="", help="PART,PART: files holding the originator credit and the project's public address")  # where the user name may appear
     args = parser.parse_args()  # read them
     allowed = {}  # word -> file-name parts
     for item in args.allow:  # each exception
         word, _, part = item.partition("=")  # split it
         allowed.setdefault(word.lower(), []).append(part)  # keep it
-    words = words_to_find(args.words)  # the words to look for
+    words, own_words, user = words_to_find(args.words)  # the words to look for
     words += [word for word in allowed if word not in [w.lower() for w in words]]  # allowed words are still looked for everywhere else
-    found = scan(args.folder, words, allowed)  # look through the files as they are
+    if user and args.credit_files:  # the builder's user name may be part of the project's public address in the credit
+        allowed.setdefault(user.lower(), []).extend(part for part in args.credit_files.split(",") if part)  # allowed there only
+    found = scan(args.folder, words, allowed, own_words)  # look through the files as they are
     import tempfile  # a scratch folder for the unpacked modules
     with tempfile.TemporaryDirectory() as scratch:  # removed afterwards
         unpacked = unpack_archives(args.folder, scratch)  # unpack the Python code packed inside the program
         print(f"privacy scan: {unpacked} packed items unpacked and checked as well")  # what was done
-        found += [(f"(packed in the program) {path.split('_', 1)[-1]}", word) for path, word in scan(scratch, words, {w: p + ["about", "kestrel_panel", "notice"] for w, p in allowed.items()})]  # look through them too (the credit may also sit in the panel's own module)
-    print(f"privacy scan: {len(words)} words checked in every file under the program folder")  # what was done (the words themselves are not printed)
+        found += [(f"(packed in the program) {path.split('_', 1)[-1]}", word) for path, word in scan(scratch, words, {w: p + ["about", "kestrel_panel", "notice"] for w, p in allowed.items()}, own_words, unpacked=True)]  # look through them too (the credit may also sit in the panel's own module)
+    print(f"privacy scan: {len(words)} words checked in every file, {len(own_words)} more in Kestrel's own files")  # what was done (the words themselves are not printed)
     for path, word in found:  # each finding
         print(f"  FOUND in {path}: a private word ({len(word)} characters, starting {word[:2]!r})")  # where (the word is only hinted at, so the log does not spread it)
     print("privacy scan: clean" if not found else f"privacy scan: {len(found)} finding(s)")  # the verdict

@@ -98,9 +98,9 @@ $Licences = @((Get-Content -Raw (Join-Path $Src "NOTICE")), "`r`n==== Kestrel pr
 $Licences | Set-Content -Encoding utf8 (Join-Path $App "docs\LICENSES.txt")  # written beside the others
 
 Write-Host "Privacy scan"                                                # step 6
-$Credit = (Select-String -Path (Join-Path $Src "NOTICE") -Pattern '\(([A-Z0-9]{3,7})\)').Matches[0].Groups[1].Value  # the originator's callsign, as the NOTICE file gives it
+$Credit = (Select-String -Path (Join-Path $Src "NOTICE") -Pattern '\(([A-Z]{1,2}[0-9][A-Z]{1,4})\)').Matches[0].Groups[1].Value  # the originator's callsign, as the NOTICE file gives it (a callsign has a digit; this skips "(KES)")
 $WordList = Join-Path $Cache "private_words.txt"                         # the private word list (git-ignored; optional)
-& $VPy (Join-Path $Src "packaging\windows\privacy_scan.py") $App --words $WordList --allow "$Credit=NOTICE" --allow "$Credit=LICENSES" --allow "$Credit=kestrel-spec"  # the credit may appear only where the licence needs it: NOTICE, the licence page, and the specification's copyright line (and the About box, inside the program)
+& $VPy (Join-Path $Src "packaging\windows\privacy_scan.py") $App --words $WordList --allow "$Credit=NOTICE" --allow "$Credit=LICENSES" --allow "$Credit=kestrel-spec" --credit-files "NOTICE,LICENSES,kestrel-spec"  # the credit may appear only where the licence needs it: NOTICE, the licence page, and the specification's copyright line (and the About box, inside the program)
 if ($LASTEXITCODE -ne 0) { throw "the privacy scan found something; see above" }  # never publish that
 
 Write-Host "Checking the program starts"                                 # step 7
