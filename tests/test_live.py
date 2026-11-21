@@ -293,3 +293,28 @@ def test_listener_reports_a_near_miss_once():  # a clear signature whose header 
         assert not listener.feed(audio[begin:begin + FS])  # nothing decodes
     assert len(seen) == 1  # the signature was reported, exactly once
     assert seen[0].seen_level >= 0  # with a guess at its level
+
+
+def test_rig_list_says_why_it_is_empty_and_falls_back(tmp_path, monkeypatch):  # the Settings window's rig type list
+    import os  # file permissions
+    import sys  # which system this is
+    import live.rig as rig  # rig control helpers
+
+    models, reason = rig.list_models_why(str(tmp_path / "missing" / "rigctld"))  # a saved path that is no longer there
+    assert models == [] and "not where the settings say" in reason  # no list, and the reason in plain words
+    assert rig.list_models_why("")[1].startswith("no rigctld program")  # nothing to ask at all
+    if sys.platform == "win32":  # the rest needs a stand-in program, made here as a shell script
+        return  # not on Windows
+    good = tmp_path / "rigctld"  # a stand-in rigctld that lists two radios
+    good.write_text("#!/bin/sh\necho ' Rig #  Mfg                    Model                   Version         Status'\necho '  1035  Yaesu                  FT-991                  20240101.0      Stable'\necho '  1042  Yaesu                  FTDX-10                 20240101.0      Stable'\n")  # in rigctld's own layout
+    os.chmod(good, 0o755)  # make it runnable
+    silent = tmp_path / "silent"  # one that runs but lists nothing
+    silent.write_text("#!/bin/sh\nexit 3\n")  # no output
+    os.chmod(silent, 0o755)  # make it runnable
+    assert rig.list_models_why(str(good)) == ([(1035, "Yaesu FT-991"), (1042, "Yaesu FTDX-10")], "")  # the list, and no complaint
+    assert "listed no radios" in rig.list_models_why(str(silent))[1]  # ran, but nothing came back
+    monkeypatch.setattr(rig, "find_rigctld", lambda extra_folders=(): str(good))  # this computer has the good one
+    program, models, reason = rig.models_for(str(tmp_path / "missing" / "rigctld"))  # the settings name one that has gone
+    assert program == str(good) and len(models) == 2 and reason == ""  # the one found is used instead, and the list is filled
+    monkeypatch.setattr(rig, "find_rigctld", lambda extra_folders=(): "")  # a computer with none at all
+    assert rig.models_for("")[1] == [] and "setup program installs one" in rig.models_for("")[2]  # empty, with what to do about it

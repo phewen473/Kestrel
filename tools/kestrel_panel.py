@@ -49,7 +49,7 @@ from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir
 from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
-from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
+from live.rig import RigCtl, RigServer, find_rigctld, list_models, list_models_why, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
 from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
 from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
@@ -1635,8 +1635,10 @@ class Panel:  # the control panel window
 
     def settings_window(self, tab=0):  # the Settings window, open at one of its tabs
         dialog = self.window("settings", "Kestrel - Settings")  # a window of its own
-        program = self.settings["rigctld"] or find_rigctld()  # the rig control program: the one chosen before, else one found on this computer
-        models = [f"{number}  {name}" for number, name in list_models(program)] if program else []  # every radio type it knows, as "number  name"
+        program, listed, why_empty = models_for(self.settings["rigctld"])  # the rig control program (the one chosen before, else the one found on this computer), its radio list, and why the list is empty if it is
+        models = [f"{number}  {name}" for number, name in listed]  # every radio type it knows, as "number  name"
+        if why_empty:  # no list
+            self.say(f"Settings: the rig type list is empty: {why_empty}")  # keep the reason in the log too
         try:  # the serial port list needs the pyserial package
             from serial.tools import list_ports  # lists this computer's serial ports
             ports = sorted(port.device for port in list_ports.comports())  # their names (COM3, /dev/ttyUSB0, ...)
@@ -1688,14 +1690,26 @@ class Panel:  # the control panel window
         field(radio, 4, "ptt", "Key the transmitter (PTT) by", names=PTT_NAMES, width=30)  # how the transmitter is keyed
         field(radio, 5, "port", "PTT serial port (for RTS or DTR)", ports, editable=True, width=14)  # the port whose RTS or DTR line keys the radio
         path_box = field(radio, 6, "rigctld", "rigctld program", width=52)  # the rig control program's file
-        if not self.settings["rigctld"] and program:  # none chosen, but one was found
-            path_box.insert(0, program)  # offer it
+        if program and path_box.get() != program:  # the program in use is not the one shown (none was chosen, or the chosen one gave no list and another was used)
+            path_box.delete(0, "end")  # clear the box
+            path_box.insert(0, program)  # show the one in use
+        list_note = ttk.Label(radio, text=(f"The rig type list is empty: {why_empty}." if why_empty else f"{len(models)} radio types listed."), wraplength=560, justify="left", foreground="#b00020" if why_empty else "")  # how many radios, or why none
+        list_note.grid(row=8, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))  # under the settings
+
+        def reload():  # fill the rig type list again from the program in the box
+            again, reason = list_models_why(path_box.get().strip())  # ask it
+            models[:] = [f"{number}  {name}" for number, name in again]  # the new list, in place (the narrowing-as-you-type rule reads the same list)
+            rig_box.configure(values=[NO_RIG] + models)  # into the drop-down
+            list_note.configure(text=f"The rig type list is empty: {reason}." if reason else f"{len(models)} radio types listed.", foreground="#b00020" if reason else "")  # say how it went
+
+        ttk.Button(radio, text="Reload rig list", command=reload).grid(row=7, column=2, padx=(0, 8), pady=(2, 0))  # try again, after fixing the path or the antivirus
 
         def browse():  # the Browse button
             chosen = filedialog.askopenfilename(parent=dialog, title="Find the rigctld program")  # ask for the file
             if chosen:  # one was picked
                 path_box.delete(0, "end")  # clear the box
                 path_box.insert(0, chosen)  # show the choice
+                reload()  # and fill the rig type list from it
 
         ttk.Button(radio, text="Browse...", command=browse).grid(row=6, column=2, padx=(0, 8))  # find the program by hand
         field(radio, 7, "rig", "or one already running at (host:port)", width=22)  # an outside rigctld, used only when no rig type is chosen

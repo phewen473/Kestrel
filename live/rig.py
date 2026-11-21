@@ -64,11 +64,42 @@ def parse_models(listing):  # read rigctld's list of radios
 
 def list_models(program):  # ask rigctld which radios it knows
     """Return [(model number, name)] for the rigctld at `program`, or [] if it cannot be run."""
-    try:  # the program may be missing or refuse to run
-        done = subprocess.run([program, "-l"], capture_output=True, text=True, timeout=20, cwd=os.path.dirname(program) or None, **HIDDEN)  # ask for the list
-    except (OSError, subprocess.SubprocessError):  # it could not be run
-        return []  # no list
-    return parse_models(done.stdout + "\n" + done.stderr)  # the list may come on either output
+    return list_models_why(program)[0]  # the list alone
+
+
+def list_models_why(program):  # ask rigctld which radios it knows, and say why if it will not tell
+    """Return ([(model number, name)], reason): the radios the rigctld at `program` knows, and, when the list is empty, why in plain words."""
+    if not program:  # no program to ask
+        return [], "no rigctld program was found on this computer"  # say so
+    if not os.path.isfile(program):  # the file is not there
+        return [], f"the rigctld program is not where the settings say: {program}"  # say so
+    reason = ""  # why the last try failed
+    for wait in (30, 90):  # two tries: an antivirus program checking a new file can make the first run very slow
+        try:  # the program may refuse to run
+            done = subprocess.run([program, "-l"], stdin=subprocess.DEVNULL, capture_output=True, timeout=wait, cwd=os.path.dirname(program) or None, **HIDDEN)  # ask for the list (bytes, decoded below, so an odd character in a radio's name cannot stop it)
+        except subprocess.TimeoutExpired:  # it did not finish in time
+            reason = f"rigctld did not answer within {wait} seconds (an antivirus program may be holding it)"  # say so, and try again
+            continue  # the second try waits longer
+        except (OSError, subprocess.SubprocessError) as problem:  # it could not be run at all
+            return [], f"rigctld could not be run ({problem}); an antivirus program may have blocked it"  # say so
+        models = parse_models(done.stdout.decode("utf-8", "replace") + "\n" + done.stderr.decode("utf-8", "replace"))  # the list may come on either output
+        if models:  # it answered
+            return models, ""  # the list
+        reason = f"rigctld ran but listed no radios (exit code {done.returncode})"  # say so
+    return [], reason  # no list, and why
+
+
+def models_for(saved):  # the radio list for the Settings window
+    """Return (program, models, reason): the rigctld to use and its radio list. The saved program is tried first; if it gives no list, the one found on this computer (the copy installed with Kestrel first) is used instead."""
+    found = find_rigctld()  # the one this computer has
+    reason = ""  # why there is no list, if there is none
+    for program in ([saved] if saved else []) + ([found] if found and found != saved else []):  # the saved one, then the found one
+        models, reason = list_models_why(program)  # ask it
+        if models:  # it answered
+            return program, models, ""  # use it
+    if not saved and not found:  # nothing to ask
+        reason = "no rigctld program was found on this computer. The Kestrel setup program installs one; when running from the source code, install Hamlib (or WSJT-X) or choose rigctld with Browse"  # what to do
+    return saved or found, [], reason  # no list
 
 
 class RigServer:  # a rigctld started and stopped by Kestrel
