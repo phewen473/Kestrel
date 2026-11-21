@@ -1,18 +1,25 @@
 """Preselected Kestrel frequencies, and the operator's own.
 
-One meeting frequency per band, so stations know where to find each
-other. Each is a DIAL frequency for upper sideband: the Kestrel signal
-sits from 500 Hz to 2500 Hz above it.
+One calling frequency per band, so stations know where to find each
+other, and up to four numbered channels beside it for contacts to move
+to. Each is a DIAL frequency for upper sideband: the Kestrel signal sits
+from 500 Hz to 2500 Hz above it. Channels are 2.5 kHz apart: the widest
+Kestrel signal is 1.4 kHz, so neighbours have about a kilohertz between
+them.
 
-Every one keeps the whole signal inside a band segment that FCC rule
-97.221(b) allows for automatically controlled stations, so the same
-frequency serves an operator at the controls and a station left running
-to hold and deliver mail.
+From version 0.29 these sit in an area of Kestrel's own on each band,
+away from the calling frequencies of FT8, FT4, JS8, WSPR, Winlink, VARA
+and VarAC, as far as each band allows (20 m and 40 m well; 80 m and 30 m
+have no empty space, so their areas are the least used that could be
+found). They are outside the segments FCC rule 97.221(b) gives to
+automatically controlled stations (that is where Winlink and VARA are),
+so a station using them must have an operator at the controls.
 
-These are suggestions for the United States, chosen in November 2026
-(80 metres added in signal version 0.26). A frequency the operator adds
-must keep the whole signal inside a U.S. amateur data segment.
-Always listen first: the segments are shared with other data modes.
+These are suggestions for the United States, chosen in November 2026. A
+frequency the operator adds must keep the whole signal inside a U.S.
+amateur data segment. Kestrel uses upper sideband on every band: the
+radio's data mode (USB-D) where it has one, plain USB where it has not.
+Always listen first: every part of these bands is shared.
 """
 
 import json  # the operator's own frequencies are kept in a small JSON file
@@ -21,20 +28,23 @@ import os  # file paths
 
 SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency allowed for (the fastest level reaches down to about 800 Hz)
 SIGNAL_HIGH_HZ = 2500.0  # the highest audio frequency allowed for (the fastest level reaches up to about 2200 Hz)
+CHANNEL_KHZ = 2.5  # channels are this far apart
 
-PRESETS_KHZ = {  # band name (metres) -> dial frequency in kHz, upper sideband
-    "80": 3590.0,  # signal 3590.5 to 3592.5 kHz, inside 3585-3600 and clear of the FT8 (3573) and JS8 (3578) activity
-    "40": 7101.5,  # signal 7102.0 to 7104.0 kHz, inside 7100-7105
-    "30": 10144.0,  # signal 10144.5 to 10146.5 kHz, inside 10140-10150 and clear of the FT4, WSPR and PSK activity at the bottom of that segment
-    "20": 14108.5,  # signal 14109.0 to 14111.0 kHz, inside 14100.5-14112 and clear of the beacons on 14100
+PRESETS_KHZ = {  # band name (metres) -> calling dial frequency in kHz, upper sideband
+    "80": 3582.5,  # signal 3583.0 to 3585.0 kHz: just above the JS8 activity (3578), below the Winlink segment (3585 up)
+    "40": 7110.0,  # signal 7110.5 to 7112.5 kHz: above the Winlink and VARA segment (7100-7105) and VarAC (7105)
+    "30": 10147.0,  # signal 10147.5 to 10149.5 kHz: the top of the band, above FT8, FT4, WSPR and most RTTY
+    "20": 14112.5,  # signal 14113.0 to 14115.0 kHz: above the Winlink and VARA segment (to 14112) and VarAC (14105)
 }  # end of the table
 
-WORKING_KHZ = {  # band name (metres) -> working dial frequencies in kHz, upper sideband, in order of preference
-    "80": (3594.0, 3597.0),  # signals 3594.5-3596.5 and 3597.5-3599.5 kHz, both inside 3585-3600
-    "40": (7106.5, 7109.0),  # signals 7107.0-7109.0 and 7109.5-7111.5 kHz: just above the 7100-7105 segment, so for attended stations only
-    "30": (10146.5, 10141.5),  # signals 10147.0-10149.0 and 10142.0-10144.0 kHz, both inside 10140-10150; the upper one first, away from the FT4 activity
-    "20": (14106.0, 14103.5, 14101.0),  # signals 14106.5-14108.5, 14104.0-14106.0 and 14101.5-14103.5 kHz, all inside 14100.5-14112
+WORKING_KHZ = {  # band name (metres) -> the numbered channels: dial frequencies in kHz, upper sideband, Channel 1 first
+    "80": (3585.0, 3587.5, 3590.0, 3592.5),  # signals 3585.5 to 3595.0 kHz: shared with Winlink gateways and RTTY, stopping short of VarAC (3595)
+    "40": (7112.5, 7115.0, 7117.5, 7120.0),  # signals 7113.0 to 7122.5 kHz, inside the U.S. data segment (to 7125)
+    "30": (10144.5,),  # signal 10145.0 to 10147.0 kHz: the band is 50 kHz wide and full, so there is room for one channel only
+    "20": (14115.0, 14117.5, 14120.0, 14122.5),  # signals 14115.5 to 14125.0 kHz, below where phone begins outside the U.S. (14125)
 }  # end of the table
+
+RADIO_MODES = {"PKTUSB": "USB-D", "USB": "USB"}  # the radio modes Kestrel uses, as Hamlib names them -> as operators know them (upper sideband only: data mode where the radio has one, plain USB where not)
 
 AUTOMATIC_SEGMENTS_KHZ = (  # HF segments of 97.221(b), in kHz
     (3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5), (14100.5, 14112.0),  # 80, 40, 30 and 20 metres
@@ -68,12 +78,12 @@ def dial_khz(band):  # look up a band's preset
 def working_offsets_hz(entry):  # the working frequencies that go with a calling frequency
     """Return the offsets, in hertz from `entry`'s dial frequency, of the working frequencies to offer for it.
 
-    For one of Kestrel's meeting frequencies these are the band's
-    suggested working frequencies. For any other frequency they are one
+    For one of Kestrel's calling frequencies these are the band's numbered
+    channels, Channel 1 first. For any other frequency they are one
     channel (2.5 kHz) above and one below.
     """
     band = entry["band"].split()[0]  # "30 m" -> "30"
-    if entry.get("builtin") and band in WORKING_KHZ:  # a meeting frequency with suggested working frequencies
+    if entry.get("builtin") and band in WORKING_KHZ:  # a calling frequency with numbered channels
         return [int(round((dial - entry["dial_khz"]) * 1000.0)) for dial in WORKING_KHZ[band]]  # each as an offset in hertz
     return [2500, -2500]  # otherwise the next channel up, then the next channel down
 
@@ -93,8 +103,8 @@ USER_FILE = os.path.join(data_dir(), "frequencies.json")  # the operator's own l
 
 
 def builtin_frequencies():  # the presets, as list entries
-    """Return the built-in meeting frequencies as a list of entries (see all_frequencies), lowest band number last."""
-    return [{"band": f"{band} m", "dial_khz": dial, "mode": "PKTUSB", "note": "Kestrel meeting frequency", "builtin": True}  # one entry per preset
+    """Return the built-in calling frequencies as a list of entries (see all_frequencies), lowest band number last."""
+    return [{"band": f"{band} m", "dial_khz": dial, "mode": "PKTUSB", "note": "Kestrel calling frequency", "builtin": True}  # one entry per preset
             for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: -int(item[0]))]  # 80 m first, then 40 m, 30 m and 20 m
 
 
@@ -120,6 +130,9 @@ def all_frequencies(path=None):  # everything a frequency drop-down list should 
 def add_user_frequency(band, dial_khz, mode="PKTUSB", note="", path=None):  # remember a frequency of the operator's own
     """Add an entry to the operator's list and save it; return the new entry."""
     band, mode, note = str(band).strip(), str(mode).strip().upper(), str(note).strip()  # tidy the text
+    mode = {"USB-D": "PKTUSB", "USBD": "PKTUSB", "DATA-U": "PKTUSB", "": "PKTUSB"}.get(mode, mode)  # the names operators use for upper sideband data all mean PKTUSB
+    if mode not in RADIO_MODES:  # anything but upper sideband
+        raise ValueError("Kestrel uses upper sideband on every band: give the mode as USB-D (the radio's data mode) or USB")  # refuse lower sideband and the rest
     dial_khz = float(dial_khz)  # the frequency as a number (raises ValueError if it is not one)
     if not band or not mode or not 100.0 <= dial_khz <= 500000.0:  # a band name, a mode and a sensible frequency are needed
         raise ValueError("give a band name, a dial frequency in kHz (100 to 500000) and a mode")  # refuse anything else
@@ -153,4 +166,17 @@ def describe_frequency(entry):  # one line for a drop-down list
     else:  # an amateur data frequency
         place = "97.221(b) segment" if in_automatic_segment(entry["dial_khz"]) else "attended only"  # may a station be left running here?
     note = f"  {entry['note']}" if entry["note"] else ""  # the note, when there is one
-    return f"{entry['band']:<6} {entry['dial_khz']:9.1f} kHz {entry['mode']:<7} signal {low:.1f}-{high:.1f}  [{place}]{note}"  # band, dial, mode, occupancy, status, note
+    return f"{entry['band']:<6} {entry['dial_khz']:9.1f} kHz {mode_name(entry['mode']):<6} signal {low:.1f}-{high:.1f}  [{place}]{note}"  # band, dial, mode, occupancy, status, note
+
+
+def mode_name(mode):  # a radio mode as operators know it
+    """Return "USB-D" or "USB" for a frequency entry's mode (anything that is not plain USB counts as USB-D)."""
+    return RADIO_MODES.get(str(mode).upper(), "USB-D")  # upper sideband either way
+
+
+def channel_names(entry):  # the choices for moving a contact off the calling frequency
+    """Return [(name, offset in hertz)] for `entry`: "Channel 1" to "Channel 4" for a Kestrel calling frequency, "up 2.5 kHz" and "down 2.5 kHz" otherwise."""
+    offsets = working_offsets_hz(entry)  # where a contact may move to
+    if entry.get("builtin"):  # one of Kestrel's calling frequencies
+        return [(f"Channel {number}", offset) for number, offset in enumerate(offsets, 1)]  # numbered from 1
+    return [("up 2.5 kHz" if offset > 0 else "down 2.5 kHz", offset) for offset in offsets]  # the next channel each way

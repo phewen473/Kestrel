@@ -44,7 +44,7 @@ from link import Station  # the link rules  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
-from live.bands import add_user_frequency, all_frequencies, describe_frequency, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
+from live.bands import add_user_frequency, all_frequencies, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
 from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir  # recording the received audio to WAV files, and numbering every sample received  # noqa: E402
 from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
@@ -61,7 +61,7 @@ BEACON_MIN, BEACON_MAX = 5, 60  # the repeating beacon may be set to no less tha
 AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, is between 15 minutes and 12 hours (0 turns it off)
 DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
-            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
+            "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system",  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
@@ -72,6 +72,7 @@ CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stati
 LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
 SIGNAL_NAMES = {"off": "Off", "on": "On: text only (a few MB a day)",  # the signal log, as the operator sees it (continued)
                 "clips": f"On, with each frame's audio (clips kept {KEEP_DAYS} days, at most {CLIPS_MAX_MB} MB)"}  # (continued)
+RADIO_MODE_NAMES = {"auto": "Automatic: USB-D if the radio has it, otherwise USB", "PKTUSB": "USB-D (upper sideband, data)", "USB": "USB (plain upper sideband)"}  # the radio's mode, as the operator sees it (Kestrel never uses lower sideband)
 LISTEN_FIRST_NAMES = {True: "On: hold beacons, calls and broadcasts while the frequency is in use", False: "Off: transmit regardless (you check the frequency yourself)"}  # listen before transmitting, as the operator sees it
 BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)",  # the two kinds of repeating beacon (continued)
                      "long": "Long: about 60 s, heard much further; nobody answers (every 10 min at most)"}  # (continued)
@@ -286,7 +287,7 @@ class Panel:  # the control panel window
         ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
         ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
         ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
-        self.working = ttk.Combobox(options, state="readonly", width=46)  # stay on the calling frequency, or move to a working frequency
+        self.working = ttk.Combobox(options, state="readonly", width=62)  # stay on the calling frequency, or move to a numbered channel
         self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
         typing.grid(row=5, column=0, sticky="ew", padx=8, pady=4)  # place it
@@ -1687,6 +1688,8 @@ class Panel:  # the control panel window
         field(radio, 3, "cat_handshake", "CAT handshake", ["none", "hardware"], width=14)  # RTS/CTS handshaking, for radios that want it
         field(radio, 4, "ptt", "Key the transmitter (PTT) by", names=PTT_NAMES, width=30)  # how the transmitter is keyed
         field(radio, 5, "port", "PTT serial port (for RTS or DTR)", ports, editable=True, width=14)  # the port whose RTS or DTR line keys the radio
+        field(radio, 9, "radio_mode", "Radio mode", names=RADIO_MODE_NAMES, width=44)  # USB-D or plain USB
+        note(radio, 10, "Kestrel uses upper sideband on every band, 80 m and 40 m included. On plain USB turn the radio's speech processor,\ncompression and transmit equaliser off, and feed the audio in where the radio takes it for USB (often the microphone input).")  # what plain USB needs
         path_box = field(radio, 6, "rigctld", "rigctld program", width=52)  # the rig control program's file
         if not self.settings["rigctld"] and program:  # none chosen, but one was found
             path_box.insert(0, program)  # offer it
@@ -1794,7 +1797,7 @@ class Panel:  # the control panel window
                 if not messagebox.askyesno("Kestrel - check your callsign", f"Kestrel will identify every transmission as\n\n        {new['call']}\n\nIs that your callsign, exactly?", parent=dialog):  # make the operator look at it
                     book.select(0)  # show the Station tab
                     return  # leave the window open for a correction
-            restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
+            restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "radio_mode", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
             self.logbook.level = new["log_level"]  # the logbook's level of detail
@@ -1863,8 +1866,8 @@ class Panel:  # the control panel window
     def refresh_working(self, select=0):  # (re)fill the working-frequency choice for the selected calling frequency
         entry = self.selected()  # the calling frequency
         choices = ["stay on the calling frequency"]  # the first choice: no move
-        for offset in working_offsets_hz(entry):  # each working frequency that goes with it
-            choices.append(f"move to {entry['dial_khz'] + offset / 1000.0:.1f} kHz  ({offset / 1000.0:+.1f} kHz), return at the end")  # where the pair would go
+        for name, offset in channel_names(entry):  # each channel that goes with it
+            choices.append(f"move to {name}: {entry['dial_khz'] + offset / 1000.0:.1f} kHz  ({offset / 1000.0:+.1f} kHz), return at the end")  # where the pair would go
         self.working["values"] = choices  # show them
         self.working.current(select if 0 <= select < len(choices) else 0)  # the remembered choice, if it still exists
 
@@ -1880,7 +1883,7 @@ class Panel:  # the control panel window
     def add_frequency(self):  # ask for a frequency of the operator's own
         dialog = self.window("add", "Add a frequency")  # a small window
         boxes = []  # the four text boxes
-        for row, (label, value) in enumerate((("Band (for example 17 m)", ""), ("Dial frequency in kHz (USB)", ""), ("Radio mode", "PKTUSB"), ("Note", ""))):  # the four things asked for
+        for row, (label, value) in enumerate((("Band (for example 17 m)", ""), ("Dial frequency in kHz (USB)", ""), ("Radio mode (USB-D or USB)", "USB-D"), ("Note", ""))):  # the four things asked for
             ttk.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)  # the label
             box = ttk.Entry(dialog, width=28)  # the box
             box.insert(0, value)  # its starting text
@@ -1903,7 +1906,7 @@ class Panel:  # the control panel window
     def remove_frequency(self):  # remove the selected frequency, if it is one of the operator's own
         entry = self.selected()  # what is selected
         if entry["builtin"]:  # a preset
-            messagebox.showinfo("Kestrel", "Kestrel's own meeting frequencies cannot be removed.", parent=self.root)  # say so
+            messagebox.showinfo("Kestrel", "Kestrel's own calling frequencies cannot be removed.", parent=self.root)  # say so
             return  # nothing to do
         remove_user_frequency(self.frequency.current() - (len(self.entries) - len(user_frequencies())))  # its position among the operator's own
         self.refresh_frequencies(0)  # show the list again
@@ -1928,7 +1931,7 @@ class Panel:  # the control panel window
             with self.rig_lock:  # one user of rig control at a time
                 address = self.rig_address(settings)  # start or find rig control
                 if not address:  # the radio is tuned by hand
-                    self.say(f"set the radio by hand to {entry['dial_khz']:.1f} kHz {entry['mode']}  ({entry['band']})")  # tell the operator where to go
+                    self.say(f"set the radio by hand to {entry['dial_khz']:.1f} kHz {'USB' if settings.get('radio_mode') == 'USB' else 'USB-D (or USB if the radio has no data mode)'}  ({entry['band']})")  # tell the operator where to go
                     return  # nothing to send
                 rig = RigCtl(address)  # connect to rigctld
                 self._tune(rig, entry)  # set mode and frequency
@@ -1937,9 +1940,10 @@ class Panel:  # the control panel window
             self.say(f"could not tune the radio: {problem}")  # say what went wrong (rig control's own message says what to check)
 
     def _tune(self, rig, entry):  # set the radio to a frequency entry
-        rig.set_mode(entry["mode"])  # the mode first
+        prefer = "USB" if entry.get("mode") == "USB" else self.settings.get("radio_mode", "auto")  # a frequency the operator saved as plain USB stays plain USB; otherwise the setting decides
+        mode = rig.set_data_mode(prefer)  # the mode first: upper sideband, the radio's data mode if it has one
         rig.set_frequency(entry["dial_khz"] * 1000.0)  # then the frequency
-        self.say(f"radio tuned to {rig.frequency() / 1000.0:.1f} kHz {entry['mode']}  ({entry['band']})")  # confirm what the radio reports
+        self.say(f"radio tuned to {rig.frequency() / 1000.0:.1f} kHz {mode_name(mode)}  ({entry['band']})" + ("; this radio has no USB-D mode, so plain USB is used" if mode == "USB" and prefer == "auto" else ""))  # confirm what the radio reports
 
     # ---- running ----
 

@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.29 (draft) - 21 November 2026
+
+- **No frame is changed. The signal version stays 0.27.** But stations must be on the same frequency to meet: 0.29 stations call on new frequencies.
+- Calling frequencies moved to an area of Kestrel's own on each band (Section 6.9), away from the calling frequencies of FT8, FT4, JS8, WSPR and VarAC and, on 40 m and 20 m, out of the 97.221(b) segments used by Winlink and VARA: 80 m 3582.5, 40 m 7110.0, 30 m 10147.0, 20 m 14112.5 kHz (were 3590.0, 7101.5, 10144.0, 14108.5).
+- Numbered channels replace the working frequencies (Section 6.10): Channels 1 to 4, 2.5 kHz apart, above the calling frequency on 80, 40 and 20 m (3585.0 to 3592.5; 7112.5 to 7120.0; 14115.0 to 14122.5 kHz); one channel on 30 m (10144.5 kHz).
+- The new areas are for attended stations. Unattended mail holders, when built, will get frequencies of their own inside the 97.221(b) segments.
+- Upper sideband on every band: the radio's data mode (USB-D) where it has one, plain USB where not. Lower sideband is not used (Section 6.9).
+
 ## 0.28 (draft) - 21 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.27**; stations following 0.27 and 0.28 work together. 0.28 is about pulling signals out of noise at the receiver, and about not transmitting over others.

@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.28 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. Version 0.28 changes only how long beacons are received (Section 5.9); nothing sent has changed. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.29 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. Version 0.29 moves the calling frequencies to an area of Kestrel's own on each band and adds numbered channels (Sections 6.9, 6.10); version 0.28 changed how frames are received (Sections 5.7, 5.9) and added listening before transmitting (6.14). Neither changes the frames sent. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -404,48 +404,52 @@ No single transmission should hold the frequency for long. The link applies thes
 
 Both limits are operator settings; 60 and 90 seconds are the defaults.
 
-### 6.9 Suggested frequencies (United States)
+### 6.9 Calling frequencies (United States)
 
-So that stations can find each other, one meeting frequency is suggested per band. Each is the dial frequency of an upper-sideband radio. Kestrel's tones are centred 1500 Hz above it; the widest level, L4, reaches from 800 Hz to 2180 Hz above it. The table allows the 500 Hz to 2500 Hz that earlier versions occupied.
+So that stations can find each other, one calling frequency is suggested per band. Each is the dial frequency of an upper-sideband radio. Kestrel's tones are centred 1500 Hz above it; the widest level, L4, reaches from 800 Hz to 2180 Hz above it. The table allows 500 Hz to 2500 Hz.
 
-| Band | Dial frequency (USB) | Signal occupies | Inside 97.221(b) segment |
+From version 0.29 the calling frequencies sit in an area of Kestrel's own on each band, with numbered channels beside them (Section 6.10), away from the calling frequencies other modes have settled on, as far as each band allows.
+
+| Band | Calling (dial, USB) | Signal occupies | Why there |
 |---|---|---|---|
-| 80 m | 3590.0 kHz | 3590.5 to 3592.5 kHz | 3585 to 3600 kHz |
-| 40 m | 7101.5 kHz | 7102.0 to 7104.0 kHz | 7100 to 7105 kHz |
-| 30 m | 10144.0 kHz | 10144.5 to 10146.5 kHz | 10140 to 10150 kHz |
-| 20 m | 14108.5 kHz | 14109.0 to 14111.0 kHz | 14100.5 to 14112 kHz |
+| 80 m | 3582.5 kHz | 3583.0 to 3585.0 kHz | Just above the JS8 activity (3578 kHz), below the 97.221(b) segment (3585 kHz up) where Winlink gateways are. 80 m has no empty space; this is the least used that could be found. |
+| 40 m | 7110.0 kHz | 7110.5 to 7112.5 kHz | Above the 97.221(b) segment (7100 to 7105 kHz) and the VarAC calling frequency (7105 kHz). |
+| 30 m | 10147.0 kHz | 10147.5 to 10149.5 kHz | The top of the band, above FT8, FT4 and WSPR. The band is 50 kHz wide and full. |
+| 20 m | 14112.5 kHz | 14113.0 to 14115.0 kHz | Above the 97.221(b) segment (to 14112 kHz) and the VarAC calling frequency (14105 kHz), below where phone begins outside the United States (14125 kHz). |
 
-- Every suggested frequency keeps the whole signal inside a segment that 97.221(b) allows for automatically controlled stations, so the same frequency serves attended stations and unattended mail holders (Section 2).
-- The 30 m choice stays above the FT4, WSPR and PSK activity at the bottom of that segment; the 20 m choice stays clear of the beacons on 14100 kHz; the 80 m choice stays above the FT8 (3573 kHz) and JS8 (3578 kHz) activity.
+- **Kept clear of** (dial frequencies, from published lists in November 2026): FT8 3573, 7074, 10136, 14074 kHz; FT4 3575, 7047.5, 10140, 14080 kHz; WSPR 3568.6, 7038.6, 10138.7, 14095.6 kHz; JS8 3578, 7078, 10130, 14078 kHz; VarAC 3595, 7105, 10133, 14105 kHz; and, on 40 m and 20 m, the 97.221(b) segments used by Winlink and VARA gateways.
+- **Attended stations only.** The 80 m, 40 m and 20 m calling frequencies and all their channels are outside the 97.221(b) segments, or share them with gateways. A station using them has an operator at the controls. Until version 0.28 the calling frequencies were inside those segments so that unattended mail holders could share them; unattended stations (Section 8) are not built yet and will be given frequencies of their own inside the segments when they are (Section 2).
+- **Upper sideband on every band**, 80 m and 40 m included: the radio's data mode (often called USB-D, DATA-U or PKT-USB) where it has one, plain USB where it has not. Lower sideband is not used: it would turn the tones upside down. The reference program asks the radio for its data mode and falls back to plain USB if the radio has none.
 - 80 m suits paths of roughly 50 to 300 miles in the evening and at night, when 40 m often skips over them; 40 m suits the same distances in the daytime and late afternoon.
-- The reference program refuses to transmit on a frequency whose signal would fall outside the U.S. amateur data segments (Amateur Extra limits; General class starts 25 kHz higher on 80, 40, 20 and 15 m).
-- These segments are shared with other data modes. A station listens before transmitting (Section 6.14) and moves if the frequency is in use.
+- The reference program refuses to transmit on a frequency whose signal would fall outside the U.S. amateur data segments (Amateur Extra limits; General class starts 25 kHz higher on 80, 40, 20 and 15 m; all the frequencies here are inside the General limits).
+- Every part of these bands is shared. A station listens before transmitting (Section 6.14) and moves if the frequency is in use.
 - On 30 m the amateur power limit is 200 W PEP.
 - These are first choices, to be confirmed by listening on the air. Other bands: **TBD**.
 - Operators may use other frequencies by agreement. A station with no operator present must keep its whole signal inside a 97.221(b) segment.
 
-### 6.10 Working frequencies
+### 6.10 Channels (working frequencies)
 
-A long contact on a meeting frequency keeps others from calling there. Once locked, the pair may move to a working frequency and leave the meeting (calling) frequency free.
+A long contact on a calling frequency keeps others from calling there. Once locked, the pair may move to a channel (a working frequency) and leave the calling frequency free.
 
 - **Proposal.** The station holding the turn sends a status-3 acknowledgment with part number 3. Its message-number field carries the working frequency as an offset from the frequency on which the lock was made: a signed 16-bit count (two's complement) of 100 Hz steps, so +25 means 2.5 kHz higher.
 - **Agreement.** A station that can change frequency answers with the same frame (status 3, part number 3, the same offset), then changes frequency when that frame has been sent. A station that cannot, or will not, answers with a plain reply (status 3, part number 0), and the contact stays where it is. A move is proposed at most once in a contact.
 - **Meeting again.** The proposing station changes frequency when it hears the agreement, waits 3 seconds, and sends a probe (status 3, part number 2) at the level in use. The partner answers as for any probe, both start their measurements afresh, and the contact carries on. If the probe goes unanswered the usual reacquiring rule applies (Section 6.5), on the working frequency.
 - **A lost agreement.** If a proposal gets no reply it is sent once more. If that also gets no reply, the proposing station goes to the working frequency anyway and probes there, in case its partner agreed without being heard.
 - **Giving up.** A station that has moved at its partner's request and hears nothing from it on the working frequency for 150 seconds releases the lock.
-- **An idle working frequency.** On a working frequency, the station that proposed the move watches the time since a message frame last went in either direction (or since the pair arrived). Keep-alive exchanges do not count. After 3 minutes with no message frame it closes the contact in the ordinary way, with closing identifications, and both stations return to the meeting frequency. One minute beforehand it warns its own operator, who may keep the contact on the working frequency by sending a message.
-- **Returning.** When the contact ends for any reason, each station returns to the meeting frequency: after its closing identification has been sent, or at once if the lock is released without one.
-- **Listen first.** The operator of the proposing station is responsible for choosing a working frequency that is clear. An automatic check is **TBD**.
+- **An idle working frequency.** On a working frequency, the station that proposed the move watches the time since a message frame last went in either direction (or since the pair arrived). Keep-alive exchanges do not count. After 3 minutes with no message frame it closes the contact in the ordinary way, with closing identifications, and both stations return to the calling frequency. One minute beforehand it warns its own operator, who may keep the contact on the working frequency by sending a message.
+- **Returning.** When the contact ends for any reason, each station returns to the calling frequency: after its closing identification has been sent, or at once if the lock is released without one.
+- **Listen first.** The operator of the proposing station is responsible for choosing a channel that is clear. An automatic check of the channel before moving is **TBD** (the check of Section 6.14 covers the frequency the station is on).
 
-Suggested working frequencies (dial, upper sideband; first choices, to be confirmed by listening):
+**Channels** (dial, upper sideband; first choices, to be confirmed by listening). Channels are 2.5 kHz apart: the widest Kestrel signal is 1.4 kHz, which leaves about 1 kHz between neighbours.
 
-| Band | Meeting frequency | Working frequencies | Notes |
-|---|---|---|---|
-| 40 m | 7101.5 kHz | 7106.5, 7109.0 kHz | Signals 7107.0 to 7109.0 and 7109.5 to 7111.5 kHz. Outside the 97.221(b) segment, so only with an operator present. |
-| 30 m | 10144.0 kHz | 10146.5, 10141.5 kHz | Signals 10147.0 to 10149.0 and 10142.0 to 10144.0 kHz, both inside 10140 to 10150 kHz. |
-| 20 m | 14108.5 kHz | 14106.0, 14103.5, 14101.0 kHz | Signals 14106.5 to 14108.5, 14104.0 to 14106.0 and 14101.5 to 14103.5 kHz, all inside 14100.5 to 14112 kHz. |
+| Band | Calling | Channel 1 | Channel 2 | Channel 3 | Channel 4 | Notes |
+|---|---|---|---|---|---|---|
+| 80 m | 3582.5 | 3585.0 | 3587.5 | 3590.0 | 3592.5 | The channels share 3585 to 3595 kHz with Winlink gateways and RTTY; listen first. They stop short of the VarAC calling frequency (3595 kHz). |
+| 40 m | 7110.0 | 7112.5 | 7115.0 | 7117.5 | 7120.0 | Signals to 7122.5 kHz, inside the U.S. data segment (to 7125 kHz). |
+| 30 m | 10147.0 | 10144.5 | none | none | none | Room for one channel only. |
+| 20 m | 14112.5 | 14115.0 | 14117.5 | 14120.0 | 14122.5 | Signals to 14125.0 kHz. |
 
-For any other meeting frequency, the working frequencies offered are 2.5 kHz above and 2.5 kHz below it.
+For any other calling frequency, the channels offered are 2.5 kHz above and 2.5 kHz below it.
 
 ### 6.11 Directed calls, messages for one station, and broadcasts
 

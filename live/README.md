@@ -40,13 +40,16 @@ python tools/live_station.py --call Q1AAAA --grid EM93 --beacon --rig 127.0.0.1:
 
 ## Preselected frequencies
 
-`--band 40`, `--band 30` or `--band 20` tunes the radio to Kestrel's suggested meeting frequency for that band (it needs `--rig`):
+`--band 80`, `--band 40`, `--band 30` or `--band 20` tunes the radio to Kestrel's calling frequency for that band (it needs `--rig`). From version 0.29 (spec Sections 6.9 and 6.10):
 
-| Band | Dial (USB) | Signal occupies |
+| Band | Calling (dial, USB) | Channels 1 to 4 (dial) |
 |---|---|---|
-| 40 m | 7101.5 kHz | 7102.0 to 7104.0 kHz |
-| 30 m | 10144.0 kHz | 10144.5 to 10146.5 kHz |
-| 20 m | 14108.5 kHz | 14109.0 to 14111.0 kHz |
+| 80 m | 3582.5 kHz | 3585.0, 3587.5, 3590.0, 3592.5 |
+| 40 m | 7110.0 kHz | 7112.5, 7115.0, 7117.5, 7120.0 |
+| 30 m | 10147.0 kHz | 10144.5 (one channel only) |
+| 20 m | 14112.5 kHz | 14115.0, 14117.5, 14120.0, 14122.5 |
+
+Upper sideband on every band: `RigCtl.set_data_mode` asks the radio for its data mode (USB-D) and falls back to plain USB when the radio has none. Lower sideband is not used.
 
 Each keeps the whole signal inside a band segment that FCC rule 97.221(b) allows for automatically controlled stations, so attended stations and unattended mail holders can meet on the same frequency. The segments are shared with other data modes: listen first. `--freq` (kHz) tunes anywhere else, and the tool says whether that frequency is inside a 97.221(b) segment.
 

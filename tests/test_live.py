@@ -121,9 +121,13 @@ def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the ban
     from live.bands import PRESETS_KHZ, dial_khz, in_automatic_segment, signal_khz  # the presets and their checks
 
     assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40", "80"]  # one preset each for 20, 30, 40 and 80 metres
+    from live.bands import WORKING_KHZ, in_data_segment  # the channels, and the data-segment check
     for band in PRESETS_KHZ:  # every preset
-        assert in_automatic_segment(dial_khz(band))  # keeps the whole 2 kHz signal inside a 97.221(b) segment
-    assert dial_khz("20m") == dial_khz(20) == 14108.5  # "20m", 20 and "20" all mean the same band
+        assert in_data_segment(dial_khz(band)) == band  # the calling frequency keeps the whole signal inside the band's U.S. data segment
+        assert all(in_data_segment(channel) == band for channel in WORKING_KHZ[band])  # and so does every channel
+    assert not in_automatic_segment(dial_khz("40")) and not in_automatic_segment(dial_khz("20"))  # from 0.29 the 40 m and 20 m areas are outside the 97.221(b) segments: attended stations only
+    assert dial_khz("20m") == dial_khz(20) == 14112.5  # "20m", 20 and "20" all mean the same band
+    assert WORKING_KHZ["20"] == (14115.0, 14117.5, 14120.0, 14122.5) and len(WORKING_KHZ["30"]) == 1  # Channels 1 to 4, 2.5 kHz apart; 30 m has room for one
     assert signal_khz(14108.5) == (14109.0, 14111.0)  # the signal sits 500 to 2500 Hz above the dial
     assert not in_automatic_segment(14098.0)  # a signal that would straddle the beacon frequency at 14100 is refused
     assert not in_automatic_segment(7074.0)  # and so is one outside the segments altogether
@@ -195,6 +199,40 @@ def test_working_frequencies_for_a_calling_frequency():  # the working frequenci
             working = signal_khz(entry["dial_khz"] + offset / 1000.0)  # where its signal sits
             assert working[1] <= calling[0] or working[0] >= calling[1]  # it does not overlap the calling frequency
     assert working_offsets_hz({"band": "17 m", "dial_khz": 18106.0, "builtin": False}) == [2500, -2500]  # an operator's own frequency gets the next channel up and down
+    from live.bands import channel_names  # the names the panel shows
+    forty = [entry for entry in builtin_frequencies() if entry["band"] == "40 m"][0]  # the 40 m calling frequency
+    assert channel_names(forty) == [("Channel 1", 2500), ("Channel 2", 5000), ("Channel 3", 7500), ("Channel 4", 10000)]  # numbered, 2.5 kHz apart
+
+
+def test_upper_sideband_only_and_the_data_mode_fallback(tmp_path):  # USB-D where the radio has it, USB where not, never LSB
+    from live.bands import add_user_frequency, mode_name  # the operator's list
+    from live.rig import RigCtl  # rig control
+
+    mine = str(tmp_path / "frequencies.json")  # a private list
+    assert add_user_frequency("17 m", 18106.0, mode="usb-d", path=mine)["mode"] == "PKTUSB"  # "USB-D" is the radio's data mode
+    assert add_user_frequency("17 m", 18106.0, mode="USB", path=mine)["mode"] == "USB"  # plain USB is allowed
+    for bad in ("LSB", "PKTLSB", "LSB-D", "CW"):  # lower sideband and anything else
+        try:  # must be refused
+            add_user_frequency("40 m", 7110.0, mode=bad, path=mine)  # try it
+            raised = False  # it should not get here
+        except ValueError:  # refused
+            raised = True  # as it should
+        assert raised  # Kestrel is upper sideband only
+    assert mode_name("PKTUSB") == "USB-D" and mode_name("USB") == "USB"  # as operators know them
+
+    class Fake(RigCtl):  # a radio with no data mode, without a network connection
+        def __init__(self, has_data):  # set up
+            self.has_data, self.sent = has_data, []  # whether it has USB-D, and what it was asked
+        def _set(self, command):  # a command that changes something
+            self.sent.append(command)  # note it
+            if command.startswith("M PKTUSB") and not self.has_data:  # no such mode on this radio
+                raise RuntimeError("rigctld refused")  # as rigctld reports it
+
+    old = Fake(False)  # a radio without USB-D
+    assert old.set_data_mode("auto") == "USB" and old.sent == ["M PKTUSB 3000", "M USB 3000"]  # the data mode is tried, then plain USB
+    new = Fake(True)  # a radio with it
+    assert new.set_data_mode("auto") == "PKTUSB" and new.sent == ["M PKTUSB 3000"]  # taken at once
+    assert Fake(True).set_data_mode("USB") == "USB"  # the operator can ask for plain USB
 
 
 def test_scope_spectrum_shows_a_tone_where_it_is():  # the scope's spectrum puts a tone at the right place and level
@@ -240,7 +278,7 @@ def test_data_segment_check_refuses_frequencies_outside_the_amateur_bands():  # 
     from live.bands import add_user_frequency, in_data_segment  # the check, and adding a frequency
     import tempfile  # a scratch file for the operator's list
 
-    assert in_data_segment(3590.0) == "80"  # the 80 m meeting frequency is inside the 80 m data segment
+    assert in_data_segment(3582.5) == "80"  # the 80 m calling frequency is inside the 80 m data segment
     assert in_data_segment(3160.0) is None  # 3160 kHz is not an amateur frequency at all
     assert in_data_segment(7099.0) == "40"  # 7099.5-7101.5 kHz is inside 7000-7125
     assert in_data_segment(3599.0) is None  # the signal would run past 3600 kHz, the top of the 80 m data segment

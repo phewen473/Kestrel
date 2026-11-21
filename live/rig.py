@@ -215,6 +215,22 @@ class RigCtl:  # a connection to rigctld
         """
         self._set(f"M {mode} {int(passband_hz)}")  # mode and filter width
 
+    def set_data_mode(self, prefer="auto", passband_hz=3000):  # upper sideband, the radio's data mode if it has one
+        """Put the radio in upper sideband for Kestrel and return the mode set: "PKTUSB" (the radio's data mode, USB-D) or "USB".
+
+        `prefer` is "auto" (the data mode if the radio has one, plain USB if
+        it refuses), "PKTUSB" or "USB". Kestrel never uses lower sideband.
+        """
+        if prefer != "USB":  # the data mode is wanted, or to be tried first
+            try:  # not every radio has one
+                self.set_mode("PKTUSB", passband_hz)  # upper sideband, data
+                return "PKTUSB"  # the radio took it
+            except RuntimeError:  # the radio (or Hamlib's driver for it) has no such mode
+                if prefer == "PKTUSB":  # the operator insisted on it
+                    raise  # say so
+        self.set_mode("USB", passband_hz)  # plain upper sideband
+        return "USB"  # what was set
+
     def level(self, name):  # read one of the radio's levels or meters
         """Return a level by its Hamlib name: RFPOWER (power setting, 0 to 1 of full power), RFPOWER_METER_WATTS (power out, watts), ALC (0 to 1), SWR, STRENGTH (S-meter, dB relative to S9).
 
