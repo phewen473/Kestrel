@@ -20,7 +20,7 @@ which candidate is a real frame.
 import numpy as np  # numerical arrays
 
 from .mfsk import symbols_to_audio  # turns tone numbers into sound
-from .params import PREAMBLE_PATTERNS, PREAMBLE_TONES  # the patterns and their length
+from .params import LONG_LEVEL, LONG_PATTERN, PREAMBLE_PATTERNS, PREAMBLE_TONES  # the patterns and their length, and the long beacon's own pattern
 
 PAD = 2  # the search looks at frequencies half a bin apart
 HOPS = 4  # and at start times a quarter of a tone apart
@@ -29,7 +29,7 @@ CHUNK = 256  # blocks transformed at a time, to keep memory use modest on long r
 
 def pattern_tones(level):  # the fixed tone pattern for a level
     """Return the twelve tone numbers that start every frame at speed level `level` (the table is in params.py and in the spec)."""
-    return np.array(PREAMBLE_PATTERNS[level])  # that level's row of the table
+    return np.array(LONG_PATTERN if level == LONG_LEVEL else PREAMBLE_PATTERNS[level])  # that level's row of the table (or the long beacon's pattern)
 
 
 def preamble_samples(spec):  # how long a level's preamble is

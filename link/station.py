@@ -95,6 +95,7 @@ class Station:  # the link rules for one station
         self.outbox = []  # messages waiting to be sent, oldest first
         self.outbox_to = []  # for each of those, the callsign it is meant for, or None for whoever the partner is
         self.broadcasts = []  # broadcast frames waiting to be sent to everyone: (audio, level, note)
+        self.long_waiting = None  # a long beacon waiting to be sent (its audio), if one was asked for
         self.bulletins = []  # broadcasts and other fully addressed messages received: (origin, destination, text)
         self.bulletin_parts = {}  # parts of those still arriving: (origin, message number) -> {part: report}
         self.bulletin_done = set()  # (origin, message number) of those already delivered, so a repeat is not shown twice
@@ -181,6 +182,11 @@ class Station:  # the link rules for one station
         """Call `target` from a station that is otherwise listening; after the contact, or after the calls go unanswered, it listens again."""
         self.call_station(target)  # become the calling station for now (refuses this station's own callsign)
         self.single = True  # and return to answering afterwards
+
+    def long_beacon(self, holds_mail=False):  # announce this station as far as the path allows
+        """Queue one long beacon (signal version 0.27): about a minute, heard down to about -26 dB. Nobody answers it; it goes when no contact is under way."""
+        from modem.longbeacon import build_long_beacon  # the long beacon's transmitter
+        self.long_waiting = build_long_beacon(self.call, self.grid, available=self.available, holds_mail=holds_mail)  # ready to send
 
     def queue(self, text, to=None):  # hand the station a message to send
         """Add a message to the outbox. With `to`, it is sent only when that callsign is the partner."""
@@ -717,6 +723,11 @@ class Station:  # the link rules for one station
                 return self._next(now)  # send the message, or the closing identification
             if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since this station sent its callsign
                 return self._ident(now, final=False)  # identify, turn or no turn
+        if self.long_waiting is not None and self.state == "IDLE" and self.pending is None:  # a long beacon is waiting and the station is free
+            audio, self.long_waiting = self.long_waiting, None  # take it
+            self.last_ident = now  # it carries this station's callsign
+            from modem.params import LONG_LEVEL  # the long beacon's level number
+            return self._send(now, audio, "long beacon", LONG_LEVEL, None, 0.0, "nobody answers a long beacon")  # send it; it asks for no reply
         if self.broadcasts and self.state == "IDLE":  # a broadcast is waiting and no contact is in progress
             audio, level, note = self.broadcasts.pop(0)  # its next frame
             self.last_ident = now  # a fully addressed frame carries this station's callsign

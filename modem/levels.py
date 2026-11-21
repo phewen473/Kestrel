@@ -41,6 +41,14 @@ class Level:  # one speed level
         return self.base_bin + self.step * np.arange(M_TONES)  # evenly spaced from the lowest tone up
 
 
+def level_name(number):  # how a level is shown to people
+    """Return a level's name as shown in logs and lists: L0 to L4, or LB for the long beacon (signal version 0.27); "?" for none."""
+    from .params import LONG_LEVEL  # the long beacon's level number
+    if number == LONG_LEVEL:  # the long beacon
+        return "LB"  # its own name
+    return f"L{number}" if number is not None and number >= 0 else "?"  # an ordinary level, or none
+
+
 LEVELS = (  # the levels built so far: (number, samples per tone, tone spacing in bins)
     Level(0, 4800, 2),  # L0: 0.4 s tones, 5 Hz apart, about 160 Hz wide
     Level(1, 1620, 2),  # L1: 0.135 s tones, 15 Hz apart, about 470 Hz wide (200 characters in under 90 s)

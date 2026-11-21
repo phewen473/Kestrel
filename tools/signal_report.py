@@ -42,6 +42,7 @@ if ROOT not in sys.path:  # when run as a script
     sys.path.insert(0, ROOT)  # make "modem" and "live" importable
 
 from live.bands import in_data_segment  # names the band a frequency is in  # noqa: E402
+from modem.levels import level_name  # L0 to L4, or LB for the long beacon  # noqa: E402
 
 
 def load(paths, since=None, until=None):  # read the logs
@@ -127,7 +128,7 @@ def report(events):  # the text report
     rows = []  # one per level and outcome
     for (level, outcome), results in sorted(groups.items(), key=lambda item: (item[0][0] if item[0][0] is not None else -1, item[0][1])):  # in order of level
         copies = Counter(result.get("header_copy") or "-" for result in results)  # which header copy was read
-        rows.append([f"L{level}", outcome, len(results), stats(r.get("snr_db") for r in results), stats(r.get("fade_index") for r in results),  # (continued)
+        rows.append([level_name(level), outcome, len(results), stats(r.get("snr_db") for r in results), stats(r.get("fade_index") for r in results),  # (continued)
                      stats(r.get("offset_hz") for r in results), stats(r.get("drift_hz_s") for r in results), " ".join(f"{name}:{count}" for name, count in sorted(copies.items()))])  # the row
     out += table(rows, ["level", "outcome", "frames", "SNR dB min/med/max", "fading", "offset Hz", "drift Hz/s", "header copy"]) if rows else ["none"]  # the table
     combined = sum(1 for event in rx if "station_result" in event)  # frames the station decoded differently by combining copies
@@ -140,13 +141,13 @@ def report(events):  # the text report
         result = event.get("station_result") or event.get("result", {})  # as above
         if result.get("ok") and result.get("origin"):  # a decoded frame that names its sender
             heard[result["origin"]].append((result, event))  # into its group
-    rows = [[call, len(items), " ".join(sorted({f"L{r.get('level')}" for r, _ in items})), stats(r.get("snr_db") for r, _ in items),  # (continued)
+    rows = [[call, len(items), " ".join(sorted({level_name(r.get('level')) for r, _ in items})), stats(r.get("snr_db") for r, _ in items),  # (continued)
              " ".join(sorted({band_of(e.get("dial_khz")) for _, e in items})), items[0][1]["utc"][:16], items[-1][1]["utc"][:16]] for call, items in sorted(heard.items())]  # one row per station
     out += table(rows, ["call", "frames", "levels", "SNR dB min/med/max", "bands", "first heard", "last heard"]) if rows else ["none (link frames inside a contact carry no callsign)"]  # the table
 
     section("Near misses (Kestrel signature heard, header not readable)")  # signals that got through but not well enough
     near = by["near"]  # every near miss
-    rows = [[f"L{level}", count] for level, count in sorted(Counter(event.get("seen_level") for event in near).items(), key=lambda item: item[0] if item[0] is not None else -1)]  # by level
+    rows = [[level_name(level), count] for level, count in sorted(Counter(event.get("seen_level") for event in near).items(), key=lambda item: item[0] if item[0] is not None else -1)]  # by level
     out += table(rows, ["looks like", "count"]) if rows else ["none"]  # the table
     if near:  # any
         out.append(f"strength {stats(event.get('quality') for event in near)} (min/med/max); audio offset {stats(event.get('offset_hz') for event in near)} Hz")  # how strong, and where
@@ -156,7 +157,7 @@ def report(events):  # the text report
     for event in by["search"]:  # each logged candidate
         stage = "no header" if not event.get("header") else ("decoded" if event.get("ok") else (event.get("reason") or "header only"))  # how far it got
         outcome[(event.get("level"), stage)] += 1  # count it
-    rows = [[f"L{level}", stage, count] for (level, stage), count in sorted(outcome.items(), key=lambda item: (item[0][0] if item[0][0] is not None else -1, item[0][1]))]  # one row each
+    rows = [[level_name(level), stage, count] for (level, stage), count in sorted(outcome.items(), key=lambda item: (item[0][0] if item[0][0] is not None else -1, item[0][1]))]  # one row each
     out += table(rows, ["level", "got as far as", "count"]) if rows else ["none logged"]  # the table
 
     section("By UTC hour and band")  # when the path was open
@@ -174,7 +175,7 @@ def report(events):  # the text report
     groups = defaultdict(list)  # by kind and level
     for event in starts:  # each transmission
         groups[(event.get("kind"), event.get("level"))].append(event)  # into its group
-    rows = [[kind, f"L{level}", len(items), round(sum(item.get("seconds") or 0 for item in items), 1)] for (kind, level), items in sorted(groups.items(), key=lambda item: (str(item[0][0]), item[0][1] if item[0][1] is not None else -1))]  # one row each
+    rows = [[kind, level_name(level), len(items), round(sum(item.get("seconds") or 0 for item in items), 1)] for (kind, level), items in sorted(groups.items(), key=lambda item: (str(item[0][0]), item[0][1] if item[0][1] is not None else -1))]  # one row each
     out += table(rows, ["kind", "level", "count", "airtime s"]) if rows else ["none"]  # the table
     if starts:  # any
         meters = by["tx_meter"]  # the radio's readings

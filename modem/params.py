@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.26"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.26"  # the specification version in which the on-air behaviour last changed (0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame): stations with the same signal version can hear each other
+SPEC_VERSION = "0.27"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.27"  # the specification version in which the on-air behaviour last changed (0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 
@@ -23,6 +23,11 @@ PREAMBLE_PATTERNS = (  # the twelve tone numbers that start every frame, one row
     (17, 3, 8, 28, 21, 15, 29, 13, 2, 9, 1, 12),  # L3
     (9, 15, 7, 12, 25, 16, 5, 17, 24, 6, 0, 30),  # L4
 )  # each row: no tone used twice, every jump at least five tones, and no two pairs of positions the same distance apart differ by the same number of tones
+LONG_PATTERN = (18, 25, 30, 16, 5, 26, 21, 9, 2, 14, 23, 4)  # the long beacon's own twelve-tone pattern (same rules as the rows above; it starts the long beacon and identifies it)
+LONG_LEVEL = 7  # the number the long beacon's level goes by in reports and logs (shown as "LB"; levels 5 and 6 are kept for faster levels)
+LONG_SAMPLES = 14000  # samples in one long-beacon tone: 1.167 s
+LONG_STEP = 3  # the long beacon's tones sit three FFT bins apart: 2.57 Hz, about 82 Hz for all 32
+FRAME_TYPE_LONG = 6  # the frame type the receiver reports for a long beacon (the long beacon has no header; this number is never sent)
 M_TONES = 32  # number of different tones every level can send
 BITS_PER_SYMBOL = 5  # each tone carries 5 bits, because 2**5 = 32
 CENTRE_HZ = 1500.0  # the tones of every level are centred near this audio frequency

@@ -127,12 +127,13 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.26 (draft), 21 November 2026; signal version 0.26. Milestones 1 to 9 of the prototype done; first contacts between two real radios made; first over-the-air test at a distance (20 November 2026) heard nothing either way, which led to 0.26.
-- Roadmap (spec Section 10): 1. prove the link (0.26: recordings, near-miss reports, fading fix, setup checks); 2. a WSPR-like bottom level for reach; 3. nets with net-control failover and store-and-forward; 4. a VARA-like top level for throughput.
+- Spec version 0.27 (draft), 21 November 2026; signal version 0.27 (the long beacon). Milestones 1 to 9 of the prototype done; first contacts between two real radios made; first over-the-air test at a distance (20 November 2026) heard nothing either way, which led to 0.26.
+- Roadmap (spec Section 10): 1. prove the link (0.26: recordings, near-miss reports, fading fix, setup checks); 2. a WSPR-like bottom level for reach (0.27: the long beacon); 3. nets with net-control failover and store-and-forward; 4. a VARA-like top level for throughput.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits:
+- 2026-11-21, spec v0.27 (new signal version): the long beacon, the first part of roadmap step 2: a compact 59.5-second frame (callsign, grid, two flags; no header; 1.17 s tones 2.57 Hz apart, about 82 Hz wide) decoded in simulation down to -25.6 dB on a steady path and -18.6 dB (nine in ten) in the worst fading, 4 to 5 dB below the short beacon. Nobody answers it; it is shown to the operator. Operate > Beacon type: Short (default) or Long (every 10 minutes at most). Study: tools/bottom_study.py.
 - 2026-11-21: signal log for analysis and debugging (Settings > Logging > Signal log: off by default; text only, or with each frame's audio under a 500 MB cap), every received sample numbered on one timeline shared with the recordings, tools/signal_report.py to summarise the logs, decode_wav.py --signal-log.
 - 2026-11-21, spec v0.26 (new signal version): the second header copy moved to the end of every frame and the receiver ranks preambles by how much of their energy sits on the pattern, which removed most losses in simulated fading; fading limits re-measured; 80 m meeting frequency 3590.0 kHz; frequencies outside the U.S. data segments refused; received audio can be recorded and decoded later (File > Decode a recording, tools/decode_wav.py); signals heard but too weak to read are reported; callsign confirmation; ALC warning.
 - 2026-11-19: Windows setup program (packaging/): a self-contained installer with its own Python and Hamlib's rigctld, for a PC with nothing on it; installed copies keep each user's settings and logs in %LOCALAPPDATA%\Kestrel; Kestrel.exe --check.

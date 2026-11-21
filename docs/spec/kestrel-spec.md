@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.26 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.26:** the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.27 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -164,7 +164,7 @@ The header carries 16 field bits followed by an 8-bit check value:
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); 2 = beacon; 3 = answer; 4 = acknowledgment; 5 = identification (Section 5.8); 6 and 7 reserved |
+| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); 2 = beacon; 3 = answer; 4 = acknowledgment; 5 = identification (Section 5.8); 6 and 7 reserved (6 is never sent: receivers use it to report a long beacon, which has no header, Section 5.9) |
 | Speed level | 3 | 0 to 4 |
 | Size class | 2 | 0 to 3 (body of 402, 752, 1102 or 1452 bits) |
 | Part number | 3 | 0 for the first part |
@@ -278,13 +278,38 @@ Airtime of a whole control frame:
 
 **Locator coding.** The two letters (A to R) count 0 to 17 and the two digits 0 to 9. The locator is the number ((first letter x 18 + second letter) x 10 + first digit) x 10 + second digit, sent as 15 bits, most significant bit first.
 
+### 5.9 Long beacon
+
+The long beacon (signal version 0.27) is a compact frame for being heard where nothing else gets through. It carries only what discovery needs and has no header: its own twelve-tone pattern says what it is.
+
+1. **Pattern:** twelve tones, 18, 25, 30, 16, 5, 26, 21, 9, 2, 14, 23, 4, at the long beacon's tone length. The pattern follows the rules of Section 5.1.
+2. **Body:** 36 data tones and 3 pilots (Section 5.5), 39 tones in all.
+
+**Tones.** 32 tones, one at a time, as at every level (Section 5.2), but each held 14,000 samples (1.1667 s). One bin is 0.857 Hz; the tones are 3 bins (2.571 Hz) apart, the lowest at bin 1702 (1458.86 Hz) and the highest at 1538.57 Hz, so the signal is about 82 Hz wide. The receiver reports the long beacon's level as LB (the number 7 in programs).
+
+**Airtime.** 51 tones x 1.1667 s = 59.5 seconds.
+
+**Body.** 66 field bits followed by the 16-bit check value of Section 4 (82 bits), encoded with the header's convolutional code (six zero bits added, rate 1/2: 176 bits), padded to 180 bits (36 tones), interleaved by the rule of Section 5.3 (step 113) and sent with a pilot before every 15 data tones. Pilots use tones 3, 10 and 17.
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Callsign | 48 | The sending station (Section 4.2) |
+| Grid locator | 15 | Four characters, coded as in Section 5.8 |
+| Available | 1 | 1 when the operator is taking contacts (Section 6.11) |
+| Holds mail | 1 | 1 when the station holds mail for others |
+| Spare | 1 | Always 0 |
+
+**Why this shape.** Simulation (tools/bottom_study.py, 40 beacons a point) of today's beacon with its tones held longer found that 1.6 s tones reach about -28 dB on a steady path but need 125 seconds; tones 1.25 Hz apart smear in heavy fading, while 2.5 Hz apart lose nothing on a steady path and gain about 6 dB in heavy fading; 3.2 s tones (250 s) reach -30 dB on a steady path but only -21 dB (nine in ten) in the worst fading. No timed slots were needed at any of these lengths. Keeping the long beacon to about a minute meant dropping the header, the level list and the other beacon flags, which leaves room for tones three times as long as L0's. **Sensitivity** (40 long beacons a point, through the full receiver, frequency error up to 2 Hz): every one decodes down to -25.6 dB on a steady path (nine in ten at -26.6 dB, about half at -27.6 dB), and nine in ten down to -18.6 dB in the worst of light, moderate and heavy fading (about half at -22.6 dB). For comparison, an L0 beacon (31 s): -21 dB on a steady path, and -14 dB nine in ten and -20 dB about half in the worst fading; WSPR is about -28 dB with 111 seconds and timed slots.
+
 ## 6. Link
 
 ### 6.1 Beacon
 
 A station announces itself with a beacon frame (Section 5.8), first at level L2 and then, if that brings no answer, at L0 (see below). The beacon gives the callsign, grid locator and supported speed levels, says whether the station is taking answers and whether it holds mail for others, and carries the **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for the reply window (Section 6.2).
 
-A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**.
+A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**. (This is not the long beacon of Sections 5.9 and 6.13, which is about reach.)
+
+A station may send a **long beacon** (Section 6.13) instead of this call-up. The beacon of this section is the default and is called the short beacon where the two need telling apart.
 
 - **Middle level first.** Every call-up begins at L2, where the beacon (7.0 s), answer (8.9 s) and confirmation (5.9 s) each take under 10 seconds and the whole exchange holds the calling frequency for about 24 seconds; at L0 it takes about 100. L2 needs a signal of about -14 dB (Section 5.2). If an L2 beacon brings no answer it can decode, the station beacons again at once at L0, which reaches down to about -20 dB; this second beacon does not count as one of the tries. Later beacons in the same call go at L0. The next call-up, after a contact or a later round, starts at L2 again. In the simulator (tools/callup_study.py) this cut the expected time on the calling frequency from 99 to 24 seconds on any steady path of -14 dB or better, and from 107-134 to 24-66 seconds in moderate fading at -10 dB or better, at a cost of about 21 seconds for stations too weak for L2.
 - **Repeating a beacon.** A station that is otherwise listening may call for a partner again from time to time. Each round is one beacon and its reply window; if nobody answers, the station goes back to listening. Rounds are at least 5 minutes apart (the operator program allows 5 to 60 minutes), measured from the start of one round to the start of the next. A round is not sent while the station is in a contact, has answered another station and is waiting for the lock to be confirmed, or is making a directed call; after a contact the interval starts again from the end of the contact.
@@ -426,6 +451,16 @@ A station can tell others how well it hears the band, so that operators can comp
 - **Text before the tag.** Other words may come before `TLM1` (the sender's callsign, for example). A receiving program looks for the tag anywhere in the message and reads the words after it.
 - **Comparing.** A receiving program may rank the stations whose telemetry it has received by the number of stations each hears, then by the median of the SNRs listed. This is a guide for the operators; it is not used by any automatic rule.
 
+### 6.13 Long beacon
+
+The long beacon (Section 5.9) says "this station is here" as far as the path allows. It asks for nothing.
+
+- **No reply.** No station answers a long beacon by itself, whatever its settings. A receiving station shows it to its operator, with the sender's callsign, grid, availability and the signal measurement, and logs it. The operator may respond with a directed call (Section 6.11); a path that carries only the long beacon may be too weak for that.
+- **Choosing it.** Short beacons are the default. The operator chooses long beacons instead (the reference program has a Beacon type setting); a repeating long beacon follows the rules of Section 6.1 for repeating beacons, except that rounds are at least 10 minutes apart, because each holds the frequency for a minute.
+- **When it goes.** Only when the station is not in a contact, not waiting for a reply and not sending a broadcast.
+- **Identification.** The long beacon carries the sending station's callsign in plain form (Section 2).
+- **Unattended.** As with any repeating beacon, a station sending long beacons with nobody at the controls is under automatic control (Section 2).
+
 ## 7. Nets (optional)
 
 - **Net control:** a beaconing station may open a net instead of a one-to-one link. Stations that answer are admitted as members.
@@ -474,7 +509,7 @@ The aim is one open mode that reaches like WSPR, carries messages like JS8Call a
 | Step | Work | Purpose |
 |---|---|---|
 | 1. Prove the link | Recording and decoding received audio; near-miss reports; fading re-measured and the header moved (0.26); on-air setup checks; on-air tests at 100+ miles | Show that the existing levels hold a contact over real HF paths |
-| 2. A WSPR-like bottom level | One or two levels below L0 for beacons, call-ups and short notes (a few tens of characters), aiming at about -26 to -28 dB in 2.5 kHz. Very long, narrow tones and a stronger code; probably an optional UTC-timed slot for this level only | Reach: be heard, and call, where nothing else gets through |
+| 2. A WSPR-like bottom level | **First part in 0.27: the long beacon** (Sections 5.9, 6.13), about a minute, shown to the operator, not answered. Timed slots proved unnecessary. Still open: a reply at this level (a reception report), and short notes | Reach: be heard where nothing else gets through |
 | 3. Nets and mail | Nets with net control, backup and takeover (Section 7); store-and-forward completed (Section 8) | Groups and disconnected operation, at every level |
 | 4. A VARA-like top level | A multi-carrier PSK or OFDM waveform within 2.8 kHz for strong paths (Section 5.2, L5) | Throughput for relays and longer traffic |
 

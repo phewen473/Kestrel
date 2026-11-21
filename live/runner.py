@@ -9,11 +9,12 @@ import re  # finds callsigns and levels in log lines
 import time  # the real clock
 
 from link.params import TURNAROUND_S  # pause between hearing a frame and replying
-from modem.params import CONTROL_BITS  # which frame types are control frames
+from modem.levels import level_name  # L0 to L4, or LB
+from modem.params import CONTROL_BITS, FRAME_TYPE_LONG  # which frame types are control frames, and the long beacon's
 
 from .listener import Listener  # the continuous receiver
 
-KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification"}  # frame type -> plain name
+KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
 
 
@@ -95,9 +96,9 @@ def describe(result):  # one line about a received frame
     if not result.ok and result.level < 0:  # nothing was readable at all, not even the header
         return "noise briefly looked like the start of a frame; nothing decoded"  # a false alarm, said plainly
     if not result.ok:  # it failed its check
-        return f"heard a {name} at L{result.level} that failed its check ({result.snr_db:+.0f} dB)"  # say so
-    line = f"heard {name} at L{result.level}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
-    if result.frame_type in CONTROL_BITS:  # a control frame
+        return f"heard a {name} at {level_name(result.level)} that failed its check ({result.snr_db:+.0f} dB)"  # say so
+    line = f"heard {name} at {level_name(result.level)}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
+    if result.frame_type in CONTROL_BITS or result.frame_type == FRAME_TYPE_LONG:  # a control frame, or a long beacon
         return line + f"  {result.fields}"  # show its fields
     who = f"{result.origin} to {result.dest}" if result.frame_type == 1 else f"link {result.link}"  # addresses, or the link number
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
@@ -108,7 +109,7 @@ LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact i
 
 def near_line(result):  # one line about a near miss
     """Return a line saying a Kestrel signature was heard but could not be read."""
-    return f"possible Kestrel signature heard (looks like L{result.seen_level}, about {1500.0 + result.offset_hz:.0f} Hz) but too weak or faded to read (strength {result.sync_quality:.1f})"  # likely level, audio frequency and how strongly the pattern stood out
+    return f"possible Kestrel signature heard (looks like {level_name(result.seen_level)}, about {1500.0 + result.offset_hz:.0f} Hz) but too weak or faded to read (strength {result.sync_quality:.1f})"  # likely level, audio frequency and how strongly the pattern stood out
 
 
 def call_request(target, after_contact, say=print):  # a directed call the operator asked for, to be made in the station's own thread
@@ -225,7 +226,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         while now() - last_sent[0] < TURNAROUND_S:  # two of this station's own frames in a row need a clear gap between them
             source.read()  # keep the input from piling up
             time.sleep(0.05)  # a short nap
-        stamp(f"sending {tx.kind} at L{tx.level}, {tx.seconds:.1f} s  {tx.note}")  # tell the operator
+        stamp(f"sending {tx.kind} at {level_name(tx.level)}, {tx.seconds:.1f} s  {tx.note}")  # tell the operator
         ptt.key()  # transmitter on
         try:  # whatever happens...
             if logging:  # a signal log is kept

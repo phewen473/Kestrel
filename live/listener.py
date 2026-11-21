@@ -12,6 +12,8 @@ from dataclasses import dataclass  # simple record type
 import numpy as np  # numerical arrays
 
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
+from modem import longbeacon  # the long beacon's length and limit
+from modem.params import LONG_LEVEL  # the long beacon's level number
 from modem.frame import HEADER_SYMBOLS, _body_totals  # tones in the two header copies together, and every body length a frame can have
 from modem.params import CONTROL_BITS, FS, PREAMBLE_TONES  # control frame types, the sample rate and the preamble's length in tones
 
@@ -21,6 +23,7 @@ PAD_S = 0.5  # audio kept either side of a frame when it is handed over
 FAILED_SNR_SLACK_DB = 4.0  # a frame that fails its check is only reported if its pilots read within this many dB of its level's limit
 NEAR_QUALITY = 6.0  # a signature pattern standing this far above the background counts as a "near miss" when its header cannot be read (noise alone stays below about 3.5 in simulation; 6 leaves a margin for real band noise)
 LONGEST_FRAME = (PREAMBLE_TONES + HEADER_SYMBOLS + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
+LONG_EVERY = 4  # the long beacon's pattern is looked for on every fourth search only: it costs about 0.4 s a search, and a long beacon lasts a minute, so finding it a few seconds later loses nothing
 NEAR_QUALITY_MAX = 10000.0  # above this the measure has broken down (stretches of digital silence), so it is not a signal
 
 
@@ -35,6 +38,8 @@ class Heard:  # one frame taken out of the stream
 
 def frame_samples(result):  # how long is the frame this report describes?
     """Return the length in samples of the frame whose header `result` came from."""
+    if result.level == LONG_LEVEL:  # a long beacon: a fixed length
+        return longbeacon.SAMPLES  # pattern and body
     if result.frame_type in CONTROL_BITS:  # a beacon, answer, acknowledgment or identification
         body = control_layout(result.frame_type)["total"]  # its body tones
     else:  # a message frame
@@ -52,6 +57,7 @@ class Listener:  # the continuous receiver
         self.index = np.zeros(0, dtype=np.int64)  # the stream's number for each sample in the store (cutting frames out leaves gaps, so the numbers are kept, not worked out)
         self.total = 0  # the number the next sample fed will get, when the caller does not say
         self.fresh = 0  # samples added since the last search
+        self.searches = 0  # searches so far (the long beacon is looked for on every LONG_EVERY-th)
         self.on_near = None  # if set, called with the receiver's report whenever a Kestrel signature is seen but its header cannot be read
         self.near_audio, self.near_audio_sample = None, -1  # the audio of the latest near miss, while on_near is being called
         self.on_search = None  # if set, called after every search with (result, trace): the receiver's report and its list of candidates tried, with "sample" (stream numbers) added to each
@@ -91,7 +97,8 @@ class Listener:  # the continuous receiver
         if len(self.store) < FS:  # less than a second of audio: too little to be worth searching
             return None  # nothing to find
         trace = [] if self.on_search is not None else None  # the receiver's candidate list, if anyone wants it
-        result = receive(self.store, trace=trace)  # run the modem receiver over everything kept
+        self.searches += 1  # count it
+        result = receive(self.store, trace=trace, long_beacons=self.searches % LONG_EVERY == 0)  # run the modem receiver over everything kept (the long pattern too, every fourth time)
         result.sample = self._number(result.start)  # where it began in the stream
         if trace is not None:  # someone keeps a signal log
             for step in trace:  # every candidate tried
@@ -105,7 +112,8 @@ class Listener:  # the continuous receiver
         if end > len(self.store):  # the frame is still arriving
             return None  # wait for the rest
         if not result.ok:  # the whole frame is here but it failed its check
-            believable = np.isfinite(result.snr_db) and result.snr_db >= MIN_SNR_DB[result.level] - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
+            limit = longbeacon.MIN_SNR_DB if result.level == LONG_LEVEL else MIN_SNR_DB[result.level]  # the weakest signal its level decodes
+            believable = np.isfinite(result.snr_db) and result.snr_db >= limit - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
             if result.reason != "body check failed" or not believable:  # noise that happened to pass a header check
                 return None  # ignore it
         pad = int(PAD_S * FS)  # a little audio either side

@@ -74,6 +74,7 @@ class HeardLog:  # the log of stations heard
             row["count"] += 1  # one more reception
             row["last"], row["last_snr"], row["dial_khz"] = record["t"], record["snr"], record.get("dial_khz", 0.0)  # the newest reading
             row["best_snr"] = max(row["best_snr"], record["snr"])  # the strongest reading
-            row["best_level"] = max(row["best_level"], record.get("level", 0))  # the fastest level decoded
+            if record.get("level", 0) <= 4:  # an ordinary level (a long beacon, level 7, says nothing about speed)
+                row["best_level"] = max(row["best_level"], record.get("level", 0))  # the fastest level decoded
             row["grid"] = record.get("grid") or row["grid"]  # a grid locator, once one is known
         return sorted(rows.values(), key=lambda row: -row["last"])  # most recent first

@@ -50,8 +50,9 @@ from live.runner import attach_signal_log, feed_from, log_tick  # the listener f
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
-from modem.levels import LEVELS  # the speed levels, for how wide each signal is on the scope  # noqa: E402
-from modem.params import M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
+from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
+from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
+from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
 SETTINGS_FILE = os.path.join(data_dir(), "panel.json")  # where the panel remembers its settings (local/ from the source folder; the user's profile when installed)
@@ -61,7 +62,7 @@ AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, 
 DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
-            "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
+            "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system",  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
@@ -71,6 +72,9 @@ CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stati
 LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
 SIGNAL_NAMES = {"off": "Off", "on": "On: text only (a few MB a day)",  # the signal log, as the operator sees it (continued)
                 "clips": f"On, with each frame's audio (clips kept {KEEP_DAYS} days, at most {CLIPS_MAX_MB} MB)"}  # (continued)
+BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)",  # the two kinds of repeating beacon (continued)
+                     "long": "Long: about 60 s, heard much further; nobody answers (every 10 min at most)"}  # (continued)
+LONG_EVERY_MIN = 10  # long beacons repeat no more often than this, in minutes (each holds the frequency for a minute)
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
 RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
 CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
@@ -172,7 +176,7 @@ def device_choices(kind):  # the sound devices to offer in a drop-down list
 
 def signal_width_hz(level):  # how wide a Kestrel signal is at a given level
     """Return the width in hertz of the 32 tones at speed level `level` (L0 is the narrowest)."""
-    spec = LEVELS[max(0, min(level, len(LEVELS) - 1))]  # the level's description
+    spec = LONG if level == LONG_LEVEL else LEVELS[max(0, min(level, len(LEVELS) - 1))]  # the level's description (or the long beacon's)
     return M_TONES * spec.step * spec.bin_hz  # tones times their spacing
 
 
@@ -239,6 +243,7 @@ class Panel:  # the control panel window
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
         self.mode_var = tk.StringVar(value="off")  # the mode buttons and menu items share this
         self.beacon_var = tk.BooleanVar(value=False)  # the beacon button and menu item share this
+        self.beacon_type_var = tk.StringVar(value=self.settings.get("beacon_type", "short"))  # short or long beacons
         self.available_var = tk.BooleanVar(value=bool(self.settings["available"]))  # available for contacts, or not
         self.keep_open = tk.BooleanVar(value=bool(self.settings["keep_open"]))  # whether the lock is held after the traffic is done
         self.details = tk.BooleanVar(value=False)  # whether the log shows the technical detail
@@ -270,7 +275,7 @@ class Panel:  # the control panel window
         ttk.Separator(operate, orient="vertical").pack(side="left", fill="y", padx=10)  # a divider
         self.available_button = ttk.Checkbutton(operate, text="Available  Ctrl+U", style="Toolbutton", variable=self.available_var, command=self.available_toggled)  # pushed in = available for contacts
         self.available_button.pack(side="left", padx=(0, 8))  # place it
-        self.beacon_button = ttk.Checkbutton(operate, text="Beacon (call anyone)  F5", style="Toolbutton", variable=self.beacon_var, command=self.beacon_toggled)  # pushed in = repeating beacon on; pushed again = off
+        self.beacon_button = ttk.Checkbutton(operate, text=self.beacon_words(), style="Toolbutton", variable=self.beacon_var, command=self.beacon_toggled)  # pushed in = repeating beacon on; pushed again = off
         self.beacon_button.pack(side="left")  # place it
         self.beacon_label = ttk.Label(operate, text="off", width=30)  # what the repeating beacon is doing
         self.beacon_label.pack(side="left", padx=6)  # place it
@@ -374,6 +379,10 @@ class Panel:  # the control panel window
         operate.add_separator()  # a divider
         operate.add_checkbutton(label="Available for contacts", underline=0, accelerator="Ctrl+U", variable=self.available_var, command=self.available_toggled)  # available or not
         operate.add_checkbutton(label="Beacon (call anyone), repeating", underline=0, accelerator="F5", variable=self.beacon_var, command=self.beacon_toggled)  # the repeating beacon
+        beacon_type = tk.Menu(operate, tearoff=False)  # the kind of beacon
+        for value, words in BEACON_TYPE_NAMES.items():  # short and long
+            beacon_type.add_radiobutton(label=words, value=value, variable=self.beacon_type_var, command=self.beacon_type_changed)  # one choice each
+        operate.add_cascade(label="Beacon type", underline=7, menu=beacon_type)  # short or long
         operate.add_command(label="Call the station in To", underline=0, accelerator="F6", command=self.call_to)  # a directed call
         operate.add_command(label="End contact", underline=0, accelerator="F7", command=self.end_contact)  # close the contact
         operate.add_checkbutton(label="Keep contact open", underline=0, variable=self.keep_open)  # hold the lock until End contact
@@ -820,7 +829,7 @@ class Panel:  # the control panel window
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
-                           level=f"L{result.level}", snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name())  # the logbook, from the advanced level up
+                           level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name())  # the logbook, from the advanced level up
 
     def log_frame(self, result):  # every report from the receiver (called from the working thread), for the verbose log
         if not self.logbook.wants("frame"):  # not logging at that level
@@ -828,11 +837,11 @@ class Panel:  # the control panel window
         name = KIND.get(result.frame_type, "frame")  # the kind of frame
         rx = self.audio.level()[0] if self.audio is not None else None  # the input level
         self.logbook.write("frame", direction="RX", station=self.settings["call"], text=f"{name} {'decoded' if result.ok else 'failed: ' + str(result.reason)}", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
-                           level=f"L{result.level}", snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(), rx_input_dbfs=rx, detail=describe(result))  # every detail
+                           level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(), rx_input_dbfs=rx, detail=describe(result))  # every detail
 
     def note_near(self, result):  # a Kestrel signature heard but not readable (called from the working thread)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
-                           level=f"L{result.seen_level}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
+                           level=f"{level_name(result.seen_level)}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
 
     def signal_folder(self):  # where the signal log goes
         """Return (creating it if needed) the signal log folder, beside the logbook."""
@@ -892,11 +901,11 @@ class Panel:  # the control panel window
         if not keyed:  # it has just gone off
             self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=self.meters["watts"], alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
             return  # nothing more
-        event = {"beacon": "beacon", "call": "call", "broadcast": "broadcast"}.get(tx.kind, "sent")  # beacons, calls and broadcasts are logged from advanced up; other frames only in verbose
+        event = {"beacon": "beacon", "long beacon": "beacon", "call": "call", "broadcast": "broadcast"}.get(tx.kind, "sent")  # beacons, calls and broadcasts are logged from advanced up; other frames only in verbose
         station = self.station  # the running station
-        to = "ALL" if tx.kind in ("beacon", "broadcast") else (station.partner if station is not None else "")  # who it was for
+        to = "ALL" if tx.kind in ("beacon", "long beacon", "broadcast") else (station.partner if station is not None else "")  # who it was for
         self.logbook.write(event, direction="TX", station=self.settings["call"], **{"from": self.settings["call"]}, to=to, text=f"{tx.kind} {tx.note}".strip(), dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
-                           level=f"L{tx.level}", rig=self.rig_name(), power_w=self.power_w(), tx_audio=round(20.0 * np.log10(max(float(self.settings["gain"] or 0.25), 1e-4)), 1))  # what went out
+                           level=level_name(tx.level), rig=self.rig_name(), power_w=self.power_w(), tx_audio=round(20.0 * np.log10(max(float(self.settings["gain"] or 0.25), 1e-4)), 1))  # what went out
 
     def poll_radio(self, address):  # read the radio's power setting and meters (a thread of its own while a station runs)
         try:  # rig control may refuse
@@ -944,6 +953,10 @@ class Panel:  # the control panel window
             call, grid, snr, kind, fields = self.heard.get()  # who, where, how strong, what it sent, and its flags
             if kind in ("beacon", "answer"):  # a beacon or an answer says whether its sender takes contacts
                 self.availability[call] = (bool(fields.get("listening", True)), time.time())  # a presence beacon says not; anything else says yes
+            if kind == "long beacon":  # a long beacon says so in its own flag
+                self.availability[call] = (bool(fields.get("available", True)), time.time())  # available or not
+                if call != self.settings["call"]:  # someone else
+                    self.beacon_heard(call, grid, snr, dict(fields))  # show it to the operator (nobody answers a long beacon by itself)
             if kind == "beacon" and call != self.settings["call"] and fields.get("listening", True):  # a station calling for a partner
                 self.beacon_heard(call, grid, snr, fields)  # offer it to the operator
             elif kind == "answer" and fields.get("directed") and fields.get("dest") == self.settings["call"].strip().upper():  # a station calling this one by name
@@ -1041,7 +1054,7 @@ class Panel:  # the control panel window
             self.beacon_var.set(False)  # release the button
             self.beacon_off("repeating beacon stopped: the station is not running")  # nothing can be sent
             return  # done
-        every = int(self.settings["beacon_every_min"])  # minutes between rounds
+        every = self.beacon_every()  # minutes between rounds
         stop_after = int(self.settings["beacon_autostop_min"])  # minutes without the operator before it stops itself (0 = never)
         idle = time.monotonic() - self.last_input  # how long since a key or the mouse was used
         if stop_after and idle >= stop_after * 60:  # nobody has been at the station for too long
@@ -1065,7 +1078,8 @@ class Panel:  # the control panel window
             self.actions = left + self.actions  # ahead of any added meanwhile
         if not self.beacon_wanted:  # the repeating beacon is off
             return  # nothing more to do
-        every_s = 60.0 * int(self.settings["beacon_every_min"])  # seconds between rounds
+        every_s = 60.0 * self.beacon_every()  # seconds between rounds
+        long_type = self.settings.get("beacon_type") == "long"  # long beacons instead of call-ups
         clock = time.monotonic()  # the clock the due time is kept on
         in_contact = station.state in LOCKED or station.role == "caller" or (station.role == "answerer" and station.pending is not None)  # a contact under way, a directed call, or an answer waiting to be confirmed
         if in_contact:  # busy with another station
@@ -1073,10 +1087,16 @@ class Panel:  # the control panel window
             self.beacon_note = "paused during the contact"  # say so
         elif station.role == "beaconer":  # a beacon round is under way
             self.beacon_note = "beaconing now, listening for answers"  # say so
+        elif station.long_waiting is not None:  # a long beacon is about to go
+            self.beacon_note = "sending a long beacon"  # say so
         elif station.state == "IDLE" and station.pending is None and not station.broadcasts and clock >= self.beacon_due:  # free, and the round is due
-            station.beacon_once()  # one beacon, with its reply window, then back to listening
+            if long_type:  # a long beacon: about a minute, and nobody answers
+                station.long_beacon()  # queue it; the station sends it at once
+                self.beacon_note = "sending a long beacon"  # say so
+            else:  # a short beacon: a call-up others can answer
+                station.beacon_once()  # one beacon, with its reply window, then back to listening
+                self.beacon_note = "beaconing now, listening for answers"  # say so
             self.beacon_due = clock + every_s  # the next one
-            self.beacon_note = "beaconing now, listening for answers"  # say so
         else:  # waiting for the next round
             self.beacon_note = "waiting"  # the window works out the time left
 
@@ -1190,6 +1210,23 @@ class Panel:  # the control panel window
         self.beacon_var.set(not self.beacon_var.get())  # push it in or out
         self.beacon_toggled()  # and act on it
 
+    def beacon_every(self):  # minutes between beacon rounds
+        """Return the repeat interval in minutes: the setting, but never under LONG_EVERY_MIN for long beacons."""
+        every = int(self.settings["beacon_every_min"])  # the setting
+        return max(every, LONG_EVERY_MIN) if self.settings.get("beacon_type") == "long" else every  # long beacons hold the frequency a minute each, so they go less often
+
+    def beacon_words(self):  # the beacon button's label
+        """Return the label for the beacon button: short or long."""
+        return "Long beacon (reach)  F5" if self.settings.get("beacon_type") == "long" else "Beacon (call anyone)  F5"  # which kind
+
+    def beacon_type_changed(self):  # Operate > Beacon type
+        """Switch between short and long beacons; a repeating beacon carries on with the new kind at its next round."""
+        self.settings["beacon_type"] = self.beacon_type_var.get()  # remember the choice
+        self.save_settings()  # keep it
+        self.beacon_button.configure(text=self.beacon_words())  # relabel the button
+        long_type = self.settings["beacon_type"] == "long"  # which kind now
+        self.say(f"beacon type: long (about 60 s, heard much further; nobody answers; every {LONG_EVERY_MIN} min at most)" if long_type else "beacon type: short (a call-up others can answer)")  # confirm
+
     def beacon_toggled(self):  # the beacon button was pushed in or out
         if not self.beacon_var.get():  # pushed out
             self.beacon_off("repeating beacon stopped by the operator")  # stop
@@ -1197,14 +1234,14 @@ class Panel:  # the control panel window
         if not self.ensure_listening("beacon"):  # the beacon needs a listening station
             self.beacon_var.set(False)  # release the button
             return  # nothing started
-        every = max(BEACON_MIN, min(BEACON_MAX, int(self.settings["beacon_every_min"])))  # the interval, kept within its limits
-        self.settings["beacon_every_min"] = every  # and stored that way
+        self.settings["beacon_every_min"] = max(BEACON_MIN, min(BEACON_MAX, int(self.settings["beacon_every_min"])))  # the interval, kept within its limits, and stored that way
+        every = self.beacon_every()  # the interval for this kind of beacon
         self.beacon_due = time.monotonic()  # the first round goes as soon as the station is free
         self.beacon_note = "starting"  # until the station thread takes over
         self.last_input = time.monotonic()  # the operator is here now
         self.beacon_wanted = True  # on
         stop_after = int(self.settings["beacon_autostop_min"])  # the automatic stop
-        self.say(f"repeating beacon on: every {every} minutes" + (f", stopping by itself after {stop_after} minutes with no keyboard or mouse use" if stop_after else ""))  # confirm
+        self.say(f"repeating {self.settings.get('beacon_type', 'short')} beacon on: every {every} minutes" + (f", stopping by itself after {stop_after} minutes with no keyboard or mouse use" if stop_after else ""))  # confirm
         self.logbook.write("run", station=self.settings["call"], text=f"repeating beacon on, every {every} min", dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
 
     def beacon_off(self, words):  # stop the repeating beacon (a round already under way finishes)
@@ -1370,7 +1407,7 @@ class Panel:  # the control panel window
             fields = dict(fields, you=True)  # keep that mark until the operator responds
         self.calling[call] = {"when": time.time(), "fields": fields}  # the latest beacon or call
         note = self.mail_note(call, fields)  # messages either way
-        what = "is calling you by name" if fields.get("you") else "is beaconing"  # which it was
+        what = "is calling you by name" if fields.get("you") else ("sent a long beacon" if fields.get("long") else "is beaconing")  # which it was
         if fields.get("you") and not self.settings["available"]:  # called while the operator is away
             self.say(f"{call} called you by name ({snr:+.0f} dB) while you were not available; it was told so. It stays highlighted in Stations heard for five minutes")  # for when the operator is back
         else:  # the operator can respond
@@ -1449,7 +1486,7 @@ class Panel:  # the control panel window
             if every.get():  # every reception
                 tree = self.table(holder, (("time", "Time (UTC)", 120), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("khz", "Frequency kHz", 100)))  # the columns
                 for record in reversed(self.heardlog.snapshot()):  # newest first
-                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", f"L{record.get('level', 0)}", record.get("kind", ""), f"{record.get('dial_khz', 0):.1f}"))  # one row
+                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", level_name(record.get("level", 0)), record.get("kind", ""), f"{record.get('dial_khz', 0):.1f}"))  # one row
             else:  # one row per station
                 tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("khz", "Frequency kHz", 100)))  # the columns
                 for row in self.heardlog.summary():  # most recent first
@@ -1671,6 +1708,7 @@ class Panel:  # the control panel window
         note(operating, 6, "Just listen: nothing is sent unless you start it. A station beaconing, or calling you by name, is highlighted in the Stations\nheard list with any messages either way; select it and press Respond (Ctrl+Y). Replies to your own beacon or call are accepted.")  # how it works
         field(operating, 1, "beacon_every_min", f"Repeating beacon: minutes between beacons ({BEACON_MIN} to {BEACON_MAX})", width=6)  # the interval
         field(operating, 2, "beacon_autostop_min", f"Stop the repeating beacon after this many minutes with\nno keyboard or mouse use ({AUTOSTOP_MIN} to {AUTOSTOP_MAX}; 0 = never)", width=6)  # the automatic stop
+        field(operating, 4, "beacon_type", "Beacon type", names=BEACON_TYPE_NAMES, width=62)  # short or long
         note(operating, 3, "The repeating beacon starts only when you press its button (F5). Each round is one beacon and its reply window;\nit pauses during a contact and the interval starts again when the contact ends. Press the button again to stop.")  # how it works
         logging = page("Logging")  # the logbook
         field(logging, 0, "log_level", "Level of detail", names=LOG_NAMES, width=56)  # basic, advanced or verbose
@@ -1723,6 +1761,8 @@ class Panel:  # the control panel window
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
             self.logbook.level = new["log_level"]  # the logbook's level of detail
+            self.beacon_type_var.set(self.settings.get("beacon_type", "short"))  # the Beacon type menu follows the setting
+            self.beacon_button.configure(text=self.beacon_words())  # and the button's label
             if self.station is not None:  # a station is listening now
                 self.station.answer_beacons = self.station.answer_calls = bool(new["auto_answer"])  # the change applies at once
             if new["theme"] != self.theme_var.get():  # a different look
@@ -1754,7 +1794,7 @@ class Panel:  # the control panel window
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
-        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level", "record_rx", "signal_log")  # the ones that bear on a transmission
+        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_type", "beacon_autostop_min", "auto_answer", "log_level", "record_rx", "signal_log")  # the ones that bear on a transmission
         return "; ".join(f"{key}={self.settings[key]}" for key in keys)  # as one line
 
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)

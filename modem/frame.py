@@ -378,7 +378,7 @@ def _score(result):  # how believable a failed attempt is
     return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
-def receive(x, blank=True, prior_llrs=None, trace=None):  # the receiver
+def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True):  # the receiver
     """Find and decode one frame in the audio `x`.
 
     `prior_llrs` may hold the body_llrs of an earlier failed copy of the
@@ -390,16 +390,31 @@ def receive(x, blank=True, prior_llrs=None, trace=None):  # the receiver
     header ("first", "both", "second" or "" when none checked out), and,
     when a body was tried, ok, reason, snr_db and fade_index. It is for
     signal logs and debugging; the result does not depend on it.
+
+    With `long_beacons` (the default) the long beacon's pattern is searched
+    for too (see longbeacon.py); a long beacon comes back with level
+    LONG_LEVEL and frame type FRAME_TYPE_LONG.
     """
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
         x = blank_impulses(x)  # silence static crashes
+    from . import longbeacon  # the long beacon (imported here: it uses this module's body layout)
     candidates = [(found, spec) for spec in LEVELS for found in detect_preamble(x, spec)]  # look for every level's signature pattern (best few candidates of each)
+    if long_beacons:  # the long beacon's pattern too (signal version 0.27)
+        candidates += [(found, longbeacon.LONG) for found in longbeacon.candidates(x)]  # its best few
     if not candidates:  # recording too short to hold any preamble
         return RxResult(reason="no preamble found")  # give up
     candidates.sort(key=lambda pair: -pair[0]["quality"])  # try the candidate that stands furthest above the background first
     best = None  # the most believable failed attempt so far
     for found, spec in candidates:  # each candidate, at the level its pattern belongs to
+        if spec is longbeacon.LONG:  # a long beacon has no header: its body follows the pattern
+            attempt = longbeacon.decode_at(x, found, RxResult(start=found["start"], sync_quality=found["quality"]))  # read it
+            step = {"level": spec.number, "start": int(found["start"]), "offset_hz": float(found["offset_hz"]), "quality": float(found["quality"]), "header": "long", "ok": attempt.ok, "reason": attempt.reason, "snr_db": float(attempt.snr_db), "fade_index": float(attempt.fade_index)}  # for the trace
+            if trace is not None:  # someone wants the details
+                trace.append(step)  # record it
+            if attempt.ok:  # a long beacon
+                return attempt  # this is the frame
+            continue  # a long beacon that fails is not kept as a failure: it is never retried or combined, and chance matches of its pattern would hide near misses of other frames
         header, how = _read_header_how(x, found["start"] + preamble_samples(spec), found["offset_hz"], spec)  # the header follows the preamble
         step = {"level": spec.number, "start": int(found["start"]), "offset_hz": float(found["offset_hz"]), "quality": float(found["quality"]), "header": how}  # what this candidate was (for the trace)
         if trace is not None:  # someone wants the details

@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.27 (draft) - 21 November 2026
+
+- **Signal version 0.27.** New frame: the long beacon (Sections 5.9 and 6.13), the first part of roadmap step 2. Stations following 0.26 do not hear it; all other frames are unchanged from 0.26.
+- The long beacon: its own twelve-tone pattern and no header; 1.1667 s tones 2.571 Hz apart (about 82 Hz wide); callsign, grid, available and holds-mail flags with a CRC-16, coded with the K=7 convolutional code; 59.5 seconds. In simulation every long beacon decodes down to -25.6 dB on a steady path (L0 beacon: -21 dB) and nine in ten down to -18.6 dB in the worst fading (L0: -14 dB).
+- No station answers a long beacon; it is shown to the operator. Long beacons are the operator's choice instead of short (call-up) beacons, at least 10 minutes apart.
+- Header frame type 6 is now used by receivers to report a long beacon (never sent).
+- New study tool: tools/bottom_study.py (results/bottom_study_*.csv): today's beacon with longer tones and wider spacing, and the long beacon, in noise and fading.
+
 ## 0.26 (draft) - 21 November 2026
 
 - **Signal version 0.26. Stations following 0.25 or earlier cannot exchange frames with 0.26 stations** (only the test stations are affected).
