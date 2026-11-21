@@ -49,7 +49,7 @@ from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir
 from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
-from live.rig import RigCtl, RigServer, find_rigctld, list_models, list_models_why, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
+from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
 from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
 from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
@@ -148,8 +148,8 @@ def build_info():  # which build of the program this is
 def about_text():  # the words in Help > About
     """Return the text of the About box: what Kestrel is, the signal and document versions, the program build, and who began it."""
     return (f"Kestrel (KES)\nAn adaptive amateur HF digital mode for short messages.\n\n"  # the name and what it is
-            f"Signal version: {SIGNAL_VERSION}\n"  # the version of the transmitted signal
-            f"Specification: version {SPEC_VERSION} (draft)\n"  # which version of the published description the program follows
+            f"Kestrel version: {SPEC_VERSION} (the specification it follows, draft)\n"  # the program's version, which is that of the published description
+            f"Signal version: {SIGNAL_VERSION} (what goes on the air; a release that changes only the program leaves it alone)\n"  # the version of the transmitted signal
             f"Program: {build_info()}\n"  # which build of the program
             f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n\n"  # the Python it runs on
             f"Stations must have the same signal version to hear each other.\n\n"  # the practical point
@@ -240,7 +240,7 @@ class Panel:  # the control panel window
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
         self.colours = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colours
-        root.title(f"Kestrel  -  signal v{SIGNAL_VERSION}")  # window title, with the signal version so two stations can be compared at a glance
+        root.title(f"Kestrel {SPEC_VERSION}  -  signal v{SIGNAL_VERSION}")  # window title: the program's version, and the signal version so two stations can be compared at a glance (the two differ when a release changes only the program)
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
         self.mode_var = tk.StringVar(value="off")  # the mode buttons and menu items share this
         self.beacon_var = tk.BooleanVar(value=False)  # the beacon button and menu item share this
@@ -1635,10 +1635,8 @@ class Panel:  # the control panel window
 
     def settings_window(self, tab=0):  # the Settings window, open at one of its tabs
         dialog = self.window("settings", "Kestrel - Settings")  # a window of its own
-        program, listed, why_empty = models_for(self.settings["rigctld"])  # the rig control program (the one chosen before, else the one found on this computer), its radio list, and why the list is empty if it is
-        models = [f"{number}  {name}" for number, name in listed]  # every radio type it knows, as "number  name"
-        if why_empty:  # no list
-            self.say(f"Settings: the rig type list is empty: {why_empty}")  # keep the reason in the log too
+        program = self.settings["rigctld"] or find_rigctld()  # the rig control program: the one chosen before, else one found on this computer
+        models = []  # every radio type it knows, as "number  name": filled in the background below, because the first run of rigctld on a computer can take a minute while an antivirus program checks it
         try:  # the serial port list needs the pyserial package
             from serial.tools import list_ports  # lists this computer's serial ports
             ports = sorted(port.device for port in list_ports.comports())  # their names (COM3, /dev/ttyUSB0, ...)
@@ -1690,17 +1688,32 @@ class Panel:  # the control panel window
         field(radio, 4, "ptt", "Key the transmitter (PTT) by", names=PTT_NAMES, width=30)  # how the transmitter is keyed
         field(radio, 5, "port", "PTT serial port (for RTS or DTR)", ports, editable=True, width=14)  # the port whose RTS or DTR line keys the radio
         path_box = field(radio, 6, "rigctld", "rigctld program", width=52)  # the rig control program's file
-        if program and path_box.get() != program:  # the program in use is not the one shown (none was chosen, or the chosen one gave no list and another was used)
-            path_box.delete(0, "end")  # clear the box
-            path_box.insert(0, program)  # show the one in use
-        list_note = ttk.Label(radio, text=(f"The rig type list is empty: {why_empty}." if why_empty else f"{len(models)} radio types listed."), wraplength=560, justify="left", foreground="#b00020" if why_empty else "")  # how many radios, or why none
+        if not self.settings["rigctld"] and program:  # none chosen, but one was found
+            path_box.insert(0, program)  # offer it
+        list_note = ttk.Label(radio, text="Loading the rig type list... (the first time on a computer this can take a minute)", wraplength=560, justify="left")  # how many radios, or why none; filled in when the list arrives
         list_note.grid(row=8, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))  # under the settings
 
-        def reload():  # fill the rig type list again from the program in the box
-            again, reason = list_models_why(path_box.get().strip())  # ask it
-            models[:] = [f"{number}  {name}" for number, name in again]  # the new list, in place (the narrowing-as-you-type rule reads the same list)
+        def show_list(used, listed, reason):  # the rig type list has arrived (called in the window's own thread)
+            if not dialog.winfo_exists():  # the Settings window was closed meanwhile
+                return  # nothing to fill
+            models[:] = [f"{number}  {name}" for number, name in listed]  # the list, in place (the narrowing-as-you-type rule reads the same list)
             rig_box.configure(values=[NO_RIG] + models)  # into the drop-down
-            list_note.configure(text=f"The rig type list is empty: {reason}." if reason else f"{len(models)} radio types listed.", foreground="#b00020" if reason else "")  # say how it went
+            if used and path_box.get().strip() != used:  # the program that answered is not the one shown (the saved one was gone, and the installed one was used)
+                path_box.delete(0, "end")  # clear the box
+                path_box.insert(0, used)  # show the one in use
+            list_note.configure(text=f"The rig type list is empty: {reason}." if reason else f"{len(models)} radio types listed. Choose yours from the Rig type list, or type part of its name to narrow the list.", foreground="#b00020" if reason else "")  # say how it went
+            if reason:  # no list
+                self.say(f"Settings: the rig type list is empty: {reason}")  # keep the reason in the log too
+
+        def load(saved):  # fetch the list without freezing the window (a thread of its own)
+            used, listed, reason = models_for(saved)  # ask the saved program, else the one found on this computer
+            self.root.after(0, lambda: show_list(used, listed, reason))  # hand the answer to the window's own thread
+
+        def reload():  # fill the rig type list again from the program in the box
+            list_note.configure(text="Loading the rig type list...", foreground="")  # say it is being fetched
+            threading.Thread(target=load, args=(path_box.get().strip(),), daemon=True).start()  # in the background
+
+        reload()  # fetch the list now
 
         ttk.Button(radio, text="Reload rig list", command=reload).grid(row=7, column=2, padx=(0, 8), pady=(2, 0))  # try again, after fixing the path or the antivirus
 
@@ -1750,6 +1763,14 @@ class Panel:  # the control panel window
                 new[name] = value  # keep it
             if new["rig_model"] == NO_RIG:  # no rig control wanted
                 new["rig_model"] = ""  # stored as blank
+            if new["rig_model"] and new["rig_model"] not in models:  # something typed that is not an entry of the list (the entries are "number  name")
+                close = [model for model in models if new["rig_model"].lower() in model.lower()]  # the entries it could mean
+                if len(close) == 1:  # only one: that must be it
+                    new["rig_model"] = close[0]  # take it
+                elif not (new["rig_model"].split()[0].isdigit() and not models):  # anything else is refused (a bare Hamlib number is let through only when there is no list to choose from)
+                    messagebox.showerror("Kestrel", (f"'{new['rig_model']}' matches {len(close)} radio types. Pick one from the Rig type list." if close else f"'{new['rig_model']}' is not in the Rig type list. Pick your radio from the list (type part of its name to narrow it), or choose '{NO_RIG}'."), parent=dialog)  # say what to do
+                    book.select(1)  # show the Radio tab
+                    return  # leave the window open
             try:  # the numbers must be numbers, within their limits
                 every, stop_after, full = int(new["beacon_every_min"]), int(new["beacon_autostop_min"]), float(new["max_power_w"] or 100)  # read them
             except ValueError:  # not numbers
@@ -1819,6 +1840,8 @@ class Panel:  # the control panel window
             program = settings["rigctld"] or find_rigctld()  # the rig control program
             if not program:  # there is none
                 raise RuntimeError("the rig control program (rigctld) was not found; choose it under Settings > Radio")  # say what to do
+            if not settings["rig_model"].split()[0].isdigit():  # the rig type is not an entry of the list (entries begin with Hamlib's number)
+                raise RuntimeError(f"the rig type in Settings ('{settings['rig_model']}') is not one from the list: open Settings > Radio and pick your radio")  # say what to do, in plain words
             return self.rigs.ensure(program, settings["rig_model"].split()[0], settings["cat_port"], settings["cat_baud"] or 38400, settings["cat_handshake"])  # start it if it is not already running
         return settings["rig"]  # an outside rigctld, or nothing
 
@@ -2114,7 +2137,7 @@ def main():  # the script itself
     root = tk.Tk()  # the window
     Panel(root)  # its contents
     if PROFILE:  # a profile was named
-        root.title(f"Kestrel - {PROFILE}  -  signal v{SIGNAL_VERSION}")  # show which panel this is, and the signal version
+        root.title(f"Kestrel {SPEC_VERSION} - {PROFILE}  -  signal v{SIGNAL_VERSION}")  # show the program's version, which panel this is, and the signal version
     root.mainloop()  # run until closed
 
 
