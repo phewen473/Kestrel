@@ -356,3 +356,28 @@ def test_rig_list_says_why_it_is_empty_and_falls_back(tmp_path, monkeypatch):  #
     assert program == str(good) and len(models) == 2 and reason == ""  # the one found is used instead, and the list is filled
     monkeypatch.setattr(rig, "find_rigctld", lambda extra_folders=(): "")  # a computer with none at all
     assert rig.models_for("")[1] == [] and "setup program installs one" in rig.models_for("")[2]  # empty, with what to do about it
+
+
+def test_transmit_scope_shows_what_is_being_played():  # the transmit scope's spectrum follows the audio going out
+    import time  # to place the playback position
+    from live.audio import CARD_RATE, AudioOut  # the sound-card output and its rate
+    sink = AudioOut(None, 0.5)  # an output that is never opened
+    assert sink.spectrum() is None  # nothing is playing, so there is nothing to show
+    t = np.arange(2 * CARD_RATE) / CARD_RATE  # two seconds at the card's rate
+    sink.sending, sink.started, sink.playing = (0.5 * np.sin(2 * np.pi * 1500.0 * t)).astype("float32"), time.monotonic() - 1.0, True  # a 1500 Hz tone, one second into its playing
+    levels = sink.spectrum(3000.0, 720)  # what the transmit scope would draw
+    assert len(levels) == 720  # one level per point across
+    assert abs(int(np.argmax(levels)) * 3000.0 / 719 - 1500.0) < 6.0  # the peak is at 1500 Hz, to within a point or so
+    sink.playing = False  # the transmission ends
+    assert sink.spectrum() is None  # and the scope has nothing new to show
+
+
+def test_scope_spectrum_zoomed_separates_long_beacon_tones():  # a zoomed-in scope shows two tones 2.57 Hz apart as two peaks
+    from live.audio import CARD_RATE, SCOPE_LONG, scope_length, scope_spectrum  # the functions under test
+    assert scope_length(1400.0, 1600.0) == SCOPE_LONG  # a narrow view uses the longer stretch of audio
+    t = np.arange(SCOPE_LONG) / CARD_RATE  # that stretch, in seconds
+    levels = scope_spectrum(0.3 * np.sin(2 * np.pi * 1500.0 * t) + 0.3 * np.sin(2 * np.pi * 1502.571 * t), CARD_RATE, 1600.0, 720, 1400.0)  # two neighbouring long-beacon tones, seen 200 Hz wide
+    hz = np.linspace(1400.0, 1600.0, 720)  # the frequency of each point
+    assert len(levels) == 720  # one level per point across
+    dip = levels[np.argmin(np.abs(hz - 1501.29))]  # the level midway between the two tones
+    assert levels[np.argmin(np.abs(hz - 1500.0))] - dip > 5.0 and levels[np.argmin(np.abs(hz - 1502.571))] - dip > 5.0  # each tone stands clear of the gap between them

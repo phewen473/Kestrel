@@ -187,6 +187,9 @@ def utc(seconds):  # a time for display
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
+VIEW_WIDTHS = {"Full (0-3000 Hz)": 3000.0, "1000 Hz wide": 1000.0, "500 Hz wide": 500.0, "200 Hz wide": 200.0}  # the scope widths offered, by name
+
+
 class Panel:  # the control panel window
     """The window, its controls, and the thread that runs the station."""
 
@@ -353,7 +356,7 @@ class Panel:  # the control panel window
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
         root.after(100, self.show_lines)  # start passing log lines to the window
         root.after(500, self.follow_station)  # start keeping the lists and readings up to date
-        root.after(150, self.draw_scope)  # start drawing the scope
+        root.after(100, self.draw_scope)  # start drawing the scope
         root.after(200, self.draw_meters)  # start drawing the level meters
         root.after(300, lambda: theme.colour_window(root, self.colours))  # the title bar again, now the window is on screen
         root.after(700, self.autostart)  # start listening, once the window is up
@@ -462,41 +465,151 @@ class Panel:  # the control panel window
     # ---- the scope ----
 
     def _scope(self, parent):  # the scope: a spectrum trace above a waterfall of the receive audio, with scales
-        self.scope_w, self.trace_h, self.fall_h, self.top_hz = 512, 90, 150, 3000.0  # width in points, heights of the trace and the waterfall, and the highest frequency shown
+        self.scope_w, self.trace_h, self.fall_h, self.top_hz = 720, 90, 120, 3000.0  # width in points (4.2 Hz each), heights of the trace and the waterfall, and the highest frequency shown
+        self.low_hz = 0.0  # the lowest frequency shown (above zero when the view is zoomed in)
         self.left, self.right, self.above, self.below = 40, 40, 16, 18  # margins for the scales: dB on the left, seconds on the right, radio kHz above, audio Hz below
         steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfall
         self.palette = np.stack([np.interp(steps, [0, 0.35, 0.7, 1.0], channel) for channel in ([0, 0, 255, 255], [0, 40, 255, 60], [40, 200, 0, 0])], axis=1).astype("uint8")  # their colours: black, blue, yellow, red
         self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the waterfall picture, newest line at the top
-        self.line_s = 0.15  # seconds between waterfall lines, measured as the scope runs
+        self.line_s = 0.10  # seconds between waterfall lines, measured as the scope runs
         self.last_line = None  # when the last waterfall line was drawn
         self.scale_khz = None  # the radio frequency the top scale was last drawn for
-        frame = ttk.LabelFrame(parent, text="Scope  -  receive audio")  # the box around the scope
-        frame.grid(row=0, column=1, sticky="ns", padx=(0, 4))  # place it beside the log
+        scopes = ttk.Frame(parent)  # the two scopes, one above the other: transmit on top, receive below
+        scopes.grid(row=0, column=1, sticky="ns", padx=(0, 4))  # beside the log
+        self._tx_scope(scopes)  # the transmit scope, on top
+        frame = ttk.LabelFrame(scopes, text="Receive  -  audio from the radio")  # the box around the receive scope
+        frame.grid(row=1, column=0, sticky="ns")  # under the transmit scope
         width, height = self.left + self.scope_w + self.right, self.above + self.trace_h + self.fall_h + self.below  # the drawing area's size
         self.scope = tk.Canvas(frame, width=width, height=height, bg="#0b0e12", highlightthickness=0)  # the drawing area
         self.scope.grid(row=0, column=0, padx=4, pady=(4, 0))  # place it
         self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # the waterfall as a picture
         self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
         grey, faint, font = "#a8b0ba", "#3a414a", ("Segoe UI", 7)  # scale colours and lettering
-        for hz in range(0, 3001, 500):  # a mark every 500 Hz
-            x = self.x_for(hz)  # where it falls across the display
-            edge = hz in (500, 2500)  # the two edges of the Kestrel band
-            self.scope.create_line(x, self.above, x, self.above + self.trace_h + self.fall_h, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4))  # a dashed line for an edge, a faint dotted one otherwise
-            self.scope.create_text(x, height - self.below / 2, text=str(hz), fill=grey, font=font)  # its audio frequency underneath
         self.scope.create_text(self.left + self.scope_w + self.right / 2, height - self.below / 2, text="Hz", fill=grey, font=font)  # the unit of the bottom scale
         for db in (0, 25, 50):  # marks up the trace, in dB above the noise
             y = self.y_for(db)  # where it falls
             self.scope.create_line(self.left, y, self.left + self.scope_w, y, fill=faint, dash=(1, 4))  # a faint line across
             self.scope.create_text(self.left - 4, y, text=f"{db:+d}" if db else "noise", anchor="e", fill=grey, font=font)  # its value
         self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font=font)  # the unit of the left scale, in the top corner
+        self.scope.bind("<Button-1>", self.scope_click)  # a click centers the view there, zooming in on a labelled signal
+        self.scope.bind("<Button-3>", lambda event: self.set_view(1500.0, 3000.0))  # a right click returns to the full view
+        self.scope.bind("<MouseWheel>", self.scope_wheel)  # the wheel zooms in and out about the pointer
+        controls = ttk.Frame(frame)  # a row of zoom controls under the picture
+        controls.grid(row=1, column=0, sticky="w", padx=4, pady=(2, 0))  # place it
+        ttk.Label(controls, text="View:").grid(row=0, column=0)  # its label
+        self.view_choice = tk.StringVar(value="Full (0-3000 Hz)")  # the width chosen
+        self.view_box = ttk.Combobox(controls, textvariable=self.view_choice, values=list(VIEW_WIDTHS), state="readonly", width=16)  # the widths offered
+        self.view_box.grid(row=0, column=1, padx=(4, 8))  # place it
+        self.view_box.bind("<<ComboboxSelected>>", lambda event: self.set_view((self.low_hz + self.top_hz) / 2, VIEW_WIDTHS[self.view_choice.get()]))  # choosing a width keeps the center
+        ttk.Button(controls, text="Center on last signal", command=self.center_on_last).grid(row=0, column=2)  # zoom in on the station decoded most recently
+        ttk.Button(controls, text="Full view", command=lambda: self.set_view(1500.0, 3000.0)).grid(row=0, column=3, padx=(4, 8))  # back to everything
+        self.view_note = ttk.Label(controls, text="click a signal to zoom in on it", font=("Segoe UI", 8))  # a word on what the view shows
+        self.view_note.grid(row=0, column=4)  # place it
+        self.draw_grid()  # the frequency marks of both scopes
         self.trace = self.scope.create_line(self.left, self.y_for(0), self.left + self.scope_w, self.y_for(0), fill="#7cfc00")  # the spectrum trace, flat until there is audio
         legend = ("Across: audio frequency in Hz (below) and the radio frequency each point is on, in kHz (above).\n"  # what the axes are
                   "Trace: signal strength above the noise, in dB.  Waterfall: the last few seconds, newest at the top.\n"  # what the two parts show
-                  "Dashed lines: the Kestrel band, 500 to 2500 Hz.  Labels: stations decoded in the last minute.")  # the marks
-        ttk.Label(frame, text=legend, font=("Segoe UI", 8), justify="left").grid(row=1, column=0, sticky="w", padx=4, pady=(2, 4))  # the key
+                  "Dashed lines: the Kestrel band, 500 to 2500 Hz.  Labels: stations decoded in the last minute.\n"  # the marks
+                  "Transmit (top): the audio Kestrel sends, in dB below full scale, on the same Hz scale; it keeps the last transmission.\n"  # the transmit scope
+                  "Zoom: click a signal or its label, turn the wheel, or pick a width.  Right click: full view.")  # the transmit scope
+        ttk.Label(frame, text=legend, font=("Segoe UI", 8), justify="left").grid(row=2, column=0, sticky="w", padx=4, pady=(2, 4))  # the key
+
+    def _tx_scope(self, parent):  # the transmit scope: what Kestrel is sending to the radio, on the same frequency scale as the receive scope
+        self.tx_trace_h, self.tx_fall_h = 40, 44  # heights of its trace and its waterfall
+        self.tx_fall = np.zeros((self.tx_fall_h, self.scope_w, 3), dtype="uint8")  # its waterfall picture, newest line at the top
+        frame = ttk.LabelFrame(parent, text="Transmit  -  audio sent to the radio")  # the box around it
+        frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))  # on top
+        width, height = self.left + self.scope_w + self.right, 14 + self.tx_trace_h + self.tx_fall_h + self.below  # the drawing area's size (a line of words above, the Hz scale below)
+        self.tx_top = 14  # the trace begins under the line of words
+        self.tx_canvas = tk.Canvas(frame, width=width, height=height, bg="#0b0e12", highlightthickness=0)  # the drawing area
+        self.tx_canvas.grid(row=0, column=0, padx=4, pady=4)  # place it
+        self.tx_image = tk.PhotoImage(width=self.scope_w, height=self.tx_fall_h)  # the waterfall as a picture
+        self.tx_item = self.tx_canvas.create_image(self.left, self.tx_top + self.tx_trace_h, anchor="nw", image=self.tx_image)  # shown under the trace
+        grey, font = "#a8b0ba", ("Segoe UI", 7)  # scale colour and lettering
+        self.tx_canvas.create_text(self.left + self.scope_w + self.right / 2, height - self.below / 2, text="Hz", fill=grey, font=font)  # the unit of the scale
+        for db in (0, -30, -60):  # marks up the trace, in dB below full scale
+            y = self.tx_top + self.tx_trace_h - 2 - (db + 70.0) / 70.0 * (self.tx_trace_h - 4)  # where it falls
+            self.tx_canvas.create_text(self.left - 4, y, text=str(db), anchor="e", fill=grey, font=font)  # its value
+        self.tx_line = self.tx_canvas.create_line(self.left, self.tx_top + self.tx_trace_h - 2, self.left + self.scope_w, self.tx_top + self.tx_trace_h - 2, fill="#ff9f43")  # the trace, flat until something is sent
+        self.tx_words = self.tx_canvas.create_text(self.left, 7, anchor="w", text="nothing sent yet", fill="#ffd166", font=("Segoe UI", 8))  # what is being sent, or what the picture is of
+        self.tx_was = False  # whether a transmission was under way at the last look
+
+    def draw_tx_scope(self):  # redraw the transmit scope (called from draw_scope)
+        sink = self.sink  # the sound-card output, when a station is running
+        levels = sink.spectrum(self.top_hz, self.scope_w, self.low_hz) if sink is not None else None  # what is going out at this moment, if anything
+        if levels is None:  # not transmitting
+            if self.tx_was:  # a transmission has just ended
+                self.tx_was = False  # note it
+                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # the picture stays, labelled as the last transmission
+            return  # nothing new to draw
+        if not self.tx_was:  # a transmission has just begun
+            self.tx_was = True  # note it
+            dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
+            self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its centre lands on the air
+        bright = np.clip((levels + 70.0) / 70.0, 0.0, 1.0)  # each point on a scale from 70 dB under full scale to full scale
+        points = np.column_stack((self.left + np.arange(self.scope_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
+        self.tx_canvas.coords(self.tx_line, *points)  # move the trace
+        self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
+        self.tx_fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
+        self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
+        self.tx_canvas.itemconfigure(self.tx_item, image=self.tx_image)  # show it
 
     def x_for(self, hz):  # where an audio frequency falls across the scope
-        return self.left + hz / self.top_hz * (self.scope_w - 1)  # left margin plus the share of the width
+        return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * (self.scope_w - 1)  # left margin plus the share of the width shown
+
+    def hz_at(self, x):  # the audio frequency at a point across the scope
+        return self.low_hz + (x - self.left) / (self.scope_w - 1) * (self.top_hz - self.low_hz)  # the other way round
+
+    def draw_grid(self):  # draw the frequency marks of both scopes for the view now shown
+        span = self.top_hz - self.low_hz  # the width of the view
+        step = next(size for size in (10, 20, 50, 100, 200, 500) if span / size <= 8 or size == 500)  # the spacing that gives at most eight marks
+        grey, faint, font = "#a8b0ba", "#3a414a", ("Segoe UI", 7)  # scale colours and lettering
+        for canvas, top, bottom in ((self.tx_canvas, self.tx_top, self.tx_top + self.tx_trace_h + self.tx_fall_h), (self.scope, self.above, self.above + self.trace_h + self.fall_h)):  # the transmit scope, then the receive scope
+            canvas.delete("grid")  # remove the old marks
+            marks = {step * n for n in range(int(np.ceil(self.low_hz / step)), int(self.top_hz // step) + 1)} | {hz for hz in (500, 2500) if self.low_hz <= hz <= self.top_hz}  # a mark at every step, and at the two edges of the Kestrel band
+            for hz in sorted(marks):  # each mark
+                x = self.x_for(hz)  # where it falls across the display
+                edge = hz in (500, 2500)  # the two edges of the Kestrel band
+                canvas.create_line(x, top, x, bottom, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4), tags="grid")  # a dashed line for an edge, a faint dotted one otherwise
+                canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=grey, font=font, tags="grid")  # its audio frequency underneath
+            canvas.tag_lower("grid")  # behind the trace and the labels
+            for item in (self.tx_item, ) if canvas is self.tx_canvas else (self.fall_item, ):  # the waterfall picture
+                canvas.tag_lower(item)  # goes behind the marks
+
+    def set_view(self, center_hz, span_hz):  # show `span_hz` of the audio band, centered on `center_hz` as nearly as the band allows
+        span = float(min(3000.0, max(100.0, span_hz)))  # between 100 Hz and the whole band
+        low = min(3000.0 - span, max(0.0, center_hz - span / 2))  # keep the view inside 0 to 3000 Hz
+        if (low, low + span) == (self.low_hz, self.top_hz):  # nothing has changed
+            return  # leave the picture alone
+        self.low_hz, self.top_hz = low, low + span  # the new view
+        self.fall[:], self.tx_fall[:] = 0, 0  # the old waterfall lines were on another scale, so start again
+        self.scale_khz = None  # the radio-frequency labels must be redrawn
+        self.draw_grid()  # and the frequency marks
+        name = next((name for name, width in VIEW_WIDTHS.items() if width == span), f"{span:.0f} Hz wide")  # the name of this width
+        self.view_choice.set(name)  # shown in the box
+        self.view_note.configure(text="full view" if span >= 3000.0 else f"{low:.0f} to {low + span:.0f} Hz" + ("  -  fine detail, about a second behind" if span <= 600.0 else ""))  # say what is shown
+
+    def fit_span(self, width_hz):  # the view width that suits a signal of this width
+        return next((span for span in (200.0, 500.0, 1000.0, 2000.0) if span >= 1.25 * width_hz), 3000.0)  # the narrowest that leaves a little room either side
+
+    def scope_click(self, event):  # a click on the receive scope
+        hz = self.hz_at(event.x)  # the frequency clicked
+        for call, (at, width, when) in self.marks.items():  # each labelled station
+            if abs(hz - at) <= width / 2:  # the click is on its signal
+                self.set_view(at, self.fit_span(width))  # center on it, at a width that suits it
+                return  # done
+        self.set_view(hz, 500.0 if self.top_hz - self.low_hz >= 3000.0 else self.top_hz - self.low_hz)  # otherwise center where clicked, zooming to 500 Hz from the full view
+
+    def scope_wheel(self, event):  # the mouse wheel over the receive scope
+        span = (self.top_hz - self.low_hz) * (0.5 if event.delta > 0 else 2.0)  # half the width when turned forward, double when turned back
+        self.set_view(self.hz_at(event.x), span)  # about the pointer
+
+    def center_on_last(self):  # zoom in on the station decoded most recently
+        if not self.marks:  # none in the last minute
+            self.view_note.configure(text="no station decoded in the last minute")  # say so
+            return  # nothing to center on
+        at, width, when = max(self.marks.values(), key=lambda mark: mark[2])  # the newest
+        self.set_view(at, self.fit_span(width))  # center on it
 
     def y_for(self, db):  # where a level above the noise falls on the trace
         return self.above + self.trace_h - 3 - (db + 5.0) / 55.0 * (self.trace_h - 8)  # from 5 dB under the noise at the bottom to 50 dB above it at the top
@@ -508,20 +621,24 @@ class Panel:  # the control panel window
 
     def draw_scope(self):  # redraw the scope from the newest audio
         source = self.audio  # the sound-card input, if one is open
+        try:  # the transmit scope first; a hiccup in drawing must never stop the station
+            self.draw_tx_scope()  # what is being sent, on top
+        except Exception:  # anything at all
+            pass  # try again next time
         try:  # a hiccup in drawing must never stop the station
             dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
             if dial != self.scale_khz:  # the radio has moved since the top scale was drawn
                 self.scale_khz = dial  # remember where it is now
                 self.scope.delete("rf")  # remove the old labels
-                for hz in (500, 1500, 2500):  # three points across
-                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.1f}", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
+                for hz in (self.low_hz + share * (self.top_hz - self.low_hz) for share in (1 / 6, 1 / 2, 5 / 6)):  # three points across
+                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
                 self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the unit
             if source is not None:  # there is audio to show
                 now = time.monotonic()  # the time of this line
                 if self.last_line is not None:  # not the first line
                     self.line_s = 0.9 * self.line_s + 0.1 * (now - self.last_line)  # keep a running average of the time between lines
                 self.last_line = now  # remember it
-                levels = source.spectrum(self.top_hz, self.scope_w)  # the spectrum of the last sixth of a second, in decibels
+                levels = source.spectrum(self.top_hz, self.scope_w, self.low_hz)  # the spectrum of the newest audio, in decibels
                 floor = float(np.median(levels))  # the noise level, taken as the middle value
                 bright = np.clip((levels - (floor - 5.0)) / 55.0, 0.0, 1.0)  # each point on a scale from 5 dB under the noise to 50 dB above it
                 points = np.column_stack((self.left + np.arange(self.scope_w), self.above + self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
@@ -532,7 +649,7 @@ class Panel:  # the control panel window
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
             self.scope.delete("time")  # the seconds scale is redrawn each time, since the line rate is measured
             x = self.left + self.scope_w + 4  # just right of the waterfall
-            for seconds in (0, 10, 20, 30, 40):  # a mark every ten seconds
+            for seconds in (0, 5, 10, 15, 20, 30):  # a mark every five seconds at first
                 y = self.above + self.trace_h + seconds / max(self.line_s, 0.05)  # how far down that is
                 if y <= self.above + self.trace_h + self.fall_h:  # it is on the waterfall
                     self.scope.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font=("Segoe UI", 7), tags="time")  # label it
@@ -542,12 +659,14 @@ class Panel:  # the control panel window
                 if now - when > 60.0:  # more than a minute ago
                     del self.marks[call]  # forget it
                     continue  # and move on
-                low, high = self.x_for(max(0.0, hz - width / 2)), self.x_for(min(self.top_hz, hz + width / 2))  # the signal's edges
+                if hz + width / 2 < self.low_hz or hz - width / 2 > self.top_hz:  # the signal is outside the view
+                    continue  # nothing to draw
+                low, high = self.x_for(max(self.low_hz, hz - width / 2)), self.x_for(min(self.top_hz, hz + width / 2))  # the signal's edges, as far as they are in view
                 self.scope.create_line(low, self.above + 14, low, self.above + 18, high, self.above + 18, high, self.above + 14, fill="#ffd166", tags="mark")  # a bracket over the signal
                 self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill="#ffd166", font=("Segoe UI", 8, "bold"), tags="mark")  # with the callsign above it
         except Exception:  # anything at all
             pass  # try again next time
-        self.root.after(150, self.draw_scope)  # about seven times a second
+        self.root.after(100, self.draw_scope)  # ten times a second
 
     # ---- the level meters ----
 
