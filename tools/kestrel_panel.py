@@ -25,6 +25,7 @@ import argparse  # reads the command-line options
 import json  # settings are kept in a small JSON file
 import os  # file paths
 import queue  # carries log lines and reports from the working thread to the window
+import re  # checks that a callsign has the shape of one
 import subprocess  # asks Git which commit this is, for the About box
 import sys  # lets us add the repository root to the import path
 import threading  # the station runs in its own thread so the window stays responsive
@@ -40,10 +41,11 @@ from live.paths import code_dir, data_dir  # where the program's files and the o
 ROOT = code_dir()  # the program's own files: the repository root, or the installed bundle
 
 from link import Station  # the link rules  # noqa: E402
-from live import KIND, Listener, call_request, describe, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
+from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
-from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list and the working frequencies  # noqa: E402
+from live.bands import add_user_frequency, all_frequencies, describe_frequency, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
+from live.recorder import Recorder, RecordingSource, recordings_dir  # recording the received audio to WAV files  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS  # the speed levels, for how wide each signal is on the scope  # noqa: E402
@@ -58,13 +60,16 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
-            "log_level": "basic", "theme": "system",  # (continued: logging and looks)
+            "log_level": "basic", "record_rx": False, "theme": "system",  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
 ANSWER_NAMES = {False: "Just listen: show me beacons and calls; I choose whether to respond", True: "Answer every beacon and call automatically"}  # whether Listen transmits by itself
 CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stations heard list this long
 LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
+ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
+RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
+CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
 THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
 NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tuned by hand
 LOCKED = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
@@ -207,6 +212,7 @@ class Panel:  # the control panel window
         self.sink = None  # the sound-card output, while a station is running (its level follows the transmit slider)
         self.tx_active = False  # True while the transmitter is keyed
         self.tx_kind = ""  # what is being sent, while the transmitter is keyed
+        self.alc_warned = False  # whether the operator has been told the ALC is high during this transmission
         self.meters = {"watts": None, "alc": None, "swr": None, "set_w": None}  # the radio's readings: power out, ALC and SWR while transmitting, and the power setting
         self.poller_stop = threading.Event()  # stops the thread that reads the radio's meters
         self.marks = {}  # stations decoded recently, for the scope: callsign -> (audio frequency, width, when)
@@ -348,6 +354,9 @@ class Panel:  # the control panel window
         file_menu.add_command(label="Open the log folder", underline=5, command=self.open_logs)  # where the CSV and ADIF files are
         file_menu.add_command(label="Open today's log", underline=5, command=lambda: self.open_path(self.logbook.csv_path()))  # the day's CSV file, in the spreadsheet program
         file_menu.add_command(label="Open the contact log (ADIF)", underline=9, command=lambda: self.open_path(self.logbook.adif_path()))  # the ADIF file
+        file_menu.add_separator()  # a divider
+        file_menu.add_command(label="Open the recordings folder", underline=9, command=lambda: self.open_path(recordings_dir(data_dir())))  # the received-audio WAV files
+        file_menu.add_command(label="Decode a recording...", underline=0, command=self.decode_recording)  # play a WAV file through the receiver and list what it finds
         file_menu.add_separator()  # a divider
         file_menu.add_command(label="Exit", underline=1, accelerator="Alt+F4", command=self.close)  # close the panel
         bar.add_cascade(label="File", underline=0, menu=file_menu)  # put the menu on the bar
@@ -814,8 +823,33 @@ class Panel:  # the control panel window
         self.logbook.write("frame", direction="RX", station=self.settings["call"], text=f"{name} {'decoded' if result.ok else 'failed: ' + str(result.reason)}", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=f"L{result.level}", snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(), rx_input_dbfs=rx, detail=describe(result))  # every detail
 
+    def note_near(self, result):  # a Kestrel signature heard but not readable (called from the working thread)
+        self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
+                           level=f"L{result.seen_level}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
+
+    def decode_recording(self):  # File > Decode a recording
+        """Ask for a WAV file, play it through the receiver in the background, and list what it finds in the log window."""
+        path = filedialog.askopenfilename(parent=self.root, title="Choose a recording to decode", initialdir=recordings_dir(data_dir()), filetypes=[("WAV recordings", "*.wav"), ("All files", "*.*")])  # which file
+        if not path:  # none chosen
+            return  # nothing to do
+
+        def job():  # the background part
+            from tools.decode_wav import decode_file, write_csv  # the decoder (imported here, so the panel starts as fast as before)
+            try:  # the file may not be a usable WAV
+                self.say(f"decoding {os.path.basename(path)} (this takes about as long as a minute of the recording takes the receiver, roughly half its length)")  # what is happening
+                rows = decode_file(path, say=self.say)  # decode it, reporting each find in the log
+                table = os.path.splitext(path)[0] + "_decoded.csv"  # the results table, beside the recording
+                write_csv(rows, table)  # save it
+                self.say(f"decode finished; results saved to {table}")  # say where
+            except (OSError, ValueError, EOFError) as problem:  # not a WAV, or unreadable
+                self.say(f"could not decode {os.path.basename(path)}: {problem}")  # say why
+
+        threading.Thread(target=job, daemon=True).start()  # decode without freezing the window
+
     def transmitting(self, tx, keyed):  # the transmitter went on or off (called from the working thread)
         self.tx_active, self.tx_kind = keyed, tx.kind if keyed else ""  # note it, for the meters
+        if keyed:  # a new transmission
+            self.alc_warned = False  # it may be warned about once
         if not keyed:  # it has just gone off
             self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=self.meters["watts"], alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
             return  # nothing more
@@ -846,6 +880,10 @@ class Panel:  # the control panel window
             while not self.poller_stop.is_set():  # the station is running
                 if self.tx_active:  # transmitting: read the meters
                     self.meters["watts"], self.meters["alc"], self.meters["swr"] = read("RFPOWER_METER_WATTS"), read("ALC"), read("SWR")  # power out, ALC and SWR
+                    alc = self.meters["alc"]  # the ALC reading, 0 to 1 of the radio's scale
+                    if alc is not None and alc >= ALC_HIGH and not self.alc_warned:  # the audio is driving the radio too hard
+                        self.alc_warned = True  # once per transmission is enough
+                        self.say(f"warning: the radio's ALC reads {alc:.2f} of full scale; lower the transmit slider (Ctrl+J) until ALC barely moves, or the tones will be distorted")  # tell the operator what to do
                     time.sleep(0.7)  # a little under once a second
                     continue  # and again
                 if time.monotonic() - last_setting > 20.0:  # every twenty seconds while receiving
@@ -1077,6 +1115,12 @@ class Panel:  # the control panel window
             messagebox.showinfo("Kestrel", "Enter your callsign, grid locator and sound devices first, under Settings.", parent=self.root)  # say so
             self.awaiting_setup = True  # start once they are saved
             self.settings_window(0)  # and open the window
+            return  # nothing started
+        entry = self.selected()  # the frequency chosen
+        if mode == "listen" and entry["dial_khz"] < 30000.0 and in_data_segment(entry["dial_khz"]) is None:  # Listen can transmit, and this frequency is outside the amateur data segments
+            self.mode = "off"  # cannot start
+            self.mode_var.set("off")  # show it
+            messagebox.showerror("Kestrel", f"{entry['dial_khz']:.1f} kHz puts the signal outside the U.S. amateur data segments, so Kestrel will not transmit there.\nChoose another frequency (Operate > Choose frequency), or use Monitor to receive only.", parent=self.root)  # say why, and what to do
             return  # nothing started
         try:  # the chosen sound devices may have gone away
             job = self.prepare()  # everything the working thread needs
@@ -1590,6 +1634,8 @@ class Panel:  # the control panel window
         field(logging, 0, "log_level", "Level of detail", names=LOG_NAMES, width=56)  # basic, advanced or verbose
         note(logging, 1, f"Logs are kept in {LOG_FOLDER}:\none CSV file per UTC day (opens in a spreadsheet), and an ADIF file of completed contacts for logging programs.")  # where
         ttk.Button(logging, text="Open the log folder", command=self.open_logs).grid(row=2, column=0, sticky="w", padx=8)  # look at them
+        field(logging, 3, "record_rx", "Record received audio", names=RECORD_NAMES, width=56)  # save what the receiver hears
+        note(logging, 4, f"Recordings go in {recordings_dir(data_dir())}, one WAV file per hour.\nTurn this on for on-air tests: File > Decode a recording plays a file back through the receiver and lists every\nframe and every signal that was heard but could not be read. It takes effect the next time Listen or Monitor starts.")  # what it is for
         quick = page("Quick messages")  # the quick messages
         for number in (1, 2, 3):  # each one
             field(quick, number - 1, f"quick{number}", f"Quick message {number}", width=60)  # its template
@@ -1621,6 +1667,14 @@ class Panel:  # the control panel window
                 return  # leave the window open
             new["beacon_every_min"], new["beacon_autostop_min"], new["max_power_w"] = every, stop_after, f"{full:g}"  # stored as numbers
             new["call"], new["grid"] = new["call"].upper(), new["grid"][:2].upper() + new["grid"][2:4] + new["grid"][4:].lower()  # callsign in capitals; locator written the usual way
+            if new["call"] and not CALL_PATTERN.match(new["call"]):  # it does not look like a callsign
+                messagebox.showerror("Kestrel", f"'{new['call']}' does not look like an amateur callsign. Check it and try again.", parent=dialog)  # say so
+                book.select(0)  # show the Station tab
+                return  # leave the window open
+            if new["call"] and new["call"] != self.settings["call"]:  # the callsign has changed: every transmission will identify with it
+                if not messagebox.askyesno("Kestrel - check your callsign", f"Kestrel will identify every transmission as\n\n        {new['call']}\n\nIs that your callsign, exactly?", parent=dialog):  # make the operator look at it
+                    book.select(0)  # show the Station tab
+                    return  # leave the window open for a correction
             restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
@@ -1656,7 +1710,7 @@ class Panel:  # the control panel window
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
-        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level")  # the ones that bear on a transmission
+        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level", "record_rx")  # the ones that bear on a transmission
         return "; ".join(f"{key}={self.settings[key]}" for key in keys)  # as one line
 
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)
@@ -1781,11 +1835,16 @@ class Panel:  # the control panel window
 
     def run(self, mode, job):  # the working thread: runs the monitor or the listening station
         source = rig = ptt = None  # nothing opened yet
+        recorder = None  # the received-audio recorder, if turned on
         poller = None  # the radio-meter thread, once started
         self.poller_stop.clear()  # the meter thread may run
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
             self.audio = source  # let the scope and the meter show what it hears
+            if job.get("record_rx"):  # the operator wants the received audio saved
+                recorder = Recorder(recordings_dir(data_dir()), label=job["call"])  # hourly WAV files
+                source = RecordingSource(source, recorder)  # everything read is also written to the recording
+                self.say(f"recording received audio to {recorder.folder}")  # say where
             with self.rig_lock:  # one user of rig control at a time while it starts and tunes
                 address = self.rig_address(job)  # start or find rig control for the chosen radio
                 if address:  # rig control is set up
@@ -1798,6 +1857,7 @@ class Panel:  # the control panel window
             self.logbook.write("settings", station=job["call"], text=f"settings at the start of {mode}", dial_khz=job["entry"]["dial_khz"], detail=self.settings_summary())  # the verbose log keeps a record
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
+                listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result))  # signals heard but not readable are shown too
                 watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
                 self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
                 self.outbox = job["messages"] + self.outbox  # messages wait for the next time Listen runs
@@ -1824,7 +1884,7 @@ class Panel:  # the control panel window
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
-            run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick)  # the live loop, until stopped
+            run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near)  # the live loop, until stopped
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
@@ -1836,6 +1896,9 @@ class Panel:  # the control panel window
             self.mode = "off"  # nothing is running now
             self.root.after(0, lambda: self.mode_var.set("off"))  # show it (from the window's own thread)
         finally:  # always tidy up
+            if recorder is not None:  # audio was being recorded
+                recorder.close()  # finish the file
+                self.say(f"recording saved: {', '.join(os.path.basename(path) for path in recorder.files)}")  # say which files
             self.station = None  # no station is running any more, whatever happened
             self.poller_stop.set()  # stop reading the radio's meters
             self.tx_active = False  # the transmitter is off

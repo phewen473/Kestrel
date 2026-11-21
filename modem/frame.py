@@ -1,7 +1,14 @@
 """Building and receiving a complete Kestrel frame at any speed level.
 
-Frame layout on the air:
-    preamble (12 tones) | header (24 tones) | body (data tones with a pilot before every 15)
+Frame layout on the air (signal version 0.26):
+    preamble (12 tones) | header (12 tones) | body (data tones with a pilot before every 15) | header again (12 tones)
+
+The header is sent twice, once at each end of the frame, so a fade that
+wipes out one copy almost never wipes out the other. The receiver reads
+the first copy; if that fails, it reads the second copy for each length
+the body could have, combines the two, and accepts only a header whose
+own fields give the body length it was tried at. (Before 0.26 the two
+copies were sent back to back, and one fade usually took both.)
 
 The header and the body are both sent at the frame's own speed level. The
 receiver does not need to be told the level: it tries the header at each
@@ -37,7 +44,7 @@ from .text import bits_to_text, choose_packing, text_to_bits  # message <-> bits
 
 HEADER_CODED_BITS = 2 * (HEADER_FIELD_BITS + HEADER_CRC_BITS + TAIL)  # coded header length (60 bits)
 HEADER_SYMBOLS_ONCE = ceil(HEADER_CODED_BITS / BITS_PER_SYMBOL)  # tones for one copy of the header (12)
-HEADER_SYMBOLS = HEADER_SYMBOLS_ONCE * HEADER_REPEAT  # tones for both copies (24)
+HEADER_SYMBOLS = HEADER_SYMBOLS_ONCE * HEADER_REPEAT  # tones for both copies together (24): one after the preamble, one after the body
 
 
 def _layout(info, coded):  # work out the shape of a body from its bit counts
@@ -154,12 +161,11 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     spec = LEVELS[level]  # the numbers for this speed level
     size_class, compressed = choose_packing(text, frame_type)  # smallest frame that fits the text, and whether to compress it
     layout = body_layout(size_class)  # shape of the body for that size
-    header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, size_class, part, parts, compressed)))  # coded header as tones
-    header_syms = np.tile(header_syms, HEADER_REPEAT)  # send the header twice
+    header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, size_class, part, parts, compressed)))  # coded header as tones (one copy)
     data_bits = np.concatenate([_address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
-    return np.concatenate([make_preamble(spec), symbols_to_audio(np.concatenate([header_syms, body_syms]), spec)])  # the level's preamble, then all the tones
+    return np.concatenate([make_preamble(spec), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), spec)])  # the level's preamble, the header, the body, then the header again
 
 
 def build_control(frame_type, fields, level=0):  # the transmitter for control frames
@@ -167,10 +173,10 @@ def build_control(frame_type, fields, level=0):  # the transmitter for control f
     if len(fields) != CONTROL_BITS[frame_type]:  # each control frame has a fixed length
         raise ValueError("wrong number of bits for this control frame")  # refuse nonsense
     layout = control_layout(frame_type)  # shape of this frame's body
-    header_syms = np.tile(bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False))), HEADER_REPEAT)  # header: type and level; the other fields are zero; sent twice
+    header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False)))  # header: type and level; the other fields are zero (one copy)
     data_bits = np.concatenate([fields, crc16(fields)])  # the fields and their check value
     body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
-    return np.concatenate([make_preamble(LEVELS[level]), symbols_to_audio(np.concatenate([header_syms, body_syms]), LEVELS[level])])  # the level's preamble, then all the tones
+    return np.concatenate([make_preamble(LEVELS[level]), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), LEVELS[level])])  # the level's preamble, the header, the body, then the header again
 
 
 def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False):  # "here I am"
@@ -219,28 +225,68 @@ class RxResult:  # the receiver's report
     origin: str = ""  # originating callsign (fully addressed frames only)
     hops: int = 0  # relays so far (fully addressed frames only)
     life_hours: int = 0  # hours the message may still be kept (fully addressed frames only)
+    seen_level: int = -1  # when no header could be read: the level whose signature pattern stood out most (a "near miss"); -1 otherwise
     fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
 
 
-def _read_header(x, header_start, offset, spec):  # read the header that follows a preamble
-    """Return the header bits found after a preamble of level `spec`, or None when the header does not check out.
+def _body_total(bits):  # how many body tones a header says follow it
+    """Return the number of body tones (data and pilots) of the frame described by header `bits`, or None for a frame type that does not exist."""
+    frame_type = bits_to_int(bits[0:3])  # first field: frame type
+    if frame_type in CONTROL_BITS:  # a beacon, answer, acknowledgment or identification
+        return control_layout(frame_type)["total"]  # its fixed body
+    if frame_type in ADDRESS_BITS:  # a message frame
+        return body_layout(bits_to_int(bits[6:8]))["total"]  # the body for its size class
+    return None  # no such frame type
 
-    The preamble says which level to read the header at. Noise that looks
-    like a preamble will now and then pass the header check too (about one
-    time in a thousand), which is why the caller goes on to check the body
-    before believing a header.
-    """
-    if header_start < 0 or header_start + HEADER_SYMBOLS * spec.samples > len(x):  # the header is not (yet) wholly inside the recording
-        return None  # nothing to read
-    tone_e = symbol_energies(x, header_start, HEADER_SYMBOLS, spec, offset)  # measure the header tones
-    llrs = energies_to_llrs(tone_e, noise_level(tone_e))  # turn them into soft bits
-    llrs = llrs.reshape(HEADER_REPEAT, -1).sum(axis=0)[:HEADER_CODED_BITS]  # add the two copies together, drop the padding
+
+def _body_totals():  # every body length a frame can have
+    """Return the distinct body lengths, in tones, of every kind and size of frame (the places the second header copy can be)."""
+    return sorted({control_layout(t)["total"] for t in CONTROL_BITS} | {body_layout(c)["total"] for c in range(len(SIZE_CLASSES))})  # control frames and every message size
+
+
+def _header_llrs(x, start, offset, spec):  # soft bits of one header copy
+    """Return the soft bits of the header copy whose first tone begins at sample `start`."""
+    tone_e = symbol_energies(x, start, HEADER_SYMBOLS_ONCE, spec, offset)  # measure the copy's tones
+    return energies_to_llrs(tone_e, noise_level(tone_e))[:HEADER_CODED_BITS]  # soft bits, padding dropped
+
+
+def _check_header(llrs, spec):  # decode soft header bits and check them
+    """Return the header bits if `llrs` decode to a header that passes its check and names `spec`'s level; otherwise None."""
     bits = viterbi_decode(llrs)  # correct errors
     check_ok = np.array_equal(crc8(bits[:HEADER_FIELD_BITS]), bits[HEADER_FIELD_BITS:])  # does the check value match?
     if check_ok and bits_to_int(bits[3:6]) == spec.number and bits[15] == 0:  # and does the header name the preamble's level, with the spare bit clear?
         return bits  # yes: this may be a frame
     return None  # no
+
+
+def _read_header(x, header_start, offset, spec):  # read the header that follows a preamble
+    """Return the header bits found after a preamble of level `spec`, or None when no header checks out.
+
+    The first copy follows the preamble. If it does not check out, the
+    second copy is read at the end of each possible body, combined with the
+    first, and tried alone too; a header found this way is accepted only
+    if its own fields give the body length it was read at. Noise that
+    looks like a preamble will now and then pass the header check (a few
+    times in a thousand), which is why the caller goes on to check the body
+    before believing a header.
+    """
+    if header_start < 0 or header_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x):  # the first copy is not (yet) wholly inside the recording
+        return None  # nothing to read
+    first = _header_llrs(x, header_start, offset, spec)  # soft bits of the first copy
+    bits = _check_header(first, spec)  # try it alone
+    if bits is not None:  # it checked out
+        return bits  # the usual case
+    for total in _body_totals():  # every place the second copy could be
+        second_start = header_start + (HEADER_SYMBOLS_ONCE + total) * spec.samples  # just after a body of that length
+        if second_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x) + spec.samples // 4:  # not (yet) inside the recording
+            continue  # cannot try this length yet
+        second = _header_llrs(x, second_start, offset, spec)  # soft bits of the second copy
+        for llrs in (first + second, second):  # both copies together, then the second alone (in case the first was badly faded)
+            bits = _check_header(llrs, spec)  # try it
+            if bits is not None and _body_total(bits) == total:  # it checked out and agrees with where it was found
+                return bits  # found it
+    return None  # no header here
 
 
 def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a frame once its header is known
@@ -257,7 +303,7 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
         return result  # give up on this reading of the header
     offset = found["offset_hz"]  # frequency error measured from the preamble
     layout = control_layout(result.frame_type) if is_control else body_layout(result.size_class)  # the header told us the body's shape
-    body_start = found["start"] + preamble_samples(spec) + HEADER_SYMBOLS * spec.samples  # the body follows the preamble and the header
+    body_start = found["start"] + preamble_samples(spec) + HEADER_SYMBOLS_ONCE * spec.samples  # the body follows the preamble and the first header copy
     if body_start + layout["total"] * spec.samples > len(x) + spec.samples // 4:  # the body is not inside the recording, give or take a quarter of a tone (the frame is still arriving, or this is noise near the end)
         result.reason = "frame incomplete"  # say why we stopped
         return result  # the caller may look again when more audio has arrived
@@ -351,4 +397,5 @@ def receive(x, blank=True, prior_llrs=None):  # the receiver
             best = attempt  # keep it
     if best is not None:  # a header was found but no body decoded
         return best  # report that failure (its soft bits can be combined with a retry)
-    return RxResult(reason="header check failed", start=candidates[0][0]["start"], sync_quality=candidates[0][0]["quality"])  # no header at all
+    top, top_spec = candidates[0]  # the strongest signature found
+    return RxResult(reason="header check failed", start=top["start"], sync_quality=top["quality"], offset_hz=top["offset_hz"], seen_level=top_spec.number)  # no header at all, but say where the strongest signature was and at which level

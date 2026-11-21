@@ -120,7 +120,7 @@ def test_rig_control_speaks_rigctld():  # tuning and keying through Hamlib's rig
 def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the band presets
     from live.bands import PRESETS_KHZ, dial_khz, in_automatic_segment, signal_khz  # the presets and their checks
 
-    assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40"]  # one preset each for 20, 30 and 40 metres
+    assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40", "80"]  # one preset each for 20, 30, 40 and 80 metres
     for band in PRESETS_KHZ:  # every preset
         assert in_automatic_segment(dial_khz(band))  # keeps the whole 2 kHz signal inside a 97.221(b) segment
     assert dial_khz("20m") == dial_khz(20) == 14108.5  # "20m", 20 and "20" all mean the same band
@@ -128,7 +128,7 @@ def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the ban
     assert not in_automatic_segment(14098.0)  # a signal that would straddle the beacon frequency at 14100 is refused
     assert not in_automatic_segment(7074.0)  # and so is one outside the segments altogether
     try:  # a band with no preset
-        dial_khz("80")  # 80 metres has none yet
+        dial_khz("160")  # 160 metres has none
         raised = False  # it should not get here
     except ValueError:  # the lookup refuses
         raised = True  # as it should
@@ -139,14 +139,14 @@ def test_operator_can_keep_frequencies_of_their_own(tmp_path):  # the list behin
     from live.bands import add_user_frequency, all_frequencies, describe_frequency, remove_user_frequency, user_frequencies  # the frequency list
 
     mine = str(tmp_path / "local" / "frequencies.json")  # a private list for this test (the folder does not exist yet)
-    assert [e["band"] for e in all_frequencies(mine)] == ["40 m", "30 m", "20 m"]  # with nothing saved, only the presets
+    assert [e["band"] for e in all_frequencies(mine)] == ["80 m", "40 m", "30 m", "20 m"]  # with nothing saved, only the presets
     add_user_frequency("17 m", 18106.0, note="evening net", path=mine)  # a frequency inside a 97.221(b) segment
     add_user_frequency("40 m", "7110", mode="usb", path=mine)  # one outside, typed as text and in lower case
     listed = all_frequencies(mine)  # presets first, then the operator's own
-    assert [e["builtin"] for e in listed] == [True, True, True, False, False]  # three presets, two of the operator's
-    assert (listed[4]["dial_khz"], listed[4]["mode"]) == (7110.0, "USB")  # the text became a number, the mode capitals
-    assert "97.221(b) segment" in describe_frequency(listed[3]) and "evening net" in describe_frequency(listed[3])  # the list says an unattended station may use it
-    assert "attended only" in describe_frequency(listed[4])  # and that the other needs an operator present
+    assert [e["builtin"] for e in listed] == [True, True, True, True, False, False]  # four presets, two of the operator's
+    assert (listed[5]["dial_khz"], listed[5]["mode"]) == (7110.0, "USB")  # the text became a number, the mode capitals
+    assert "97.221(b) segment" in describe_frequency(listed[4]) and "evening net" in describe_frequency(listed[4])  # the list says an unattended station may use it
+    assert "attended only" in describe_frequency(listed[5])  # and that the other needs an operator present
     remove_user_frequency(0, mine)  # take the first of the operator's own away
     assert [e["band"] for e in user_frequencies(mine)] == ["40 m"]  # the other is still there, and was saved
     for bad in (("", 7100.0), ("40 m", "abc"), ("40 m", 5.0)):  # no band name, not a number, not a sensible frequency
@@ -234,3 +234,62 @@ def test_call_asked_for_during_a_contact_waits_for_it_to_end():  # "call Q2BB wh
     assert request(a) is False  # it waits for the contact
     a.state, a.partner = "IDLE", ""  # the contact ends and the station is listening again
     assert request(a) is True and a.role == "caller" and a.target == "Q2BB"  # now the call is made
+
+
+def test_data_segment_check_refuses_frequencies_outside_the_amateur_bands():  # the check that would have caught 3160 kHz
+    from live.bands import add_user_frequency, in_data_segment  # the check, and adding a frequency
+    import tempfile  # a scratch file for the operator's list
+
+    assert in_data_segment(3590.0) == "80"  # the 80 m meeting frequency is inside the 80 m data segment
+    assert in_data_segment(3160.0) is None  # 3160 kHz is not an amateur frequency at all
+    assert in_data_segment(7099.0) == "40"  # 7099.5-7101.5 kHz is inside 7000-7125
+    assert in_data_segment(3599.0) is None  # the signal would run past 3600 kHz, the top of the 80 m data segment
+    with tempfile.TemporaryDirectory() as folder:  # an empty place for the list
+        path = folder + "/frequencies.json"  # the list's file
+        try:  # adding an out-of-band HF frequency must be refused
+            add_user_frequency("80 m", 3160.0, path=path)  # the typo from the first on-air test
+            raised = False  # it should not get here
+        except ValueError:  # refused
+            raised = True  # as it should
+        assert raised  # never silently accepted
+        assert add_user_frequency("80 m", 3585.0, path=path)["dial_khz"] == 3585.0  # an in-band one is kept
+
+
+def test_recorder_writes_wav_that_reads_back(tmp_path):  # the received-audio recorder
+    import numpy as np  # numerical arrays
+    from live.recorder import Recorder, read_wav  # the recorder and the reader
+    from modem.params import FS  # 12,000 samples per second
+
+    audio = 0.3 * np.sin(2 * np.pi * 1000 * np.arange(int(2.5 * FS)) / FS)  # two and a half seconds of a 1 kHz tone
+    rec = Recorder(str(tmp_path), label="Q1AAAA", file_seconds=1, clock=lambda: 1795280000.0)  # one-second files, so the split is tested
+    rec.write(audio[:7000])  # in two uneven pieces, as a live source delivers it
+    rec.write(audio[7000:])  # the rest
+    rec.close()  # finish
+    assert len(rec.files) == 3  # 2.5 seconds in one-second files makes three files
+    back = np.concatenate([read_wav(path)[0] for path in sorted(rec.files)])  # read them all back in order
+    assert len(back) == len(audio)  # every sample is there
+    assert np.max(np.abs(back - audio)) < 1e-3  # and matches to within 16-bit rounding
+
+
+def test_listener_reports_a_near_miss_once():  # a clear signature whose header cannot be read
+    import numpy as np  # numerical arrays
+    from live.listener import Listener  # the continuous receiver
+    from modem import build_frame  # the transmitter
+    from modem.params import FS  # 12,000 samples per second
+
+    frame = build_frame("Q1AAAA DE Q2BB", 3)  # a frame at L3
+    rng = np.random.default_rng(3)  # repeatable noise
+    spoilt = frame.copy()  # the same frame...
+    spoilt[int(0.5 * len(frame)):] = 0.0  # ...with its second half (and so the second header copy) gone
+    from modem.levels import LEVELS  # level numbers
+    from modem.params import PREAMBLE_TONES  # the preamble's length in tones
+    first = PREAMBLE_TONES * LEVELS[3].samples  # where the first header copy starts
+    spoilt[first:first + 12 * LEVELS[3].samples] = rng.standard_normal(12 * LEVELS[3].samples) * 0.3  # and its first header copy drowned in noise
+    audio = np.concatenate([rng.standard_normal(5 * FS) * 0.02, spoilt, rng.standard_normal(100 * FS) * 0.02])  # noise, the spoilt frame, plenty of noise after
+    audio[5 * FS:5 * FS + len(spoilt)] += rng.standard_normal(len(spoilt)) * 0.02  # background noise under the frame too
+    listener, seen = Listener(), []  # a receiver, and a list of near misses
+    listener.on_near = seen.append  # collect them
+    for begin in range(0, len(audio), FS):  # one second at a time
+        assert not listener.feed(audio[begin:begin + FS])  # nothing decodes
+    assert len(seen) == 1  # the signature was reported, exactly once
+    assert seen[0].seen_level >= 0  # with a guess at its level

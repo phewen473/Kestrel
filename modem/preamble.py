@@ -68,7 +68,10 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3):  # what the receiver d
     for k, centre in enumerate(bins):  # one tone of the pattern at a time
         total += power[HOPS * k:HOPS * k + starts][:, centre - low + shifts]  # the energy where that tone should be, k tones after the start
     background = float(np.median(total)) + 1e-30  # the typical total when nothing is there
-    found, work = [], total.copy()  # the candidates, and a scratch copy to cross them off
+    block_energy = power.sum(axis=1)  # all the energy near the tone band in each block
+    in_blocks = sum(block_energy[HOPS * k:HOPS * k + starts] for k in range(len(tones))) + 1e-30  # the energy in the twelve blocks each start would use
+    share = total / in_blocks[:, None]  # how much of that energy sits where the pattern says (near 1 for a clean preamble, small for chance matches in a frame's body)
+    found, work = [], total * share ** 2  # the candidates, and a scratch copy of the ranking score (the total, weighted by how cleanly it matches) to cross them off
     for _ in range(keep):  # the strongest few
         row, col = np.unravel_index(int(np.argmax(work)), work.shape)  # the largest total left
         quality = float(work[row, col]) / background  # how far it stands above the background

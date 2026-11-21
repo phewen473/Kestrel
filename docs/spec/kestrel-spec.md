@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.25 (draft), 19 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.25:** the call-up changed in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), in 0.24 (a calling station takes a call back as the answer) and in 0.25 (availability: presence beacons and the "not available" reply), so stations following earlier versions cannot work reliably with 0.25 stations. Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.26 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.26:** the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -81,11 +81,14 @@ All audio figures assume a sample rate of 12,000 samples per second.
 
 ### 5.1 Frame structure
 
-Every frame has three parts, in order:
+Every frame has four parts, in order:
 
 1. **Preamble:** twelve tones of the frame's own speed level, at that level's tone length, in a fixed pattern that belongs to the level (table below). The preamble is used to find the frame, to measure its timing and frequency offset, and to tell the receiver which level the frame is sent at. It is as narrow as the rest of the frame and lasts twelve tone lengths: 4.8 s at L0, 1.62 s at L1, 1.08 s at L2, 0.54 s at L3 and 0.27 s at L4.
-2. **Header:** 24 tones sent at the same speed level as the body (Section 5.4).
+2. **Header:** 12 tones sent at the same speed level as the body (Section 5.4).
 3. **Body:** the payload at the frame's speed level, with known pilot tones spread through it (Section 5.5).
+4. **Header again:** the same 12 header tones, repeated after the body.
+
+Sending the header at both ends means one fade cannot remove both copies. The receiver reads the first copy; if it does not pass its check, the receiver reads the second copy at the end of each possible body length, adds its soft bits to the first copy's (and also tries it alone), and accepts a header only when its fields give the body length it was read at. Until version 0.25 the two copies were sent back to back after the preamble, and in simulated fading one fade often removed both, losing 15 to 40 percent of frames even at strong signal levels.
 
 Preamble patterns (tone numbers 0 to 31, in the order sent; tone frequencies are in Section 5.2):
 
@@ -99,7 +102,7 @@ Preamble patterns (tone numbers 0 to 31, in the order sent; tone frequencies are
 
 In each pattern no tone is used twice, every jump from one tone to the next is at least five tones, and no two pairs of positions the same distance apart differ by the same number of tones, so a pattern cannot be mistaken for a copy of itself shifted in time and frequency.
 
-The receiver is not told the level in advance. It searches for all five patterns. A level is a candidate when its pattern is found, the header that follows passes its check, the header's level field names that same level, and the spare bit is zero. Noise can occasionally pass all of these, so the receiver accepts a frame only when the body also passes its check. Sending the preamble and header at the frame's own level keeps fast frames short and slow frames narrow.
+The receiver is not told the level in advance. It searches for all five patterns. For each pattern it adds up the energy where each of the twelve tones should be, for every start time and frequency error, and ranks the candidates by that total multiplied by the square of the share of the energy in those twelve tone lengths that the pattern's tones hold. A real preamble puts nearly all its energy where the pattern says, while chance matches inside a strong frame's body do not, so the ranking keeps a real preamble ahead of them even when the preamble itself is faded. (This ranking is a receiver choice, not part of the signal; it was added in version 0.26 after simulation showed body matches outranking faded preambles.) A level is a candidate when its pattern is found, the header that follows passes its check, the header's level field names that same level, and the spare bit is zero. Noise can occasionally pass all of these, so the receiver accepts a frame only when the body also passes its check. Sending the preamble and header at the frame's own level keeps fast frames short and slow frames narrow.
 
 Until version 0.19 every frame instead began with a two-second chirp pair sweeping 500 to 2500 Hz. Frames of version 0.20 and later cannot be read by earlier versions, nor earlier frames by these.
 
@@ -126,16 +129,16 @@ Airtime of a whole frame, and the weakest signal each level needs in simulation 
 
 | Level | 50 chars | 100 chars | 150 chars | 200 chars | Weakest SNR, steady signal | Weakest SNR, fading signal |
 |---|---|---|---|---|---|---|
-| L0 | 83 s | 143 s | 203 s | 262 s | -20 dB | -12 dB |
-| L1 | 28 s | 48 s | 68 s | 89 s | -16 dB | -10 dB |
-| L2 | 19 s | 32 s | 46 s | 59 s | -14 dB | -9 dB |
-| L3 | 9.4 s | 16 s | 23 s | 30 s | -11 dB | -4 dB |
-| L4 | 4.7 s | 8.1 s | 11 s | 15 s | -8 dB | -1 dB |
+| L0 | 83 s | 143 s | 203 s | 262 s | -20 dB | -8 dB |
+| L1 | 28 s | 48 s | 68 s | 89 s | -16 dB | -2 dB |
+| L2 | 19 s | 32 s | 46 s | 59 s | -14 dB | -8 dB |
+| L3 | 9.4 s | 16 s | 23 s | 30 s | -11 dB | -1 dB |
+| L4 | 4.7 s | 8.1 s | 11 s | 15 s | -8 dB | 0 dB |
 
-The column headings are the size classes, named by the plain characters a link frame holds. Exact airtime is the tone length times (12 preamble tones + 24 header tones + 172, 322, 471 or 620 body tones).
+The column headings are the size classes, named by the plain characters a link frame holds. Exact airtime is the tone length times (12 preamble tones + 12 header tones + 172, 322, 471 or 620 body tones + 12 header tones).
 
 - **Steady signal:** noise only; every test frame decoded at this SNR.
-- **Fading signal:** nine test frames in ten decoded at this SNR in the worst of three simulated HF paths (light, moderate and heavy fading, ITU-R F.1487). The remaining frames are recovered by combining retries (Section 5.6).
+- **Fading signal:** nine test frames in ten decoded at this SNR in the worst of three simulated HF paths (light, moderate and heavy fading, ITU-R F.1487), 40 frames a point, with no stronger point falling below 34 in 40. The remaining frames are recovered by combining retries (Section 5.6). Light fading is the hardest case at every level: its fades are slow, so one fade can cover a whole preamble, and in 1 to 4 frames in 40 the frame is missed even on strong signals. With 40 frames a point the limits carry about 2 dB of sampling uncertainty, which is why they do not fall evenly from L0 to L4 (measured 21 November 2026).
 
 A station chooses the fastest level whose limit, for the kind of signal it is measuring (Section 5.7), is at least 2 dB below the measured SNR. These limits guide the choice; they do not change the signal, and they will be revised after on-air tests.
 
@@ -173,7 +176,7 @@ In control frames (types 2 to 5) the size class, part number, part count and com
 
 - **Header check value:** CRC-8 with polynomial 0x07 and start value 0x00 over the 16 field bits, most significant bit first.
 - **Header coding:** the 24 bits are followed by 6 zero bits and encoded with the rate-1/2, constraint-length-7 convolutional code with generators 171 and 133 (octal), giving 60 bits, sent as 12 tones. For each input bit the 7-bit register is the six previous input bits (oldest in the highest position) followed by the new bit; the first output bit is the parity of the register ANDed with 171 octal, the second with 133 octal.
-- The 12 tones are sent twice in a row (24 tones).
+- The 12 tones are sent twice: right after the preamble, and again right after the body (Section 5.1).
 - Addresses and the message number are carried at the start of the body (Section 4.2), where they have the body's stronger error correction.
 
 ### 5.5 Pilots
@@ -363,12 +366,15 @@ So that stations can find each other, one meeting frequency is suggested per ban
 
 | Band | Dial frequency (USB) | Signal occupies | Inside 97.221(b) segment |
 |---|---|---|---|
+| 80 m | 3590.0 kHz | 3590.5 to 3592.5 kHz | 3585 to 3600 kHz |
 | 40 m | 7101.5 kHz | 7102.0 to 7104.0 kHz | 7100 to 7105 kHz |
 | 30 m | 10144.0 kHz | 10144.5 to 10146.5 kHz | 10140 to 10150 kHz |
 | 20 m | 14108.5 kHz | 14109.0 to 14111.0 kHz | 14100.5 to 14112 kHz |
 
 - Every suggested frequency keeps the whole signal inside a segment that 97.221(b) allows for automatically controlled stations, so the same frequency serves attended stations and unattended mail holders (Section 2).
-- The 30 m choice stays above the FT4, WSPR and PSK activity at the bottom of that segment; the 20 m choice stays clear of the beacons on 14100 kHz.
+- The 30 m choice stays above the FT4, WSPR and PSK activity at the bottom of that segment; the 20 m choice stays clear of the beacons on 14100 kHz; the 80 m choice stays above the FT8 (3573 kHz) and JS8 (3578 kHz) activity.
+- 80 m suits paths of roughly 50 to 300 miles in the evening and at night, when 40 m often skips over them; 40 m suits the same distances in the daytime and late afternoon.
+- The reference program refuses to transmit on a frequency whose signal would fall outside the U.S. amateur data segments (Amateur Extra limits; General class starts 25 kHz higher on 80, 40, 20 and 15 m).
 - These segments are shared with other data modes. A station listens before transmitting and moves if the frequency is in use.
 - On 30 m the amateur power limit is 200 W PEP.
 - These are first choices, to be confirmed by listening on the air. Other bands: **TBD**.
@@ -461,6 +467,19 @@ Each station applies the same checks to every message it receives: deliver it if
 - Storage limits: how much mail a holder will carry in total and per originating station.
 - ARRL review of the 97.221(b) reading in Section 2 for unattended mail holders (asked; awaiting a reply).
 
-## 10. Document history
+## 10. Roadmap (proposed, 21 November 2026)
+
+The aim is one open mode that reaches like WSPR, carries messages like JS8Call and moves traffic quickly when the path allows, like VARA, with store-and-forward and net-control failover built in. It is reached by stretching Kestrel's one-mode, many-levels design at both ends. Each step is proposed, not settled; each becomes part of this description only when its signal is defined and tested.
+
+| Step | Work | Purpose |
+|---|---|---|
+| 1. Prove the link | Recording and decoding received audio; near-miss reports; fading re-measured and the header moved (0.26); on-air setup checks; on-air tests at 100+ miles | Show that the existing levels hold a contact over real HF paths |
+| 2. A WSPR-like bottom level | One or two levels below L0 for beacons, call-ups and short notes (a few tens of characters), aiming at about -26 to -28 dB in 2.5 kHz. Very long, narrow tones and a stronger code; probably an optional UTC-timed slot for this level only | Reach: be heard, and call, where nothing else gets through |
+| 3. Nets and mail | Nets with net control, backup and takeover (Section 7); store-and-forward completed (Section 8) | Groups and disconnected operation, at every level |
+| 4. A VARA-like top level | A multi-carrier PSK or OFDM waveform within 2.8 kHz for strong paths (Section 5.2, L5) | Throughput for relays and longer traffic |
+
+Steps 2 and 4 change the signal and will raise the signal version. Step 3 is mostly link and messaging rules.
+
+## 11. Document history
 
 See `CHANGELOG.md` in this folder.

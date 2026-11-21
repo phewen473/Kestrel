@@ -8,16 +8,17 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 
 | File | Contents |
 |---|---|
-| `listener.py` | `Listener`: a receiver that takes audio as it arrives and gives back each frame once, when it is complete |
+| `listener.py` | `Listener`: a receiver that takes audio as it arrives and gives back each frame once, when it is complete; it can also report a Kestrel preamble heard clearly whose header could not be read (a "near miss": the other station is there but too weak or faded) |
 | `audio.py` | Sound-card input and output (through the `sounddevice` package), with conversion between the card's 48,000 samples per second and the modem's 12,000 |
 | `ptt.py` | `Ptt`: keys the transmitter by rigctld, a CAT command, the RTS line, the DTR line, or not at all (VOX) |
 | `rig.py` | `RigCtl`: sets frequency and mode, and keys the transmitter, through Hamlib's `rigctld` |
-| `bands.py` | The preselected frequency for each band, and a check that a frequency keeps the signal inside a 97.221(b) segment |
+| `bands.py` | The preselected frequency for each band (80, 40, 30 and 20 m), a check that a frequency keeps the signal inside a 97.221(b) segment, and a check that it is inside the U.S. data segments at all |
 | `runner.py` | `run_station`: runs one `link.Station` on real audio, in real time, with hooks the control panel uses to ask for a beacon or call and to log every frame |
 | `heardlog.py` | `HeardLog`: every station decoded in the last 48 hours, kept on disk |
 | `logbook.py` | `Logbook`: a CSV file per UTC day at three levels of detail (basic, advanced, verbose) and an ADIF file of completed contacts |
 | `telemetry.py` | Telemetry messages (TLM1, spec Section 6.12): build one from the heard log, read one back, and compare stations |
 | `theme.py` | Light and dark looks for the control panel, and following Windows' own setting |
+| `recorder.py` | `Recorder` and `RecordingSource`: save the received audio to hourly 16-bit WAV files (12,000 samples per second, kept 7 days), and `read_wav` to read any WAV file back at the modem's rate |
 | `mixer.py` | Windows' recording level for a sound device, through the `pycaw` package, for the panel's receive-level slider |
 
 The tools that use them are in `tools/`: `kestrel_panel.py` (the control panel), `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py` and `live_frequencies.py`.

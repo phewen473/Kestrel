@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.25"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.25"  # the specification version in which the on-air behaviour last changed (0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability): stations with the same signal version can hear each other
+SPEC_VERSION = "0.26"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.26"  # the specification version in which the on-air behaviour last changed (0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 
@@ -39,7 +39,7 @@ BODY_CRC_BITS = 16  # check bits at the end of the message body
 
 HEADER_FIELD_BITS = 16  # frame type (3) + level (3) + size class (2) + part number (3) + part count (3) + compressed (1) + spare (1)
 HEADER_CRC_BITS = 8  # check bits at the end of the header
-HEADER_REPEAT = 2  # the coded header is sent twice for extra robustness
+HEADER_REPEAT = 2  # the coded header is sent twice for extra robustness: once after the preamble and once after the body (since signal version 0.26), so one fade cannot take both
 FRAME_TYPE_LINK = 0  # header value: a message between two locked stations, marked with their short link number
 FRAME_TYPE_ADDRESSED = 1  # header value: a message carrying full destination and origin addresses
 CALL_CHARS = 9  # longest callsign or group name, in characters

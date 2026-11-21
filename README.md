@@ -127,11 +127,13 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 - Nothing is deployed. No on-air use until the matching spec version is published.
 
 ## Current version and status
-- Spec version 0.25 (draft), 19 November 2026; signal version 0.25. Milestones 1 to 9 of the prototype done; first contacts between two real radios made.
+- Spec version 0.26 (draft), 21 November 2026; signal version 0.26. Milestones 1 to 9 of the prototype done; first contacts between two real radios made; first over-the-air test at a distance (20 November 2026) heard nothing either way, which led to 0.26.
+- Roadmap (spec Section 10): 1. prove the link (0.26: recordings, near-miss reports, fading fix, setup checks); 2. a WSPR-like bottom level for reach; 3. nets with net-control failover and store-and-forward; 4. a VARA-like top level for throughput.
 - Status: **in progress**.
 
 ## Where things were left
 Last commits:
+- 2026-11-21, spec v0.26 (new signal version): the second header copy moved to the end of every frame and the receiver ranks preambles by how much of their energy sits on the pattern, which removed most losses in simulated fading; fading limits re-measured; 80 m meeting frequency 3590.0 kHz; frequencies outside the U.S. data segments refused; received audio can be recorded and decoded later (File > Decode a recording, tools/decode_wav.py); signals heard but too weak to read are reported; callsign confirmation; ALC warning.
 - 2026-11-19: Windows setup program (packaging/): a self-contained installer with its own Python and Hamlib's rigctld, for a PC with nothing on it; installed copies keep each user's settings and logs in %LOCALAPPDATA%\Kestrel; Kestrel.exe --check.
 - 2026-11-19, spec v0.25: Available / Unavailable switch (Ctrl+U): when away, beacons are presence beacons and a call by name gets one short "not available" reply; every station's status shows in Stations heard.
 - 2026-11-19, spec v0.24: Listen just listens (nothing sent unless the operator starts it; calls to you are shown for Respond); a calling station takes a call back as the answer.

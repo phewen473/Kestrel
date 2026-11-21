@@ -9,7 +9,9 @@ Every one keeps the whole signal inside a band segment that FCC rule
 frequency serves an operator at the controls and a station left running
 to hold and deliver mail.
 
-These are suggestions for the United States, chosen in November 2026.
+These are suggestions for the United States, chosen in November 2026
+(80 metres added in signal version 0.26). A frequency the operator adds
+must keep the whole signal inside a U.S. amateur data segment.
 Always listen first: the segments are shared with other data modes.
 """
 
@@ -21,12 +23,14 @@ SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency allowed for (the fastest lev
 SIGNAL_HIGH_HZ = 2500.0  # the highest audio frequency allowed for (the fastest level reaches up to about 2200 Hz)
 
 PRESETS_KHZ = {  # band name (metres) -> dial frequency in kHz, upper sideband
+    "80": 3590.0,  # signal 3590.5 to 3592.5 kHz, inside 3585-3600 and clear of the FT8 (3573) and JS8 (3578) activity
     "40": 7101.5,  # signal 7102.0 to 7104.0 kHz, inside 7100-7105
     "30": 10144.0,  # signal 10144.5 to 10146.5 kHz, inside 10140-10150 and clear of the FT4, WSPR and PSK activity at the bottom of that segment
     "20": 14108.5,  # signal 14109.0 to 14111.0 kHz, inside 14100.5-14112 and clear of the beacons on 14100
 }  # end of the table
 
 WORKING_KHZ = {  # band name (metres) -> working dial frequencies in kHz, upper sideband, in order of preference
+    "80": (3594.0, 3597.0),  # signals 3594.5-3596.5 and 3597.5-3599.5 kHz, both inside 3585-3600
     "40": (7106.5, 7109.0),  # signals 7107.0-7109.0 and 7109.5-7111.5 kHz: just above the 7100-7105 segment, so for attended stations only
     "30": (10146.5, 10141.5),  # signals 10147.0-10149.0 and 10142.0-10144.0 kHz, both inside 10140-10150; the upper one first, away from the FT4 activity
     "20": (14106.0, 14103.5, 14101.0),  # signals 14106.5-14108.5, 14104.0-14106.0 and 14101.5-14103.5 kHz, all inside 14100.5-14112
@@ -36,6 +40,21 @@ AUTOMATIC_SEGMENTS_KHZ = (  # HF segments of 97.221(b), in kHz
     (3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5), (14100.5, 14112.0),  # 80, 40, 30 and 20 metres
     (18105.0, 18110.0), (21090.0, 21100.0), (24925.0, 24930.0), (28120.0, 28189.0),  # 17, 15, 12 and 10 metres
 )  # end of the table
+
+
+DATA_SEGMENTS_KHZ = (  # where U.S. amateurs may send data (RTTY and data) on HF, widest (Amateur Extra) limits, in kHz
+    ("160", 1800.0, 2000.0), ("80", 3500.0, 3600.0), ("40", 7000.0, 7125.0), ("30", 10100.0, 10150.0), ("20", 14000.0, 14150.0),  # 160 to 20 metres
+    ("17", 18068.0, 18110.0), ("15", 21000.0, 21200.0), ("12", 24890.0, 24930.0), ("10", 28000.0, 28300.0),  # 17 to 10 metres
+)  # end of the table (General class starts 25 kHz higher on 80, 40, 20 and 15 metres)
+
+
+def in_data_segment(dial):  # may Kestrel transmit here at all?
+    """Return the band name (such as "80") when the whole signal for dial frequency `dial` (kHz) lies inside a U.S. amateur data segment, else None."""
+    low, high = signal_khz(dial)  # the signal's edges
+    for band, start, end in DATA_SEGMENTS_KHZ:  # every segment
+        if start <= low and high <= end:  # wholly inside this one
+            return band  # its band
+    return None  # outside every segment: not an amateur data frequency
 
 
 def dial_khz(band):  # look up a band's preset
@@ -76,7 +95,7 @@ USER_FILE = os.path.join(data_dir(), "frequencies.json")  # the operator's own l
 def builtin_frequencies():  # the presets, as list entries
     """Return the built-in meeting frequencies as a list of entries (see all_frequencies), lowest band number last."""
     return [{"band": f"{band} m", "dial_khz": dial, "mode": "PKTUSB", "note": "Kestrel meeting frequency", "builtin": True}  # one entry per preset
-            for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: -int(item[0]))]  # 40 m first, then 30 m, then 20 m
+            for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: -int(item[0]))]  # 80 m first, then 40 m, 30 m and 20 m
 
 
 def user_frequencies(path=None):  # the operator's own entries
@@ -104,6 +123,9 @@ def add_user_frequency(band, dial_khz, mode="PKTUSB", note="", path=None):  # re
     dial_khz = float(dial_khz)  # the frequency as a number (raises ValueError if it is not one)
     if not band or not mode or not 100.0 <= dial_khz <= 500000.0:  # a band name, a mode and a sensible frequency are needed
         raise ValueError("give a band name, a dial frequency in kHz (100 to 500000) and a mode")  # refuse anything else
+    if dial_khz < 30000.0 and in_data_segment(dial_khz) is None:  # an HF frequency whose signal would fall outside every amateur data segment
+        low, high = signal_khz(dial_khz)  # where the signal would sit
+        raise ValueError(f"a dial of {dial_khz:.1f} kHz puts the signal at {low:.1f}-{high:.1f} kHz, outside the U.S. amateur data segments (for 80 m, for example, use 3500-3600 kHz)")  # refuse, and say why
     path = path or USER_FILE  # the default file unless told otherwise
     entries = [{k: e[k] for k in ("band", "dial_khz", "mode", "note")} for e in user_frequencies(path)]  # what is saved already, without the marker
     entry = {"band": band, "dial_khz": dial_khz, "mode": mode, "note": note}  # the new entry
@@ -126,6 +148,9 @@ def remove_user_frequency(index, path=None):  # forget one of the operator's own
 def describe_frequency(entry):  # one line for a drop-down list
     """Return a line of text describing a frequency entry, saying whether an unattended station may use it."""
     low, high = signal_khz(entry["dial_khz"])  # where the signal would sit
-    place = "97.221(b) segment" if in_automatic_segment(entry["dial_khz"]) else "attended only"  # may a station be left running here?
+    if entry["dial_khz"] < 30000.0 and in_data_segment(entry["dial_khz"]) is None:  # an HF frequency outside every data segment
+        place = "OUTSIDE THE DATA SEGMENTS: will not transmit"  # say so plainly
+    else:  # an amateur data frequency
+        place = "97.221(b) segment" if in_automatic_segment(entry["dial_khz"]) else "attended only"  # may a station be left running here?
     note = f"  {entry['note']}" if entry["note"] else ""  # the note, when there is one
     return f"{entry['band']:<6} {entry['dial_khz']:9.1f} kHz {entry['mode']:<7} signal {low:.1f}-{high:.1f}  [{place}]{note}"  # band, dial, mode, occupancy, status, note

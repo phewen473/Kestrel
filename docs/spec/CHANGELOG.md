@@ -1,5 +1,15 @@
 # Kestrel specification changelog
 
+## 0.26 (draft) - 21 November 2026
+
+- **Signal version 0.26. Stations following 0.25 or earlier cannot exchange frames with 0.26 stations** (only the test stations are affected).
+- Header placement (Section 5.1, 5.4): the second copy of the 12-tone header is now sent after the body instead of straight after the first copy. One fade can no longer remove both copies. Airtimes are unchanged. The receiver tries the first copy, then the second at the end of each possible body length, combined with the first and alone, and accepts only a header whose body length matches.
+- Preamble ranking (Section 5.1, a receiver choice): candidates are ranked by pattern energy times the square of the pattern's share of the energy in its twelve tone lengths, so chance matches inside a strong frame's body no longer outrank a faded real preamble. In simulation, L2 frames in light fading at +5 dB now all decode (before: about 3 in 4), with no loss in steady noise (L2 at -14 dB and L0 at -20 dB still 20 of 20).
+- Fading limits re-measured (Section 5.2), 40 frames a point: L0 -8, L1 -2, L2 -8, L3 -1, L4 0 dB (were -12, -10, -9, -4, -1, measured with fewer frames a point). Frames are now lost mainly in light, slow fading, where a fade can cover a whole preamble; retries recover them.
+- 80 m meeting frequency 3590.0 kHz added (Section 6.9), with working frequencies 3594.0 and 3597.0 kHz; notes on choosing 80 m or 40 m by time of day; the reference program now refuses to transmit outside the U.S. amateur data segments.
+- Roadmap (new Section 10): prove the link; a WSPR-like bottom level; nets and mail; a VARA-like top level. Document history is now Section 11.
+- Reference program (not part of the signal): optional recording of received audio to WAV files; File > Decode a recording; reports of Kestrel signatures heard but too weak or faded to read; callsign confirmation; a warning when the radio's ALC reads high during a transmission.
+
 ## 0.25 (draft) - 19 November 2026
 
 - **Signal version 0.25** (only the two test stations are affected).

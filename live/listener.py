@@ -12,13 +12,16 @@ from dataclasses import dataclass  # simple record type
 import numpy as np  # numerical arrays
 
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
-from modem.frame import HEADER_SYMBOLS  # tones in a header
+from modem.frame import HEADER_SYMBOLS, _body_totals  # tones in the two header copies together, and every body length a frame can have
 from modem.params import CONTROL_BITS, FS, PREAMBLE_TONES  # control frame types, the sample rate and the preamble's length in tones
 
 WINDOW_S = 100.0  # how much audio is kept: longer than the longest frame (90 s)
 STEP_S = 1.0  # how often the stored audio is searched
 PAD_S = 0.5  # audio kept either side of a frame when it is handed over
 FAILED_SNR_SLACK_DB = 4.0  # a frame that fails its check is only reported if its pilots read within this many dB of its level's limit
+NEAR_QUALITY = 6.0  # a signature pattern standing this far above the background counts as a "near miss" when its header cannot be read (noise alone stays below about 3.5 in simulation; 6 leaves a margin for real band noise)
+LONGEST_FRAME = (PREAMBLE_TONES + HEADER_SYMBOLS + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
+NEAR_QUALITY_MAX = 10000.0  # above this the measure has broken down (stretches of digital silence), so it is not a signal
 
 
 @dataclass  # a plain record
@@ -46,6 +49,7 @@ class Listener:  # the continuous receiver
         self.step = int(step_s * FS)  # new samples needed before the next search
         self.store = np.zeros(0)  # the audio kept so far
         self.fresh = 0  # samples added since the last search
+        self.on_near = None  # if set, called with the receiver's report whenever a Kestrel signature is seen but its header cannot be read
 
     def clear(self):  # forget everything heard so far
         """Empty the store (used after transmitting, so the station does not decode itself)."""
@@ -73,6 +77,7 @@ class Listener:  # the continuous receiver
             return None  # nothing to find
         result = receive(self.store)  # run the modem receiver over everything kept
         if result.level < 0:  # no header was read
+            self._near_miss(result)  # but a signature may still have been seen: report that
             return None  # nothing there (or only noise)
         start = int(round(result.start))  # where the frame begins in the store
         end = start + frame_samples(result)  # where it ends
@@ -86,3 +91,15 @@ class Listener:  # the continuous receiver
         audio = self.store[max(start - pad, 0):end + pad].copy()  # the frame's own stretch of audio
         self.store = np.concatenate([self.store[:max(start, 0)], self.store[end:]])  # cut the frame out so it is not found again
         return Heard(result, audio)  # hand it over
+
+    def _near_miss(self, result):  # a signature with no readable header
+        """Call on_near once for a clear Kestrel signature whose header could not be read (a frame heard but too weak or faded to decode)."""
+        if self.on_near is None or result.seen_level < 0 or not NEAR_QUALITY <= result.sync_quality <= NEAR_QUALITY_MAX:  # nobody wants to know, nothing stood out, or the measure broke down (digital silence)
+            return  # nothing to report
+        start = int(round(result.start))  # where the signature begins in the store
+        span = (PREAMBLE_TONES + HEADER_SYMBOLS // 2) * LEVELS[0].samples  # the longest a preamble and first header copy can be (the slowest level): the level guess from a pattern alone is not reliable
+        wait = min(LONGEST_FRAME, self.window - 2 * self.step)  # the whole frame, or as long as the store can hold the signature (the longest frame outlasts the 100-second store)
+        if start + wait > len(self.store):  # the second header copy, at the end of the frame, may not have arrived yet
+            return  # look again later
+        self.on_near(result)  # report it
+        self.store = np.concatenate([self.store[:max(start, 0)], self.store[start + span:]])  # and cut that stretch out so the same signature is not reported again

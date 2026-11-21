@@ -106,6 +106,11 @@ def describe(result):  # one line about a received frame
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
 
 
+def near_line(result):  # one line about a near miss
+    """Return a line saying a Kestrel signature was heard but could not be read."""
+    return f"possible Kestrel signature heard (looks like L{result.seen_level}, about {1500.0 + result.offset_hz:.0f} Hz) but too weak or faded to read (strength {result.sync_quality:.1f})"  # likely level, audio frequency and how strongly the pattern stood out
+
+
 def call_request(target, after_contact, say=print):  # a directed call the operator asked for, to be made in the station's own thread
     """Return a request for run_station's on_tick: call `target` once the station is free.
 
@@ -134,7 +139,7 @@ def call_request(target, after_contact, say=print):  # a directed call the opera
     return request  # ready to hand to the station thread
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -153,12 +158,22 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     given, is called with the station and the station's clock once every
     loop, in this thread: the safe place for another part of the program
     to ask the station to do something (beacon, call, broadcast).
+    `on_near`, if given, is called with the receiver's report whenever a
+    Kestrel signature is heard whose header cannot be read (a near miss);
+    such signals are always mentioned in the running log.
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
     started = time.monotonic()  # the moment the clock starts
+
+    def near(result):  # a Kestrel signature too weak or faded to read
+        stamp(near_line(result))  # always tell the operator: it shows a signal is getting through
+        if on_near is not None:  # someone keeps a record
+            on_near(result)  # pass it on
+
+    listener.on_near = near  # the listener reports near misses here
     told = 0  # how many lines of the station's own log have been passed on
     last_sent = [-1e9]  # when this station's last transmission ended (in a list so the inner function can change it)
     lost = 0  # how many times the sound card has reported losing audio, as of the last look
