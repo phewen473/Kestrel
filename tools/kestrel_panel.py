@@ -63,7 +63,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
-            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system",  # (continued: logging, recording and looks)
+            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
@@ -187,6 +187,13 @@ def utc(seconds):  # a time for display
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
+FONT_MIN, FONT_MAX = 7, 16  # the smallest and largest font sizes offered
+SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. It keeps the last transmission.\n\n"  # the transmit scope
+              "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
+              "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labelled.\n\n"  # the scales
+              "Zoom: click a signal or its label, turn the mouse wheel, or pick a width in the View box. Right click, or Full view, shows everything again.\n\n"  # zooming
+              "Sizes: drag the dividers between the panels to shrink one and grow another. View > Reset the panel sizes puts them back.")  # the dividers
+
 VIEW_WIDTHS = {"Full (0-3000 Hz)": 3000.0, "1000 Hz wide": 1000.0, "500 Hz wide": 500.0, "200 Hz wide": 200.0}  # the scope widths offered, by name
 
 
@@ -243,7 +250,10 @@ class Panel:  # the control panel window
         self.level_check = 0.0  # when Windows' receive level was last read back
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
+        self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
+        self.panes = {}  # the dividers the operator can drag, by name, so their positions can be remembered
         self.colours = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colours
+        self.apply_fonts()  # the lettering chosen in Settings, before anything is drawn
         root.title(f"Kestrel {SPEC_VERSION}  -  signal v{SIGNAL_VERSION}")  # window title: the program's version, and the signal version so two stations can be compared at a glance (the two differ when a release changes only the program)
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
         self.mode_var = tk.StringVar(value="off")  # the mode buttons and menu items share this
@@ -257,17 +267,17 @@ class Panel:  # the control panel window
         top = ttk.Frame(root)  # the strip holding the status line and the station's own details
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))  # place it at the top
         top.columnconfigure(0, weight=1)  # the status line takes the spare width
-        self.status = tk.Label(top, text="OFF", font=("Segoe UI", 15, "bold"), anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of colour
+        self.status = tk.Label(top, text="OFF", font="KestrelBig", anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of colour
         self.status.grid(row=0, column=0, sticky="ew")  # place it on the left
-        self.me = ttk.Label(top, text="", font=("Segoe UI", 10))  # this station's callsign and grid locator
+        self.me = ttk.Label(top, text="", font="KestrelMedium")  # this station's callsign and grid locator
         self.me.grid(row=0, column=1, sticky="e", padx=(8, 0))  # place it on the right
-        self.readings = ttk.Label(root, text="", font=("Segoe UI", 10))  # the partner, the last signal reading and the two speed levels
+        self.readings = ttk.Label(root, text="", font="KestrelMedium")  # the partner, the last signal reading and the two speed levels
         self.readings.grid(row=1, column=0, sticky="ew", padx=8)  # place it under the status line
         tuning = ttk.Frame(root)  # the frequency row
         tuning.grid(row=2, column=0, sticky="ew", padx=8, pady=4)  # place it
         tuning.columnconfigure(1, weight=1)  # the list takes the spare width
         ttk.Label(tuning, text="Frequency").grid(row=0, column=0, sticky="w", padx=(0, 6))  # label for the frequency list
-        self.frequency = ttk.Combobox(tuning, state="readonly", width=84, font=("Consolas", 9))  # the frequency drop-down list
+        self.frequency = ttk.Combobox(tuning, state="readonly", width=60, font="TkFixedFont")  # the frequency drop-down list
         self.frequency.grid(row=0, column=1, sticky="ew")  # place it
         ttk.Button(tuning, text="Add...", command=self.add_frequency).grid(row=0, column=2, padx=(6, 0))  # add a frequency of your own
         ttk.Button(tuning, text="Remove", command=self.remove_frequency).grid(row=0, column=3)  # remove one of your own
@@ -275,14 +285,14 @@ class Panel:  # the control panel window
         operate = ttk.Frame(root)  # the row of operating controls
         operate.grid(row=3, column=0, sticky="w", padx=8, pady=4)  # place it
         ttk.Label(operate, text="Mode:").pack(side="left", padx=(0, 4))  # label for the mode choice
-        for mode, words in (("listen", "Listen  F2"), ("monitor", "Monitor (receive only)  F3"), ("off", "Off  F4")):  # the three modes
+        for mode, words in (("listen", "Listen  F2"), ("monitor", "Monitor  F3"), ("off", "Off  F4")):  # the three modes
             ttk.Radiobutton(operate, text=words, value=mode, variable=self.mode_var, command=lambda m=mode: self.set_mode(m)).pack(side="left", padx=4)  # one button each
         ttk.Separator(operate, orient="vertical").pack(side="left", fill="y", padx=10)  # a divider
         self.available_button = ttk.Checkbutton(operate, text="Available  Ctrl+U", style="Toolbutton", variable=self.available_var, command=self.available_toggled)  # pushed in = available for contacts
         self.available_button.pack(side="left", padx=(0, 8))  # place it
         self.beacon_button = ttk.Checkbutton(operate, text=self.beacon_words(), style="Toolbutton", variable=self.beacon_var, command=self.beacon_toggled)  # pushed in = repeating beacon on; pushed again = off
         self.beacon_button.pack(side="left")  # place it
-        self.beacon_label = ttk.Label(operate, text="off", width=30)  # what the repeating beacon is doing
+        self.beacon_label = ttk.Label(operate, text="off", width=22)  # what the repeating beacon is doing
         self.beacon_label.pack(side="left", padx=6)  # place it
         ttk.Button(operate, text="Call station (To)  F6", command=self.call_to).pack(side="left", padx=4)  # call the station named in the To box
         options = ttk.Frame(root)  # the row of choices about how a contact is run
@@ -290,7 +300,7 @@ class Panel:  # the control panel window
         ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
         ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
         ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
-        self.working = ttk.Combobox(options, state="readonly", width=62)  # stay on the calling frequency, or move to a numbered channel
+        self.working = ttk.Combobox(options, state="readonly", width=54)  # stay on the calling frequency, or move to a numbered channel
         self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
         typing.grid(row=5, column=0, sticky="ew", padx=8, pady=4)  # place it
@@ -308,10 +318,10 @@ class Panel:  # the control panel window
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
         ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=5, padx=(6, 0))  # add the message to the list to send
         ttk.Button(typing, text="Broadcast to ALL  F11", command=self.broadcast_message).grid(row=0, column=6, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
-        lists = ttk.Frame(root)  # the three lists, side by side
-        lists.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # place them
-        for column in range(3):  # the three lists share the width
-            lists.columnconfigure(column, weight=1)  # equally
+        self.panes["split"] = split = ttk.PanedWindow(root, orient="vertical")  # everything below the controls, in two rows with a divider the operator can drag between them
+        split.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # it takes the rest of the window
+        self.panes["lists"] = lists = ttk.PanedWindow(split, orient="horizontal")  # the three lists, side by side, with dividers between them
+        split.add(lists, weight=1)  # the upper row
         self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
         change.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
@@ -338,23 +348,22 @@ class Panel:  # the control panel window
         for item in read_json(side_file("_outbox.json"), []):  # messages left waiting when the panel was last closed
             self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", item.get("text", ""), "waiting"))  # back in the list
             self.outbox.append((item.get("text", ""), item.get("to", "")))  # and back in the queue for the next contact
-        bottom = ttk.Frame(root)  # the bottom strip: the log on the left, the scope and the level meters on the right
-        bottom.grid(row=7, column=0, sticky="nsew", padx=8, pady=(4, 8))  # place it at the bottom
-        bottom.columnconfigure(0, weight=1)  # the log takes the spare width
-        bottom.rowconfigure(0, weight=1)  # and the spare height
+        self.panes["bottom"] = bottom = ttk.PanedWindow(split, orient="horizontal")  # the lower row: the log, the scopes and the level meters, with dividers between them
+        split.add(bottom, weight=3)  # under the lists
         activity = ttk.LabelFrame(bottom, text="Activity")  # the running log, in its own box
-        activity.grid(row=0, column=0, sticky="nsew", padx=(0, 4))  # place it on the left
+        bottom.add(activity, weight=2)  # on the left
         activity.columnconfigure(0, weight=1)  # the log takes the width
         activity.rowconfigure(1, weight=1)  # and the spare height
         ttk.Checkbutton(activity, text="Show technical details", variable=self.details, command=self.redraw_log).grid(row=0, column=0, sticky="w", padx=4)  # the switch between the plain and the detailed log
-        self.log = tk.Text(activity, height=14, width=70, font=("Consolas", 9), state="disabled", relief="flat", borderwidth=0)  # the running log
+        self.log = tk.Text(activity, height=4, width=30, font="TkFixedFont", state="disabled", relief="flat", borderwidth=0)  # the running log
         self.log.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)  # place it
         scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
         self._scope(bottom)  # build the scope
         self._meters(bottom)  # build the level meters and sliders
-        root.rowconfigure(7, weight=1)  # the log stretches with the window
+        root.rowconfigure(6, weight=1)  # the lists, the log and the scopes stretch with the window
+        root.after(250, self.restore_layout)  # once the window is up, put it and the dividers back as they were left
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
         self.refresh_quick()  # fill the quick-message menu
         self.show_me()  # show this station's callsign and grid
@@ -435,6 +444,7 @@ class Panel:  # the control panel window
             looks.add_radiobutton(label=THEME_NAMES[choice], underline=0, value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
         view.add_cascade(label="Theme", underline=0, menu=looks)  # put it in the View menu
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
+        view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
         bar.add_cascade(label="View", underline=0, menu=view)  # put the menu on the bar
         settings = tk.Menu(bar, tearoff=False)  # the Settings menu
@@ -443,6 +453,7 @@ class Panel:  # the control panel window
         bar.add_cascade(label="Settings", underline=0, menu=settings)  # put the menu on the bar
         help_menu = tk.Menu(bar, tearoff=False)  # the Help menu
         help_menu.add_command(label="Keyboard shortcuts", underline=0, accelerator="F1", command=self.shortcuts_window)  # every key
+        help_menu.add_command(label="Reading the scopes", underline=0, command=lambda: messagebox.showinfo("Kestrel - the scopes", SCOPE_HELP, parent=self.root))  # what the two scopes show, and how to zoom and resize
         help_menu.add_command(label="About Kestrel", underline=0, command=lambda: messagebox.showinfo("About Kestrel", about_text(), parent=self.root))  # what this is, which version, and who began it
         bar.add_cascade(label="Help", underline=0, menu=help_menu)  # put the menu on the bar
         self.root.configure(menu=bar)  # give the window its menu bar
@@ -459,93 +470,127 @@ class Panel:  # the control panel window
 
     def _list(self, parent, column, title, columns):  # a titled list with named columns
         frame = ttk.LabelFrame(parent, text=title)  # the box around the list
-        frame.grid(row=0, column=column, sticky="nsew", padx=2)  # place it
+        parent.add(frame, weight=1)  # one of the panels in its row, with a divider to drag on either side
         frame.columnconfigure(0, weight=1)  # the list takes the width
-        table = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=5)  # the list itself, five rows tall
+        frame.rowconfigure(0, weight=1)  # and the height
+        table = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=2)  # the list itself; it asks for two rows and takes whatever height its panel is given
         for name, heading, width in columns:  # each column
             table.heading(name, text=heading, anchor="w")  # its heading
-            table.column(name, width=width, anchor="w", stretch=(name in ("text", "mail")))  # its width; only the message columns stretch
+            table.column(name, width=max(22, int(width * 0.6)), minwidth=20, anchor="w", stretch=(name != "saved"))  # a modest width to ask for; every column but the star stretches with the panel
         table.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # place the list
         scroll = ttk.Scrollbar(frame, orient="vertical", command=table.yview)  # a scroll bar for it
         scroll.grid(row=0, column=1, sticky="ns")  # place it beside the list
         table.configure(yscrollcommand=scroll.set)  # tie the two together
         return table  # so rows can be added later
 
-    # ---- the scope ----
+    # ---- the scopes ----
 
-    def _scope(self, parent):  # the scope: a spectrum trace above a waterfall of the receive audio, with scales
-        self.scope_w, self.trace_h, self.fall_h, self.top_hz = 720, 90, 120, 3000.0  # width in points (4.2 Hz each), heights of the trace and the waterfall, and the highest frequency shown
-        self.low_hz = 0.0  # the lowest frequency shown (above zero when the view is zoomed in)
+    def _scope(self, parent):  # the two scopes: transmit on top, receive below, each a spectrum trace above a waterfall; both take the size of their panels
+        self.scope_w, self.trace_h, self.fall_h, self.low_hz, self.top_hz = 420, 60, 50, 0.0, 3000.0  # the receive scope's width in points, the heights of its trace and waterfall, and the lowest and highest frequencies shown
+        self.tx_w, self.tx_top, self.tx_trace_h, self.tx_fall_h = 420, 14, 30, 16  # the transmit scope's width, where its trace begins (under a line of words), and the heights of its trace and waterfall
         self.left, self.right, self.above, self.below = 40, 40, 16, 18  # margins for the scales: dB on the left, seconds on the right, radio kHz above, audio Hz below
-        steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfall
+        steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfalls
         self.palette = np.stack([np.interp(steps, [0, 0.35, 0.7, 1.0], channel) for channel in ([0, 0, 255, 255], [0, 40, 255, 60], [40, 200, 0, 0])], axis=1).astype("uint8")  # their colours: black, blue, yellow, red
-        self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the waterfall picture, newest line at the top
+        self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the receive waterfall picture, newest line at the top
+        self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # the transmit waterfall picture
         self.line_s = 0.10  # seconds between waterfall lines, measured as the scope runs
         self.last_line = None  # when the last waterfall line was drawn
         self.scale_khz = None  # the radio frequency the top scale was last drawn for
-        scopes = ttk.Frame(parent)  # the two scopes, one above the other: transmit on top, receive below
-        scopes.grid(row=0, column=1, sticky="ns", padx=(0, 4))  # beside the log
-        self._tx_scope(scopes)  # the transmit scope, on top
+        self.tx_was = False  # whether a transmission was under way at the last look
+        self.panes["scopes"] = scopes = ttk.PanedWindow(parent, orient="vertical")  # the two scopes, one above the other, with a divider to drag between them
+        parent.add(scopes, weight=3)  # between the log and the meters
+        tx_frame = ttk.LabelFrame(scopes, text="Transmit  -  audio sent to the radio")  # the box around the transmit scope
+        scopes.add(tx_frame, weight=1)  # on top
+        tx_frame.columnconfigure(0, weight=1)  # its picture takes the width
+        tx_frame.rowconfigure(0, weight=1)  # and the height
+        self.tx_canvas = tk.Canvas(tx_frame, width=self.left + self.tx_w + self.right, height=self.tx_top + self.tx_trace_h + self.tx_fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
+        self.tx_canvas.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # filling the box
+        self.tx_image = tk.PhotoImage(width=self.tx_w, height=self.tx_fall_h)  # its waterfall as a picture
+        self.tx_item = self.tx_canvas.create_image(self.left, self.tx_top + self.tx_trace_h, anchor="nw", image=self.tx_image)  # shown under the trace
+        self.tx_line = self.tx_canvas.create_line(0, 0, 0, 0, fill="#ff9f43")  # its trace, placed when the scales are drawn
+        self.tx_words = self.tx_canvas.create_text(self.left, 7, anchor="w", text="nothing sent yet", fill="#ffd166", font="KestrelSmall")  # what is being sent, or what the picture is of
         frame = ttk.LabelFrame(scopes, text="Receive  -  audio from the radio")  # the box around the receive scope
-        frame.grid(row=1, column=0, sticky="ns")  # under the transmit scope
-        width, height = self.left + self.scope_w + self.right, self.above + self.trace_h + self.fall_h + self.below  # the drawing area's size
-        self.scope = tk.Canvas(frame, width=width, height=height, bg="#0b0e12", highlightthickness=0)  # the drawing area
-        self.scope.grid(row=0, column=0, padx=4, pady=(4, 0))  # place it
-        self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # the waterfall as a picture
+        scopes.add(frame, weight=3)  # underneath, with most of the height
+        frame.columnconfigure(0, weight=1)  # its picture takes the width
+        frame.rowconfigure(0, weight=1)  # and the height
+        self.scope = tk.Canvas(frame, width=self.left + self.scope_w + self.right, height=self.above + self.trace_h + self.fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
+        self.scope.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))  # filling the box
+        self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # its waterfall as a picture
         self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
-        grey, faint, font = "#a8b0ba", "#3a414a", ("Segoe UI", 7)  # scale colours and lettering
-        self.scope.create_text(self.left + self.scope_w + self.right / 2, height - self.below / 2, text="Hz", fill=grey, font=font)  # the unit of the bottom scale
-        for db in (0, 25, 50):  # marks up the trace, in dB above the noise
-            y = self.y_for(db)  # where it falls
-            self.scope.create_line(self.left, y, self.left + self.scope_w, y, fill=faint, dash=(1, 4))  # a faint line across
-            self.scope.create_text(self.left - 4, y, text=f"{db:+d}" if db else "noise", anchor="e", fill=grey, font=font)  # its value
-        self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font=font)  # the unit of the left scale, in the top corner
+        self.trace = self.scope.create_line(0, 0, 0, 0, fill="#7cfc00")  # its trace, placed when the scales are drawn
         self.scope.bind("<Button-1>", self.scope_click)  # a click centers the view there, zooming in on a labelled signal
         self.scope.bind("<Button-3>", lambda event: self.set_view(1500.0, 3000.0))  # a right click returns to the full view
         self.scope.bind("<MouseWheel>", self.scope_wheel)  # the wheel zooms in and out about the pointer
         controls = ttk.Frame(frame)  # a row of zoom controls under the picture
-        controls.grid(row=1, column=0, sticky="w", padx=4, pady=(2, 0))  # place it
+        controls.grid(row=1, column=0, sticky="w", padx=4, pady=2)  # place it
         ttk.Label(controls, text="View:").grid(row=0, column=0)  # its label
         self.view_choice = tk.StringVar(value="Full (0-3000 Hz)")  # the width chosen
-        self.view_box = ttk.Combobox(controls, textvariable=self.view_choice, values=list(VIEW_WIDTHS), state="readonly", width=16)  # the widths offered
-        self.view_box.grid(row=0, column=1, padx=(4, 8))  # place it
+        self.view_box = ttk.Combobox(controls, textvariable=self.view_choice, values=list(VIEW_WIDTHS), state="readonly", width=15)  # the widths offered
+        self.view_box.grid(row=0, column=1, padx=(4, 6))  # place it
         self.view_box.bind("<<ComboboxSelected>>", lambda event: self.set_view((self.low_hz + self.top_hz) / 2, VIEW_WIDTHS[self.view_choice.get()]))  # choosing a width keeps the center
         ttk.Button(controls, text="Center on last signal", command=self.center_on_last).grid(row=0, column=2)  # zoom in on the station decoded most recently
-        ttk.Button(controls, text="Full view", command=lambda: self.set_view(1500.0, 3000.0)).grid(row=0, column=3, padx=(4, 8))  # back to everything
-        self.view_note = ttk.Label(controls, text="click a signal to zoom in on it", font=("Segoe UI", 8))  # a word on what the view shows
+        ttk.Button(controls, text="Full view", command=lambda: self.set_view(1500.0, 3000.0)).grid(row=0, column=3, padx=(4, 6))  # back to everything
+        self.view_note = ttk.Label(controls, text="click a signal to zoom", font="KestrelSmall")  # a word on what the view shows
         self.view_note.grid(row=0, column=4)  # place it
-        self.draw_grid()  # the frequency marks of both scopes
-        self.trace = self.scope.create_line(self.left, self.y_for(0), self.left + self.scope_w, self.y_for(0), fill="#7cfc00")  # the spectrum trace, flat until there is audio
-        legend = ("Across: audio frequency in Hz (below) and the radio frequency each point is on, in kHz (above).\n"  # what the axes are
-                  "Trace: signal strength above the noise, in dB.  Waterfall: the last few seconds, newest at the top.\n"  # what the two parts show
-                  "Dashed lines: the Kestrel band, 500 to 2500 Hz.  Labels: stations decoded in the last minute.\n"  # the marks
-                  "Transmit (top): the audio Kestrel sends, in dB below full scale, on the same Hz scale; it keeps the last transmission.\n"  # the transmit scope
-                  "Zoom: click a signal or its label, turn the wheel, or pick a width.  Right click: full view.")  # the transmit scope
-        ttk.Label(frame, text=legend, font=("Segoe UI", 8), justify="left").grid(row=2, column=0, sticky="w", padx=4, pady=(2, 4))  # the key
+        self.draw_scales()  # the scales of both scopes, at their starting sizes
+        self.tx_canvas.bind("<Configure>", self.tx_resized)  # the transmit scope follows the size of its panel
+        self.scope.bind("<Configure>", self.scope_resized)  # and so does the receive scope
 
-    def _tx_scope(self, parent):  # the transmit scope: what Kestrel is sending to the radio, on the same frequency scale as the receive scope
-        self.tx_trace_h, self.tx_fall_h = 40, 44  # heights of its trace and its waterfall
-        self.tx_fall = np.zeros((self.tx_fall_h, self.scope_w, 3), dtype="uint8")  # its waterfall picture, newest line at the top
-        frame = ttk.LabelFrame(parent, text="Transmit  -  audio sent to the radio")  # the box around it
-        frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))  # on top
-        width, height = self.left + self.scope_w + self.right, 14 + self.tx_trace_h + self.tx_fall_h + self.below  # the drawing area's size (a line of words above, the Hz scale below)
-        self.tx_top = 14  # the trace begins under the line of words
-        self.tx_canvas = tk.Canvas(frame, width=width, height=height, bg="#0b0e12", highlightthickness=0)  # the drawing area
-        self.tx_canvas.grid(row=0, column=0, padx=4, pady=4)  # place it
-        self.tx_image = tk.PhotoImage(width=self.scope_w, height=self.tx_fall_h)  # the waterfall as a picture
-        self.tx_item = self.tx_canvas.create_image(self.left, self.tx_top + self.tx_trace_h, anchor="nw", image=self.tx_image)  # shown under the trace
-        grey, font = "#a8b0ba", ("Segoe UI", 7)  # scale colour and lettering
-        self.tx_canvas.create_text(self.left + self.scope_w + self.right / 2, height - self.below / 2, text="Hz", fill=grey, font=font)  # the unit of the scale
-        for db in (0, -30, -60):  # marks up the trace, in dB below full scale
-            y = self.tx_top + self.tx_trace_h - 2 - (db + 70.0) / 70.0 * (self.tx_trace_h - 4)  # where it falls
-            self.tx_canvas.create_text(self.left - 4, y, text=str(db), anchor="e", fill=grey, font=font)  # its value
-        self.tx_line = self.tx_canvas.create_line(self.left, self.tx_top + self.tx_trace_h - 2, self.left + self.scope_w, self.tx_top + self.tx_trace_h - 2, fill="#ff9f43")  # the trace, flat until something is sent
-        self.tx_words = self.tx_canvas.create_text(self.left, 7, anchor="w", text="nothing sent yet", fill="#ffd166", font=("Segoe UI", 8))  # what is being sent, or what the picture is of
-        self.tx_was = False  # whether a transmission was under way at the last look
+    def scope_resized(self, event):  # the receive scope's panel has changed size
+        width, room = max(120, event.width - self.left - self.right), max(40, event.height - self.above - self.below)  # the points across, and the height for the trace and the waterfall together
+        trace = int(min(140, max(30, 0.4 * room)))  # the trace takes two fifths of it, within limits
+        if (width, trace, room - trace) == (self.scope_w, self.trace_h, self.fall_h):  # nothing has changed
+            return  # leave the picture alone
+        self.scope_w, self.trace_h, self.fall_h = width, trace, max(8, room - trace)  # the new sizes
+        self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # a fresh waterfall of that size
+        self.scale_khz = None  # the radio-frequency labels must be redrawn
+        self.draw_scales()  # and the scales
+
+    def tx_resized(self, event):  # the transmit scope's panel has changed size
+        width, room = max(120, event.width - self.left - self.right), max(24, event.height - self.tx_top - self.below)  # the points across, and the height for the trace and the waterfall together
+        trace = int(min(90, max(18, 0.6 * room)))  # the trace takes three fifths of it, within limits
+        if (width, trace, room - trace) == (self.tx_w, self.tx_trace_h, self.tx_fall_h):  # nothing has changed
+            return  # leave the picture alone
+        self.tx_w, self.tx_trace_h, self.tx_fall_h = width, trace, max(4, room - trace)  # the new sizes
+        self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # a fresh waterfall of that size
+        self.draw_scales()  # and the scales
+
+    def tx_y(self, db):  # where a level below full scale falls on the transmit trace
+        return self.tx_top + self.tx_trace_h - 2 - (db + 70.0) / 70.0 * (self.tx_trace_h - 4)  # from 70 dB under full scale at the bottom to full scale at the top
+
+    def draw_scales(self):  # draw the fixed parts of both scopes for their present sizes and the view now shown
+        span = self.top_hz - self.low_hz  # the width of the view
+        step = next(size for size in (10, 20, 50, 100, 200, 500) if span / size <= 8 or size == 500)  # the spacing that gives at most eight frequency marks
+        marks = sorted({step * n for n in range(int(np.ceil(self.low_hz / step)), int(self.top_hz // step) + 1)} | {hz for hz in (500, 2500) if self.low_hz <= hz <= self.top_hz})  # a mark at every step, and at the two edges of the Kestrel band
+        grey, faint = "#a8b0ba", "#3a414a"  # scale colours
+        for canvas, width, top, bottom in ((self.tx_canvas, self.tx_w, self.tx_top, self.tx_top + self.tx_trace_h + self.tx_fall_h), (self.scope, self.scope_w, self.above, self.above + self.trace_h + self.fall_h)):  # the transmit scope, then the receive scope
+            canvas.delete("scale")  # remove the old scales
+            for index, hz in enumerate(marks):  # each frequency mark
+                x = self.x_for(hz, width)  # where it falls across this scope
+                edge = hz in (500, 2500)  # the two edges of the Kestrel band
+                canvas.create_line(x, top, x, bottom, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4), tags="scale")  # a dashed line for an edge, a faint dotted one otherwise
+                if width >= 46 * len(marks) or index % 2 == 0:  # room for every label, or else every other one
+                    canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=grey, font="KestrelTiny", tags="scale")  # its audio frequency underneath
+            canvas.create_text(self.left + width + self.right / 2, bottom + self.below / 2, text="Hz", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the frequency scale
+        for db in (0, -30, -60):  # marks up the transmit trace, in dB below full scale
+            if db == 0 or self.tx_trace_h >= 40:  # the lower ones only when there is room
+                self.tx_canvas.create_text(self.left - 4, self.tx_y(db) + (4 if db == 0 else 0), text=str(db), anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
+        for db in (0, 25, 50):  # marks up the receive trace, in dB above the noise
+            if db != 25 or self.trace_h >= 50:  # the middle one only when there is room
+                self.scope.create_line(self.left, self.y_for(db), self.left + self.scope_w, self.y_for(db), fill=faint, dash=(1, 4), tags="scale")  # a faint line across
+                self.scope.create_text(self.left - 4, self.y_for(db), text=f"{db:+d}" if db else "noise", anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
+        self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the left scale, in the top corner
+        self.tx_canvas.coords(self.tx_item, self.left, self.tx_top + self.tx_trace_h)  # the transmit waterfall sits under its trace
+        self.tx_canvas.coords(self.tx_line, self.left, self.tx_y(-70), self.left + self.tx_w, self.tx_y(-70))  # and its trace lies flat until something is sent
+        self.scope.coords(self.fall_item, self.left, self.above + self.trace_h)  # the receive waterfall sits under its trace
+        self.scope.coords(self.trace, self.left, self.y_for(0), self.left + self.scope_w, self.y_for(0))  # and its trace lies flat until there is audio
+        for canvas, item in ((self.tx_canvas, self.tx_item), (self.scope, self.fall_item)):  # on each scope
+            canvas.tag_lower("scale")  # the scales go behind the trace and the labels
+            canvas.tag_lower(item)  # and the waterfall behind the scales
 
     def draw_tx_scope(self):  # redraw the transmit scope (called from draw_scope)
         sink = self.sink  # the sound-card output, when a station is running
-        levels = sink.spectrum(self.top_hz, self.scope_w, self.low_hz) if sink is not None else None  # what is going out at this moment, if anything
+        levels = sink.spectrum(self.top_hz, self.tx_w, self.low_hz) if sink is not None else None  # what is going out at this moment, if anything
         if levels is None:  # not transmitting
             if self.tx_was:  # a transmission has just ended
                 self.tx_was = False  # note it
@@ -556,34 +601,18 @@ class Panel:  # the control panel window
             dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
             self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its centre lands on the air
         bright = np.clip((levels + 70.0) / 70.0, 0.0, 1.0)  # each point on a scale from 70 dB under full scale to full scale
-        points = np.column_stack((self.left + np.arange(self.scope_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
+        points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
         self.tx_canvas.coords(self.tx_line, *points)  # move the trace
         self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
         self.tx_fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
-        self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
+        self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.tx_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
         self.tx_canvas.itemconfigure(self.tx_item, image=self.tx_image)  # show it
 
-    def x_for(self, hz):  # where an audio frequency falls across the scope
-        return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * (self.scope_w - 1)  # left margin plus the share of the width shown
+    def x_for(self, hz, width=None):  # where an audio frequency falls across a scope `width` points wide (the receive scope unless told otherwise)
+        return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * ((self.scope_w if width is None else width) - 1)  # left margin plus the share of the width shown
 
     def hz_at(self, x):  # the audio frequency at a point across the scope
         return self.low_hz + (x - self.left) / (self.scope_w - 1) * (self.top_hz - self.low_hz)  # the other way round
-
-    def draw_grid(self):  # draw the frequency marks of both scopes for the view now shown
-        span = self.top_hz - self.low_hz  # the width of the view
-        step = next(size for size in (10, 20, 50, 100, 200, 500) if span / size <= 8 or size == 500)  # the spacing that gives at most eight marks
-        grey, faint, font = "#a8b0ba", "#3a414a", ("Segoe UI", 7)  # scale colours and lettering
-        for canvas, top, bottom in ((self.tx_canvas, self.tx_top, self.tx_top + self.tx_trace_h + self.tx_fall_h), (self.scope, self.above, self.above + self.trace_h + self.fall_h)):  # the transmit scope, then the receive scope
-            canvas.delete("grid")  # remove the old marks
-            marks = {step * n for n in range(int(np.ceil(self.low_hz / step)), int(self.top_hz // step) + 1)} | {hz for hz in (500, 2500) if self.low_hz <= hz <= self.top_hz}  # a mark at every step, and at the two edges of the Kestrel band
-            for hz in sorted(marks):  # each mark
-                x = self.x_for(hz)  # where it falls across the display
-                edge = hz in (500, 2500)  # the two edges of the Kestrel band
-                canvas.create_line(x, top, x, bottom, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4), tags="grid")  # a dashed line for an edge, a faint dotted one otherwise
-                canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=grey, font=font, tags="grid")  # its audio frequency underneath
-            canvas.tag_lower("grid")  # behind the trace and the labels
-            for item in (self.tx_item, ) if canvas is self.tx_canvas else (self.fall_item, ):  # the waterfall picture
-                canvas.tag_lower(item)  # goes behind the marks
 
     def set_view(self, center_hz, span_hz):  # show `span_hz` of the audio band, centered on `center_hz` as nearly as the band allows
         span = float(min(3000.0, max(100.0, span_hz)))  # between 100 Hz and the whole band
@@ -593,7 +622,7 @@ class Panel:  # the control panel window
         self.low_hz, self.top_hz = low, low + span  # the new view
         self.fall[:], self.tx_fall[:] = 0, 0  # the old waterfall lines were on another scale, so start again
         self.scale_khz = None  # the radio-frequency labels must be redrawn
-        self.draw_grid()  # and the frequency marks
+        self.draw_scales()  # and the frequency marks
         name = next((name for name, width in VIEW_WIDTHS.items() if width == span), f"{span:.0f} Hz wide")  # the name of this width
         self.view_choice.set(name)  # shown in the box
         self.view_note.configure(text="full view" if span >= 3000.0 else f"{low:.0f} to {low + span:.0f} Hz" + ("  -  fine detail, about a second behind" if span <= 600.0 else ""))  # say what is shown
@@ -640,8 +669,8 @@ class Panel:  # the control panel window
                 self.scale_khz = dial  # remember where it is now
                 self.scope.delete("rf")  # remove the old labels
                 for hz in (self.low_hz + share * (self.top_hz - self.low_hz) for share in (1 / 6, 1 / 2, 5 / 6)):  # three points across
-                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
-                self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font=("Segoe UI", 7), tags="rf")  # the unit
+                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
+                self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the unit
             if source is not None:  # there is audio to show
                 now = time.monotonic()  # the time of this line
                 if self.last_line is not None:  # not the first line
@@ -661,7 +690,7 @@ class Panel:  # the control panel window
             for seconds in (0, 5, 10, 15, 20, 30):  # a mark every five seconds at first
                 y = self.above + self.trace_h + seconds / max(self.line_s, 0.05)  # how far down that is
                 if y <= self.above + self.trace_h + self.fall_h:  # it is on the waterfall
-                    self.scope.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font=("Segoe UI", 7), tags="time")  # label it
+                    self.scope.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font="KestrelTiny", tags="time")  # label it
             self.scope.delete("mark")  # the station labels are redrawn each time
             now = time.monotonic()  # for their age
             for call, (hz, width, when) in list(self.marks.items()):  # each station decoded recently
@@ -672,7 +701,7 @@ class Panel:  # the control panel window
                     continue  # nothing to draw
                 low, high = self.x_for(max(self.low_hz, hz - width / 2)), self.x_for(min(self.top_hz, hz + width / 2))  # the signal's edges, as far as they are in view
                 self.scope.create_line(low, self.above + 14, low, self.above + 18, high, self.above + 18, high, self.above + 14, fill="#ffd166", tags="mark")  # a bracket over the signal
-                self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill="#ffd166", font=("Segoe UI", 8, "bold"), tags="mark")  # with the callsign above it
+                self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill="#ffd166", font="KestrelSmallBold", tags="mark")  # with the callsign above it
         except Exception:  # anything at all
             pass  # try again next time
         self.root.after(100, self.draw_scope)  # ten times a second
@@ -680,9 +709,9 @@ class Panel:  # the control panel window
     # ---- the level meters ----
 
     def _meters(self, parent):  # the receive and transmit level meters, each with its slider
-        frame = ttk.LabelFrame(parent, text="Levels")  # the box around them
-        frame.grid(row=0, column=2, sticky="ns")  # place it on the right
-        self.meter_h, self.meter_w = 220, 30  # the size of each meter
+        self.levels_frame = frame = ttk.LabelFrame(parent, text="Levels")  # the box around them
+        parent.add(frame, weight=0)  # on the right, keeping its own width when the window grows
+        self.meter_h, self.meter_w = 150, 30  # the size of each meter
         self.rx_meter = self._meter(frame, 0, "Receive\n(radio to PC)")  # the receive meter
         self.tx_meter = self._meter(frame, 2, "Transmit\n(PC to radio)")  # the transmit meter
         self.rx_value = tk.DoubleVar(value=0.5)  # the receive slider's position
@@ -693,15 +722,15 @@ class Panel:  # the control panel window
         self.tx_slider.grid(row=1, column=3, padx=(0, 6))  # beside the transmit meter
         self.tx_slider.bind("<ButtonRelease-1>", lambda event: self.save_settings())  # remember the new level when the mouse lets go
         self.tx_slider.bind("<KeyRelease>", lambda event: self.save_settings())  # or when the arrow key is released
-        self.rx_text = ttk.Label(frame, text="", font=("Segoe UI", 8), justify="center", width=14, anchor="center")  # the receive readings in words
+        self.rx_text = ttk.Label(frame, text="", font="KestrelSmall", justify="center", width=14, anchor="center")  # the receive readings in words
         self.rx_text.grid(row=2, column=0, columnspan=2, pady=(2, 0))  # under the receive meter
-        self.tx_text = ttk.Label(frame, text="", font=("Segoe UI", 8), justify="center", width=14, anchor="center")  # the transmit readings in words
+        self.tx_text = ttk.Label(frame, text="", font="KestrelSmall", justify="center", width=14, anchor="center")  # the transmit readings in words
         self.tx_text.grid(row=2, column=2, columnspan=2, pady=(2, 0))  # under the transmit meter
-        ttk.Label(frame, text="Aim for the green band.\nRed or CLIP: lower the\nradio's USB audio output.", font=("Segoe UI", 8), justify="center").grid(row=3, column=0, columnspan=4, pady=(4, 4))  # how to use them
+        ttk.Label(frame, text="Aim for the green band.\nRed or CLIP: lower the\nradio's USB audio output.", font="KestrelSmall", justify="center").grid(row=3, column=0, columnspan=4, pady=(4, 4))  # how to use them
         self.find_rx_level()  # find Windows' level control for the receive device
 
     def _meter(self, frame, column, title):  # one vertical meter, scaled -60 to 0 dBFS
-        ttk.Label(frame, text=title, font=("Segoe UI", 8), justify="center").grid(row=0, column=column, columnspan=2, pady=(2, 2))  # its title
+        ttk.Label(frame, text=title, font="KestrelSmall", justify="center").grid(row=0, column=column, columnspan=2, pady=(2, 2))  # its title
         canvas = tk.Canvas(frame, width=self.meter_w + 28, height=self.meter_h, bg="#0b0e12", highlightthickness=0)  # the drawing area: the bar plus room for the scale
         canvas.grid(row=1, column=column, padx=(6, 2))  # place it
         x0, x1 = 26, 26 + self.meter_w  # the bar's left and right edges
@@ -710,10 +739,10 @@ class Panel:  # the control panel window
         canvas.create_rectangle(x0, self.meter_y(-15), x1, self.meter_y(-30), outline="#3fbf6f", width=1)  # the target band outlined
         for db in (0, -6, -15, -30, -45, -60):  # the scale
             canvas.create_line(x0 - 4, self.meter_y(db), x0, self.meter_y(db), fill="#a8b0ba")  # a tick
-            canvas.create_text(x0 - 6, self.meter_y(db), text=str(db), anchor="e", fill="#a8b0ba", font=("Segoe UI", 7))  # its value in dBFS
+            canvas.create_text(x0 - 6, self.meter_y(db), text=str(db), anchor="e", fill="#a8b0ba", font="KestrelTiny")  # its value in dBFS
         canvas.create_rectangle(x0 + 3, self.meter_y(-60), x1 - 3, self.meter_y(-60), fill="#3fbf6f", outline="", tags="bar")  # the level bar, empty to begin with
         canvas.create_line(x0, self.meter_y(-60), x1, self.meter_y(-60), fill="#ffffff", width=2, tags="peak")  # the peak mark
-        canvas.create_text((x0 + x1) / 2, 8, text="", fill="#ff5555", font=("Segoe UI", 7, "bold"), tags="clip")  # CLIP, when the input is overdriven
+        canvas.create_text((x0 + x1) / 2, 8, text="", fill="#ff5555", font="KestrelTinyBold", tags="clip")  # CLIP, when the input is overdriven
         return canvas  # for drawing on
 
     def meter_y(self, db):  # where a level falls on a meter
@@ -789,6 +818,66 @@ class Panel:  # the control panel window
             self.sink.gain = gain  # its next transmission uses the new level
 
     # ---- small helpers ----
+
+    def apply_fonts(self):  # set every font from the family and size chosen in Settings
+        """Point Tk's standard fonts, and Kestrel's own smaller and larger ones, at the chosen family and size; every widget follows at once."""
+        from tkinter import font as tkfont  # Tk's fonts
+        family = str(self.settings.get("font_family") or "Segoe UI")  # the family chosen
+        try:  # the size may have been typed
+            size = min(FONT_MAX, max(FONT_MIN, int(self.settings.get("font_size") or 9)))  # kept within sensible limits
+        except ValueError:  # not a number
+            size = 9  # the usual size
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):  # the fonts Tk's widgets use
+            tkfont.nametofont(name, root=self.root).configure(family=family, size=size)  # all in the chosen family and size
+        tkfont.nametofont("TkFixedFont", root=self.root).configure(family="Consolas", size=size)  # the log and the frequency list keep an even-width font, at the chosen size
+        for name, change, weight in (("KestrelTiny", -2, "normal"), ("KestrelTinyBold", -2, "bold"), ("KestrelSmall", -1, "normal"), ("KestrelSmallBold", -1, "bold"), ("KestrelMedium", 1, "normal"), ("KestrelBig", 4, "bold")):  # Kestrel's own: scale lettering, notes, readings, the status line
+            if name in self.fonts:  # made already
+                self.fonts[name].configure(family=family, size=max(6, size + change), weight=weight)  # follow the new choice
+            else:  # the first time
+                self.fonts[name] = tkfont.Font(root=self.root, name=name, family=family, size=max(6, size + change), weight=weight)  # make it, under a name the widgets refer to
+        ttk.Style(self.root).configure("Treeview", rowheight=tkfont.nametofont("TkDefaultFont", root=self.root).metrics("linespace") + 5)  # list rows as tall as the lettering needs
+
+    # ---- the dividers and the window's size ----
+
+    def save_layout(self):  # remember the window's size and where the dividers are
+        zoomed = self.root.state() == "zoomed"  # the window fills the screen
+        layout = {"zoomed": zoomed, "window": self.settings.get("layout", {}).get("window", "") if zoomed else self.root.geometry()}  # its size and place (the last unzoomed one, if it is zoomed now)
+        layout["sashes"] = {name: [pane.sashpos(index) for index in range(len(pane.panes()) - 1)] for name, pane in self.panes.items()}  # each divider's position
+        self.settings["layout"] = layout  # saved with the other settings
+
+    def default_layout(self):  # a starting size that fits the screen, and the dividers in their usual places
+        wide, high = self.root.winfo_screenwidth(), self.root.winfo_screenheight()  # the screen
+        self.root.state("normal")  # not filling the screen
+        width, height = min(1280, wide - 24), min(900, high - 120)  # room left for the window's frame, its menu and the taskbar
+        self.root.geometry(f"{width}x{height}+{max(0, (wide - width) // 2)}+0")  # at the top of the screen, centered
+        self.root.update_idletasks()  # let the panels take their new sizes
+        for name, shares in (("split", (0.27, )), ("lists", (0.32, 0.62)), ("bottom", (0.30, )), ("scopes", (0.32, ))):  # each divider's place, as a share of its row or column
+            pane = self.panes[name]  # the divided area
+            across = pane.winfo_width() if str(pane.cget("orient")) == "horizontal" else pane.winfo_height()  # its length
+            for index, share in enumerate(shares):  # each divider in turn
+                pane.sashpos(index, max(int(share * across), 150 if name == "split" else 0))  # put it there (the lists keep room for a few rows on a small screen)
+        bottom = self.panes["bottom"]  # the row holding the log, the scopes and the meters
+        bottom.sashpos(1, bottom.winfo_width() - self.levels_frame.winfo_reqwidth() - 6)  # the meters keep just the width they need
+
+    def restore_layout(self):  # put the window and the dividers back as they were left
+        layout = self.settings.get("layout") or {}  # what was saved
+        if not layout.get("window"):  # nothing yet
+            self.default_layout()  # start from the usual arrangement
+            return  # done
+        try:  # a saved layout from another screen may not suit this one
+            size, x, y = layout["window"].replace("-", "+-").split("+", 2)  # "WxH", then where
+            width, height = (int(part) for part in size.split("x"))  # its size
+            wide, high = self.root.winfo_screenwidth(), self.root.winfo_screenheight()  # the screen now
+            width, height = min(width, wide - 24), min(height, high - 120)  # no bigger than the screen can show
+            self.root.geometry(f"{width}x{height}+{min(max(0, int(x.replace('+', ''))), max(0, wide - width))}+{min(max(0, int(y.replace('+', ''))), max(0, high - height - 100))}")  # and wholly on the screen
+            if layout.get("zoomed"):  # it filled the screen
+                self.root.state("zoomed")  # so it does again
+            self.root.update_idletasks()  # let the panels take their sizes
+            for name, places in (layout.get("sashes") or {}).items():  # each divided area
+                for index, place in enumerate(places):  # each divider in turn
+                    self.panes[name].sashpos(index, int(place))  # back where it was
+        except (ValueError, KeyError, tk.TclError):  # the saved layout could not be used
+            self.default_layout()  # fall back on the usual arrangement
 
     def colour_plain_widgets(self):  # colour the widgets the theme cannot reach
         c = self.colours  # the palette
@@ -1871,7 +1960,7 @@ class Panel:  # the control panel window
             return box  # for any extra wiring
 
         def note(frame, row, words):  # a line of explanation
-            ttk.Label(frame, text=words, font=("Segoe UI", 8), justify="left").grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))  # in small letters
+            ttk.Label(frame, text=words, font="KestrelSmall", justify="left").grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))  # in small letters
 
         station = page("Station")  # who and where
         field(station, 0, "call", "Callsign", width=14)  # callsign
@@ -1958,6 +2047,10 @@ class Panel:  # the control panel window
         note(quick, 3, "These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}\nTelemetry lists the stations heard in the last 30 minutes, strongest first, with their signal and fastest level.")  # the names that fill in
         looks = page("Appearance")  # the look
         field(looks, 0, "theme", "Theme", names=THEME_NAMES, width=30)  # system, light or dark
+        from tkinter import font as tkfont  # for the list of fonts on this computer
+        field(looks, 1, "font_family", "Font", sorted(set(tkfont.families(self.root))), editable=True, width=30)  # the lettering's family
+        field(looks, 2, "font_size", f"Font size ({FONT_MIN} to {FONT_MAX})", [str(size) for size in range(FONT_MIN, FONT_MAX + 1)], editable=True, width=6)  # and its size
+        note(looks, 3, "The font applies to the whole window as soon as you save. A smaller size fits more on a small screen.\nDrag the dividers between the panels to resize them; View > Reset the panel sizes puts them back.")  # what these do
 
         def save():  # the Save button
             new = dict(self.settings)  # a copy to fill in
@@ -1999,9 +2092,14 @@ class Panel:  # the control panel window
                 if not messagebox.askyesno("Kestrel - check your callsign", f"Kestrel will identify every transmission as\n\n        {new['call']}\n\nIs that your callsign, exactly?", parent=dialog):  # make the operator look at it
                     book.select(0)  # show the Station tab
                     return  # leave the window open for a correction
+            if not (new["font_size"].isdigit() and FONT_MIN <= int(new["font_size"]) <= FONT_MAX):  # not a size on offer
+                messagebox.showerror("Kestrel", f"The font size must be a whole number from {FONT_MIN} to {FONT_MAX}.", parent=dialog)  # say so
+                book.select(6)  # show the Appearance tab
+                return  # leave the window open
             restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "radio_mode", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
+            self.apply_fonts()  # the lettering follows the choice at once
             self.logbook.level = new["log_level"]  # the logbook's level of detail
             self.beacon_type_var.set(self.settings.get("beacon_type", "short"))  # the Beacon type menu follows the setting
             self.beacon_button.configure(text=self.beacon_words())  # and the button's label
@@ -2266,6 +2364,7 @@ class Panel:  # the control panel window
         self.beacon_wanted = False  # and the repeating beacon
         if self.contact is not None:  # a contact was under way
             self.finish_contact()  # log what there is of it
+        self.save_layout()  # remember the window's size and the dividers
         self.save_settings()  # remember the settings
         self.save_outbox()  # and the messages still waiting
         if self.worker is not None:  # a station or the monitor was running
