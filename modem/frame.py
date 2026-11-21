@@ -31,7 +31,7 @@ from . import control, ldpc  # control-frame fields, and error correction for th
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
-    band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, pilot_frequency_fit,  # (continued)
+    band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit,  # (continued)
     signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
 )  # end of the import list
 from .params import (  # frame format numbers
@@ -321,7 +321,8 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     tone_e = tone_energies(band, spec)  # the 32 tone positions
     noise = noise_level(tone_e)  # average noise energy per tone position
     _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
-    llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]], noise))[:layout["coded"]]  # soft bits back in original order, padding dropped
+    level = noise_profile(tone_e)  # the noise level tone by tone through the frame (it is not always steady)
+    llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]] / level[layout["data_pos"], None], 1.0))[:layout["coded"]]  # soft bits back in original order, padding dropped, each tone judged against the noise around it
     if is_control:  # short frames: the convolutional code, and no combining of retries
         data = viterbi_decode(llrs)  # correct errors in the body
     else:  # message frames: the LDPC code, with retries combined
@@ -378,7 +379,7 @@ def _score(result):  # how believable a failed attempt is
     return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
-def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True):  # the receiver
+def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_failed=None):  # the receiver
     """Find and decode one frame in the audio `x`.
 
     `prior_llrs` may hold the body_llrs of an earlier failed copy of the
@@ -393,7 +394,9 @@ def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True):  # t
 
     With `long_beacons` (the default) the long beacon's pattern is searched
     for too (see longbeacon.py); a long beacon comes back with level
-    LONG_LEVEL and frame type FRAME_TYPE_LONG.
+    LONG_LEVEL and frame type FRAME_TYPE_LONG. `long_failed`, if a list,
+    receives (candidate, Soft) for each long-beacon candidate that was all
+    there but did not decode, for longbeacon.LongCombiner.
     """
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
@@ -401,14 +404,15 @@ def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True):  # t
     from . import longbeacon  # the long beacon (imported here: it uses this module's body layout)
     candidates = [(found, spec) for spec in LEVELS for found in detect_preamble(x, spec)]  # look for every level's signature pattern (best few candidates of each)
     if long_beacons:  # the long beacon's pattern too (signal version 0.27)
-        candidates += [(found, longbeacon.LONG) for found in longbeacon.candidates(x)]  # its best few
+        long_x = longbeacon.clean(x)  # the audio with any steady carrier near the long beacon's tones removed
+        candidates += [(found, longbeacon.LONG) for found in longbeacon.candidates(long_x)]  # its best few
     if not candidates:  # recording too short to hold any preamble
         return RxResult(reason="no preamble found")  # give up
     candidates.sort(key=lambda pair: -pair[0]["quality"])  # try the candidate that stands furthest above the background first
     best = None  # the most believable failed attempt so far
     for found, spec in candidates:  # each candidate, at the level its pattern belongs to
         if spec is longbeacon.LONG:  # a long beacon has no header: its body follows the pattern
-            attempt = longbeacon.decode_at(x, found, RxResult(start=found["start"], sync_quality=found["quality"]))  # read it
+            attempt = longbeacon.decode_at(long_x, found, RxResult(start=found["start"], sync_quality=found["quality"]), failed=long_failed)  # read it (a copy that fails is handed to the caller for combining)
             step = {"level": spec.number, "start": int(found["start"]), "offset_hz": float(found["offset_hz"]), "quality": float(found["quality"]), "header": "long", "ok": attempt.ok, "reason": attempt.reason, "snr_db": float(attempt.snr_db), "fade_index": float(attempt.fade_index)}  # for the trace
             if trace is not None:  # someone wants the details
                 trace.append(step)  # record it

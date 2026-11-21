@@ -39,3 +39,4 @@ BROADCAST_LEVEL = 0  # the speed level a broadcast to everyone is sent at unless
 BROADCAST_LIFE_HOURS = 2  # lifetime written into a broadcast frame (it is not forwarded, so the shortest value is used)
 WORKING_IDLE_S = 180.0  # on a working frequency, a contact with no message traffic for this long is closed and both stations return to the calling frequency
 WORKING_WARN_S = 60.0  # the operator of the station that proposed the move is warned this long before that happens
+HOLD_TELL_S = 60.0  # while a transmission is held back because the frequency is in use, the operator is told this often

@@ -71,3 +71,80 @@ def test_long_beacon_is_sent_once_and_never_answered():  # the link rules: nobod
     result = receive(np.concatenate([np.zeros(12000), tx.audio, np.zeros(12000)]))  # it decodes the long beacon
     assert result.ok and result.origin == "Q1AAAA"  # heard
     assert hearer.handle(result, 70.0) is None  # and does not reply
+
+
+def _hear(audio, combiner=None, now=0.0):  # one reception through the long-beacon receiver
+    """Return (fields or None, copies) for `audio`: alone first, then with `combiner`'s kept copies."""
+    from modem import longbeacon  # the long beacon
+
+    audio = longbeacon.clean(audio)  # steady carriers removed, as the receiver does
+    for found in longbeacon.candidates(audio):  # the long pattern's best candidates
+        soft = longbeacon.soft_at(audio, found)  # measure the body
+        if soft is None:  # not all inside the audio
+            continue  # skip it
+        fields, _ = longbeacon.decode_energies(soft.energies)  # alone
+        if fields is not None:  # decoded alone
+            return fields, 1  # done
+        out = combiner.offer(soft, now + found["start"] / 12000.0) if combiner is not None else None  # with earlier copies
+        if out is not None:  # decoded together
+            return out[0], out[2]  # done
+    return None, 0  # nothing
+
+
+def test_copies_that_fail_alone_decode_when_added_together():  # receiver version 0.28: combining repeats
+    from modem import longbeacon  # the long beacon and its combiner
+    from sim import run_channel  # the channel simulator
+
+    rng = np.random.default_rng(28)  # repeatable noise
+    sent = longbeacon.build_long_beacon("Q1AAAA", "EM93")  # the beacon a station repeats
+    combiner, decoded, alone = longbeacon.LongCombiner(), [], 0  # the memory, what decoded and how many decoded alone
+    for copy in range(4):  # four rounds, ten minutes apart
+        heard = run_channel(sent, -29.0, rng, offset_hz=7.0 + 0.3 * copy, lead_s=3.0, tail_s=3.0)  # 3.4 dB below where a single copy always decodes, drifting a little
+        fields, copies = _hear(heard, combiner, 600.0 * copy)  # give it to the receiver
+        alone += copies == 1  # count single decodes
+        if fields is not None and copies > 1:  # decoded by adding copies
+            decoded.append((fields["origin"], fields["grid"], copies))  # note it
+    assert alone == 0  # no copy was readable alone
+    assert decoded and decoded[0][:2] == ("Q1AAAA", "EM93")  # but together they were, and correctly
+
+
+def test_combiner_does_not_add_copies_on_different_frequencies():  # two stations' beacons are never added together
+    from modem import longbeacon  # the long beacon and its combiner
+    from sim import run_channel  # the channel simulator
+
+    rng = np.random.default_rng(4)  # repeatable noise
+    combiner = longbeacon.LongCombiner()  # the memory
+    for copy, offset in enumerate((-20.0, 0.0, 20.0, -10.0)):  # the same beacon, but 10 Hz or more apart each time
+        fields, copies = _hear(run_channel(longbeacon.build_long_beacon("Q1AAAA", "EM93"), -29.0, rng, offset_hz=offset, lead_s=3.0, tail_s=3.0), combiner, 600.0 * copy)  # give it to the receiver
+        assert copies != 2 and copies != 3 and copies != 4  # never combined
+
+
+def test_long_beacon_survives_a_carrier_inside_its_band():  # a steady carrier 10 dB stronger than the beacon, on one of its tones
+    from modem import longbeacon  # the long beacon
+    from sim import run_channel  # the channel simulator
+
+    rng = np.random.default_rng(6)  # repeatable noise
+    sent = longbeacon.build_long_beacon("Q1AAAA", "EM93")  # the beacon
+    heard = run_channel(sent, -22.0, rng, offset_hz=1.0, lead_s=3.0, tail_s=3.0)  # a weak beacon
+    carrier = np.sqrt(2 * np.mean(sent ** 2)) * 10 ** (10 / 20) * np.cos(2 * np.pi * 1503.0 * np.arange(len(heard)) / 12000.0)  # a carrier at 1503 Hz, 10 dB above it
+    fields, _ = _hear(heard + carrier)  # receive it
+    assert fields is not None and fields["origin"] == "Q1AAAA"  # still read
+
+
+def test_listener_adds_up_two_weak_long_beacons():  # the continuous receiver keeps the copy that failed and reads the pair
+    from live.listener import Listener  # the continuous receiver
+    from modem.longbeacon import build_long_beacon  # the transmitter
+    from modem.params import FS, LONG_LEVEL  # the sample rate and the long beacon's level number
+    from sim.channel import add_noise  # noise at a chosen SNR
+
+    rng = np.random.default_rng(13)  # repeatable noise
+    sent = build_long_beacon("Q1AAAA", "EM93")  # the beacon
+    quiet = np.zeros(int(240 * FS))  # four minutes
+    for begin in (5, 140):  # two copies, 135 seconds apart (a test's stand-in for ten minutes)
+        quiet[begin * FS:begin * FS + len(sent)] += sent  # put it in
+    audio = add_noise(quiet, -28.5, float(np.mean(sent ** 2)), rng)  # at -28.5 dB, where one copy alone rarely decodes (and with this noise, neither does)
+    listener, found = Listener(step_s=2.0), []  # a receiver that searches every two seconds (to keep the test short)
+    for begin in range(0, len(audio), FS):  # one second at a time
+        found += listener.feed(audio[begin:begin + FS])  # feed it
+    assert len(found) == 1 and found[0].result.level == LONG_LEVEL and found[0].result.ok  # one long beacon came out
+    assert found[0].result.origin == "Q1AAAA" and found[0].result.fields["copies"] == 2  # read from the two copies together

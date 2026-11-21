@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.27 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.28 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. Version 0.28 changes only how long beacons are received (Section 5.9); nothing sent has changed. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -203,6 +203,8 @@ When a frame fails its check, the same measurements are made from the pilot tone
 
 Measurements of Doppler spread (fading speed) and delay spread (multipath) are planned.
 
+**Following the noise (receiver practice, version 0.28).** Band noise is not steady: static builds and dies away, and a receiver's gain control moves the noise up and down. When turning tone energies into soft bits, the reference receiver judges each body tone against the noise level of that tone and the eight either side of it (the median of their energies in all 32 tone positions, divided by ln 2, and never less than a tenth of the whole frame's level) instead of one level for the whole frame. In simulation, with the noise swinging 10 dB either way during the frame, L2 frames at -14 dB went from 14 to 19 decoded in 20 and long beacons at -26.5 dB from 10 to 14 in 20, with no change on steady noise.
+
 ### 5.8 Control frames
 
 Beacons, answers, acknowledgments and identifications are short frames with the same structure as a message frame: preamble, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
@@ -300,6 +302,23 @@ The long beacon (signal version 0.27) is a compact frame for being heard where n
 | Spare | 1 | Always 0 |
 
 **Why this shape.** Simulation (tools/bottom_study.py, 40 beacons a point) of today's beacon with its tones held longer found that 1.6 s tones reach about -28 dB on a steady path but need 125 seconds; tones 1.25 Hz apart smear in heavy fading, while 2.5 Hz apart lose nothing on a steady path and gain about 6 dB in heavy fading; 3.2 s tones (250 s) reach -30 dB on a steady path but only -21 dB (nine in ten) in the worst fading. No timed slots were needed at any of these lengths. Keeping the long beacon to about a minute meant dropping the header, the level list and the other beacon flags, which leaves room for tones three times as long as L0's. **Sensitivity** (40 long beacons a point, through the full receiver, frequency error up to 2 Hz): every one decodes down to -25.6 dB on a steady path (nine in ten at -26.6 dB, about half at -27.6 dB), and nine in ten down to -18.6 dB in the worst of light, moderate and heavy fading (about half at -22.6 dB). For comparison, an L0 beacon (31 s): -21 dB on a steady path, and -14 dB nine in ten and -20 dB about half in the worst fading; WSPR is about -28 dB with 111 seconds and timed slots.
+
+**Receiving long beacons (receiver practice, version 0.28; not part of the signal).** The reference receiver does three things beyond decoding each long beacon alone.
+
+- **Adding repeats together.** A station repeats the same long beacon, so every copy carries the same tones. The receiver keeps the tone energies (each divided by its noise level) of any long-beacon candidate that was all there but did not decode, for 45 minutes. Each new one is first tried alone, then added to one, two or three kept copies whose audio frequency is within 3 Hz of its own and which were heard at least 2 minutes earlier, and decoded from the sums. The signal adds in the same tones each time; the noise does not.
+- **Removing steady carriers.** A frequency within 100 Hz of 1500 Hz that, even in its quietest tenth of the time, stands 4 times above the rest of that band is taken to be a steady carrier and is cut out with a notch 1.3 Hz wide before the search. (More than twelve such bins is taken to be a strong signal, not carriers, and nothing is cut.) The search for the pattern then counts each frequency in units of its own typical level, and a tone position whose typical energy is twice the band's is scaled down to match.
+- **A plausible callsign.** A decode is accepted only if its check value passes, its spare bit is 0 and its callsign has the shape of an amateur callsign. With many combinations of copies tried, the 16-bit check alone would let noise through now and then.
+
+Measured in simulation (tools/combine_study.py, 40 trials a point, four copies ten minutes apart, each with its own noise and fading):
+
+| Copies added | Steady path: all (or 39 of 40) decode | Steady path: nine in ten | Worst of light, moderate and heavy fading: nine in ten |
+|---|---|---|---|
+| 1 | -26 dB | -26 dB (35 of 40 at -27) | -20 dB |
+| 2 | -28 dB | -28 dB | -24 dB |
+| 3 | -28 dB | -29 dB | -24 dB (every one) |
+| 4 | -29 dB | -30 dB | -26 dB |
+
+In 9,600 stretches of noise alone (173 hours of an empty band) nothing was decoded. With a steady carrier inside the beacon's band and a beacon at -22 dB: a carrier as strong as the beacon cost 6 decodes in 20 before these steps and none after; one 20 dB stronger cost all 20 before and 0 to 6 in 20 after.
 
 ## 6. Link
 
@@ -400,7 +419,7 @@ So that stations can find each other, one meeting frequency is suggested per ban
 - The 30 m choice stays above the FT4, WSPR and PSK activity at the bottom of that segment; the 20 m choice stays clear of the beacons on 14100 kHz; the 80 m choice stays above the FT8 (3573 kHz) and JS8 (3578 kHz) activity.
 - 80 m suits paths of roughly 50 to 300 miles in the evening and at night, when 40 m often skips over them; 40 m suits the same distances in the daytime and late afternoon.
 - The reference program refuses to transmit on a frequency whose signal would fall outside the U.S. amateur data segments (Amateur Extra limits; General class starts 25 kHz higher on 80, 40, 20 and 15 m).
-- These segments are shared with other data modes. A station listens before transmitting and moves if the frequency is in use.
+- These segments are shared with other data modes. A station listens before transmitting (Section 6.14) and moves if the frequency is in use.
 - On 30 m the amateur power limit is 200 W PEP.
 - These are first choices, to be confirmed by listening on the air. Other bands: **TBD**.
 - Operators may use other frequencies by agreement. A station with no operator present must keep its whole signal inside a 97.221(b) segment.
@@ -461,6 +480,15 @@ The long beacon (Section 5.9) says "this station is here" as far as the path all
 - **Identification.** The long beacon carries the sending station's callsign in plain form (Section 2).
 - **Unattended.** As with any repeating beacon, a station sending long beacons with nobody at the controls is under automatic control (Section 2).
 
+### 6.14 Listening before transmitting
+
+A station does not start a transmission of its own over another signal.
+
+- **What is held.** Anything the station starts unasked: a beacon, a long beacon, a directed call, a broadcast. It waits until the frequency has been clear for 2 seconds, then sends. The operator is told at once and every minute while it waits.
+- **What is not held.** Replies inside an exchange: an answer in its reply slot, a confirmation, an acknowledgment, a retry, an identification. Their timing is part of the link rules, and the other station is waiting for them.
+- **How the reference program decides** (live/busy.py; a receiver practice, not part of the signal). The received audio is measured in half-second blocks and 50 Hz strips from 300 to 2900 Hz. Each strip's noise floor is the level it stays above nine tenths of the time over the last two minutes. The frequency is in use when, in the last 2 seconds, strips within 75 Hz of the band the transmission would occupy were at 4 times their floor twice or more. It needs no knowledge of what the other signal is. In simulation it never took 2,000 seconds of noise for a signal, and it noticed a Kestrel L2 frame from about -10 dB (in 2.5 kHz) upward.
+- **Limits.** A weaker signal may not be noticed, nor one that has been on without a break for two minutes, nor anything while this station transmits. The operator may turn the check off, and remains responsible for the frequency either way.
+
 ## 7. Nets (optional)
 
 - **Net control:** a beaconing station may open a net instead of a one-to-one link. Stations that answer are admitted as members.
@@ -509,7 +537,7 @@ The aim is one open mode that reaches like WSPR, carries messages like JS8Call a
 | Step | Work | Purpose |
 |---|---|---|
 | 1. Prove the link | Recording and decoding received audio; near-miss reports; fading re-measured and the header moved (0.26); on-air setup checks; on-air tests at 100+ miles | Show that the existing levels hold a contact over real HF paths |
-| 2. A WSPR-like bottom level | **First part in 0.27: the long beacon** (Sections 5.9, 6.13), about a minute, shown to the operator, not answered. Timed slots proved unnecessary. Still open: a reply at this level (a reception report), and short notes | Reach: be heard where nothing else gets through |
+| 2. A WSPR-like bottom level | **First part in 0.27: the long beacon** (Sections 5.9, 6.13), about a minute, shown to the operator, not answered. Timed slots proved unnecessary. **0.28: receivers add repeated long beacons together** and remove steady carriers. Still open: a reply at this level (a reception report), and short notes | Reach: be heard where nothing else gets through |
 | 3. Nets and mail | Nets with net control, backup and takeover (Section 7); store-and-forward completed (Section 8) | Groups and disconnected operation, at every level |
 | 4. A VARA-like top level | A multi-carrier PSK or OFDM waveform within 2.8 kHz for strong paths (Section 5.2, L5) | Throughput for relays and longer traffic |
 

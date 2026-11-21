@@ -104,6 +104,29 @@ def noise_level(tone_e):  # how strong the background noise is
     return max(float(np.median(tone_e)) / np.log(2), floor)  # median of noise energy is ln(2) times its average
 
 
+NOISE_SPAN = 8  # the noise level at each tone is taken from that tone and this many either side of it
+NOISE_TRACKING = True  # whether the receiver follows the noise level through a frame (False: one level for the whole frame, as before version 0.28; kept for comparison studies)
+
+
+def noise_profile(tone_e, span=NOISE_SPAN):  # how strong the background noise is, tone by tone through the frame
+    """Return the noise energy per tone position at each symbol of `tone_e` (symbols x 32), following slow changes.
+
+    Band noise is not steady: static builds and dies away, and a
+    receiver's own gain control moves the noise up and down. Each symbol's
+    level is the middle value of the energies in it and its `span`
+    neighbours each side (31 of every 32 positions hold only noise, so the
+    signal does not disturb it), never less than a tenth of the level of
+    the whole frame.
+    """
+    whole = noise_level(tone_e)  # the level over the whole frame
+    if not NOISE_TRACKING or tone_e.shape[0] < 2 * span + 1:  # tracking is off, or the frame is too short to track within
+        return np.full(tone_e.shape[0], whole)  # one level throughout
+    padded = np.concatenate([tone_e[span:0:-1], tone_e, tone_e[-2:-span - 2:-1]])  # mirrored at each end, so the first and last symbols have neighbours too
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * span + 1, axis=0)  # each symbol with its neighbours: symbols x 32 x (2 * span + 1)
+    local = np.median(windows.reshape(tone_e.shape[0], -1), axis=1) / np.log(2)  # the middle value of each group, as an average noise energy
+    return np.maximum(local, 0.1 * whole)  # never wildly below the frame's own level
+
+
 def energies_to_llrs(tone_e, noise_level):  # tone energies -> soft bits
     """Return 5 soft bits per symbol (positive = probably 0, negative = probably 1)."""
     llrs = np.zeros((tone_e.shape[0], BITS_PER_SYMBOL))  # room for 5 soft bits per symbol

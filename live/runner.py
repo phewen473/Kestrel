@@ -12,6 +12,7 @@ from link.params import TURNAROUND_S  # pause between hearing a frame and replyi
 from modem.levels import level_name  # L0 to L4, or LB
 from modem.params import CONTROL_BITS, FRAME_TYPE_LONG  # which frame types are control frames, and the long beacon's
 
+from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener  # the continuous receiver
 
 KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon"}  # frame type -> plain name
@@ -60,6 +61,9 @@ def status_for(line):  # the station's state, as far as one log line shows it
     found = re.search(r"called by (\S+); replying: not available", line)  # this station told a caller it is away
     if found:  # yes
         return f"UNAVAILABLE  -  told {found.group(1)} you are not available", "dark orange"  # say so
+    found = re.search(r"frequency in use: holding the (.+) until it is clear", line)  # listening before transmitting, and someone is there
+    if found:  # yes
+        return f"WAITING  -  frequency in use; the {found.group(1)} goes when it is clear", "dark orange"  # say so
     if "presence only" in line:  # a beacon sent while unavailable
         return "UNAVAILABLE  -  presence beacon sent (not taking contacts)", "dark orange"  # say so
     if "sending broadcast" in line:  # a broadcast is going out
@@ -98,8 +102,10 @@ def describe(result):  # one line about a received frame
     if not result.ok:  # it failed its check
         return f"heard a {name} at {level_name(result.level)} that failed its check ({result.snr_db:+.0f} dB)"  # say so
     line = f"heard {name} at {level_name(result.level)}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
+    if result.frame_type == FRAME_TYPE_LONG and (result.fields or {}).get("copies", 1) > 1:  # a long beacon read by adding copies together
+        line = line.replace("heard long beacon", f"heard long beacon ({result.fields['copies']} copies added together)").replace(", fading nan", "")  # say so
     if result.frame_type in CONTROL_BITS or result.frame_type == FRAME_TYPE_LONG:  # a control frame, or a long beacon
-        return line + f"  {result.fields}"  # show its fields
+        return line.replace(", fading nan", "") + f"  {result.fields}"  # show its fields
     who = f"{result.origin} to {result.dest}" if result.frame_type == 1 else f"link {result.link}"  # addresses, or the link number
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
 
@@ -140,9 +146,11 @@ def call_request(target, after_contact, say=print):  # a directed call the opera
     return request  # ready to hand to the station thread
 
 
-def feed_from(listener, source):  # read the source and give the audio to the listener
-    """Read new audio from `source` and feed it to `listener`, with its sample numbers when the source counts them (recorder.TimedSource); return the frames completed."""
+def feed_from(listener, source, watch=None):  # read the source and give the audio to the listener
+    """Read new audio from `source` and feed it to `listener`, with its sample numbers when the source counts them (recorder.TimedSource); return the frames completed. `watch` (a busy.ChannelWatch) hears the same audio."""
     chunk = source.read()  # the new audio
+    if watch is not None and len(chunk):  # someone is listening for other signals
+        watch.feed(chunk)  # let it hear this too
     count = getattr(source, "samples", None)  # the timeline's count, if the source keeps one
     return listener.feed(chunk, at=None if not isinstance(count, int) else count - len(chunk))  # numbered as the timeline numbers them
 
@@ -163,7 +171,7 @@ def log_tick(signal_log, source):  # the signal log's regular lines
     signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -189,12 +197,19 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     search's candidates, every frame and near miss, every transmission,
     frequency change and line from the link rules. `dial_khz`, if given,
     is called for the radio's dial frequency to put in those lines.
+    With `listen_first` (the default) the station holds back anything it
+    starts unasked (a beacon, a long beacon, a directed call, a broadcast)
+    while another signal is heard where it would transmit (busy.py; spec
+    Section 6.14). Replies inside an exchange are never held.
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
     started = time.monotonic()  # the moment the clock starts
+    watch = ChannelWatch() if listen_first else None  # listens for other signals on the frequency
+    if watch is not None:  # listening before transmitting
+        station.busy = lambda level: watch.busy(*band_of(level))  # the station asks before it starts anything unasked
     log_near = attach_signal_log(listener, signal_log, dial_khz)  # searches and near misses go to the signal log, if there is one
     logging = signal_log is not None and signal_log.on  # whether there is a signal log to write
 
@@ -243,11 +258,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         last_sent[0] = now()  # remember when this transmission ended
         source.flush()  # throw away whatever was received meanwhile (it was this station's own signal)
         listener.clear()  # and forget it
+        if watch is not None:  # listening before transmitting
+            watch.clear()  # what was heard just before this transmission is not "now" any more
 
     stamp(f"{station.call} on the air as {station.role or 'broadcaster'}")  # opening line (a station with no role is only sending a broadcast)
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
-        for heard in feed_from(listener, source):  # every frame that has completed
-            result = station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry)
+        for heard in feed_from(listener, source, watch):  # every frame that has completed
+            result = heard.result if heard.result.ok and heard.result.frame_type == FRAME_TYPE_LONG else station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry); a long beacon is already decoded, perhaps from several copies added together
             if logging:  # a signal log is kept
                 signal_log.rx(heard, station_result=result, dial_khz=dial())  # both decodes, and the clip if clips are kept
             stamp(describe(result))  # tell the operator
@@ -281,6 +298,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             tuned = wanted  # remember where it is
             source.flush()  # what was received on the old frequency no longer matters
             listener.clear()  # so forget it
+            if watch is not None:  # listening before transmitting
+                watch.reset()  # a new frequency: its noise and its users are not known yet
             stamp(f"radio moved to the working frequency ({wanted / 1000.0:+.1f} kHz)" if wanted else "radio back on the calling frequency")  # tell the operator
             if logging:  # a signal log is kept
                 signal_log.tune(dial(), why=f"working frequency {wanted / 1000.0:+.1f} kHz" if wanted else "back to the calling frequency")  # the move

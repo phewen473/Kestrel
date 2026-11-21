@@ -41,7 +41,7 @@ from .adapt import cap_level, common_levels, supported_level, wanted_level  # sp
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
-    REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
+    HOLD_TELL_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the station has a partner
@@ -96,6 +96,9 @@ class Station:  # the link rules for one station
         self.outbox_to = []  # for each of those, the callsign it is meant for, or None for whoever the partner is
         self.broadcasts = []  # broadcast frames waiting to be sent to everyone: (audio, level, note)
         self.long_waiting = None  # a long beacon waiting to be sent (its audio), if one was asked for
+        self.busy = None  # if set, called with a speed level: True when the frequency is in use where a frame at that level would go (listen before transmitting; a live station sets it)
+        self.held_since = None  # when this station began holding a transmission back because the frequency was in use
+        self.held_told = -1e9  # when the operator was last told so
         self.bulletins = []  # broadcasts and other fully addressed messages received: (origin, destination, text)
         self.bulletin_parts = {}  # parts of those still arriving: (origin, message number) -> {part: report}
         self.bulletin_done = set()  # (origin, message number) of those already delivered, so a repeat is not shown twice
@@ -724,17 +727,25 @@ class Station:  # the link rules for one station
             if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since this station sent its callsign
                 return self._ident(now, final=False)  # identify, turn or no turn
         if self.long_waiting is not None and self.state == "IDLE" and self.pending is None:  # a long beacon is waiting and the station is free
+            from modem.params import LONG_LEVEL  # the long beacon's level number
+            if self._hold(now, "long beacon", LONG_LEVEL):  # the frequency is in use
+                return None  # wait for it to clear
             audio, self.long_waiting = self.long_waiting, None  # take it
             self.last_ident = now  # it carries this station's callsign
-            from modem.params import LONG_LEVEL  # the long beacon's level number
             return self._send(now, audio, "long beacon", LONG_LEVEL, None, 0.0, "nobody answers a long beacon")  # send it; it asks for no reply
         if self.broadcasts and self.state == "IDLE":  # a broadcast is waiting and no contact is in progress
+            if self._hold(now, "broadcast", self.broadcasts[0][1]):  # the frequency is in use
+                return None  # wait for it to clear
             audio, level, note = self.broadcasts.pop(0)  # its next frame
             self.last_ident = now  # a fully addressed frame carries this station's callsign
             return self._send(now, audio, "broadcast", level, None, 0.0, note)  # send it; nobody replies
         if self.role == "beaconer" and self.state == "IDLE":  # looking for a partner
+            if self._hold(now, "beacon", self.callup):  # the frequency is in use
+                return None  # wait for it to clear
             return self._beacon(now)  # call
         if self.role == "caller" and self.state == "IDLE":  # calling one particular station
+            if self._hold(now, "call", self.callup if self.calls == 0 else min(self.levels)):  # the frequency is in use
+                return None  # wait for it to clear
             return self._call(now)  # call it
         if self.state in LOCKED_STATES and self.my_turn:  # locked, and it is this station's turn
             if self.peer_empty and not self.plan and self._sendable() is None and not self.close_when_done:  # both sides idle, lock kept open
@@ -813,6 +824,20 @@ class Station:  # the link rules for one station
         audio = build_beacon(self.call, self.grid, self.levels, listening=True, level=self.beacon_sent_at, wide=self.wide)  # the beacon
         window = (WIDE_SLOTS if self.wide else 1) * reply_slot(self.beacon_sent_at)  # how long to listen for answers: slots sized for this level
         return self._send(now, audio, "beacon", self.beacon_sent_at, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window (plus any extra margin a live station allows)
+
+    def _hold(self, now, what, level):  # listen before transmitting
+        """Return True when the frequency is in use where a `what` at `level` would go, so it must wait (spec Section 6.14). Replies inside an exchange are never held: only what this station starts unasked."""
+        if self.busy is None or not self.busy(level):  # no check is made, or the frequency is clear
+            if self.held_since is not None:  # something was being held
+                self._say(now, f"frequency clear after {now - self.held_since:.0f} s; sending the {what}")  # explain
+                self.held_since = None  # no longer holding
+            return False  # go ahead
+        if self.held_since is None:  # just begun to hold
+            self.held_since = now  # remember when
+        if now - self.held_told >= HOLD_TELL_S:  # the operator has not been told lately
+            self.held_told = now  # remember when
+            self._say(now, f"frequency in use: holding the {what} until it is clear")  # explain
+        return True  # wait
 
     def _timed_out(self, now):  # the reply being waited for did not come
         waited_for = self.pending  # what was expected

@@ -1,5 +1,15 @@
 # Kestrel specification changelog
 
+## 0.28 (draft) - 21 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.27**; stations following 0.27 and 0.28 work together. 0.28 is about pulling signals out of noise at the receiver, and about not transmitting over others.
+- Adding repeated long beacons together (Section 5.9): a long beacon that does not decode alone is kept and added to later copies from the same station. In simulation two copies decode at -28 dB on a steady path and four at -29 dB (one alone: -26 dB); in the worst fading, nine in ten decode at -24 dB with two copies and -26 dB with four (one alone: -20 dB).
+- Steady carriers on top of a long beacon are found and notched out; the pattern search and the soft bits count each frequency against its own typical level (Section 5.9).
+- A long beacon is accepted only with a callsign of plausible shape (Section 5.9).
+- Following the noise (Section 5.7): each body tone of every frame is judged against the noise around it in time, not one level for the whole frame.
+- Listening before transmitting (new Section 6.14): beacons, long beacons, directed calls and broadcasts wait while another signal is heard where they would go; replies are never held.
+- New study tool: tools/combine_study.py (results/combine_study.csv).
+
 ## 0.27 (draft) - 21 November 2026
 
 - **Signal version 0.27.** New frame: the long beacon (Sections 5.9 and 6.13), the first part of roadmap step 2. Stations following 0.26 do not hear it; all other frames are unchanged from 0.26.

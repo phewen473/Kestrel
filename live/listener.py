@@ -13,8 +13,8 @@ import numpy as np  # numerical arrays
 
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
 from modem import longbeacon  # the long beacon's length and limit
-from modem.params import LONG_LEVEL  # the long beacon's level number
-from modem.frame import HEADER_SYMBOLS, _body_totals  # tones in the two header copies together, and every body length a frame can have
+from modem.params import FRAME_TYPE_LONG, LONG_LEVEL  # the long beacon's frame type and level number
+from modem.frame import HEADER_SYMBOLS, RxResult, _body_totals  # tones in the two header copies together, and every body length a frame can have
 from modem.params import CONTROL_BITS, FS, PREAMBLE_TONES  # control frame types, the sample rate and the preamble's length in tones
 
 WINDOW_S = 100.0  # how much audio is kept: longer than the longest frame (90 s)
@@ -58,6 +58,9 @@ class Listener:  # the continuous receiver
         self.total = 0  # the number the next sample fed will get, when the caller does not say
         self.fresh = 0  # samples added since the last search
         self.searches = 0  # searches so far (the long beacon is looked for on every LONG_EVERY-th)
+        self.combiner = longbeacon.LongCombiner()  # adds up copies of the same long beacon heard minutes apart (receiver version 0.28)
+        self.offered = {}  # long-beacon candidates already given to the combiner: place in the stream -> sample
+        self.combined = []  # long beacons decoded by combining, waiting to be handed over
         self.on_near = None  # if set, called with the receiver's report whenever a Kestrel signature is seen but its header cannot be read
         self.near_audio, self.near_audio_sample = None, -1  # the audio of the latest near miss, while on_near is being called
         self.on_search = None  # if set, called after every search with (result, trace): the receiver's report and its list of candidates tried, with "sample" (stream numbers) added to each
@@ -90,6 +93,7 @@ class Listener:  # the continuous receiver
             if heard is None:  # none left
                 break  # done
             found.append(heard)  # keep it
+        found, self.combined = found + self.combined, []  # and any long beacon that decoded by adding copies together
         return found  # everything that completed
 
     def _search(self):  # look for one whole frame in the store
@@ -98,7 +102,10 @@ class Listener:  # the continuous receiver
             return None  # nothing to find
         trace = [] if self.on_search is not None else None  # the receiver's candidate list, if anyone wants it
         self.searches += 1  # count it
-        result = receive(self.store, trace=trace, long_beacons=self.searches % LONG_EVERY == 0)  # run the modem receiver over everything kept (the long pattern too, every fourth time)
+        long_failed = []  # long-beacon candidates that were all there but did not decode alone
+        result = receive(self.store, trace=trace, long_beacons=self.searches % LONG_EVERY == 0, long_failed=long_failed)  # run the modem receiver over everything kept (the long pattern too, every fourth time)
+        for candidate, soft in long_failed:  # each may be one copy of a beacon heard before, or to be heard again
+            self._combine(candidate, soft)  # try it with the copies kept
         result.sample = self._number(result.start)  # where it began in the stream
         if trace is not None:  # someone keeps a signal log
             for step in trace:  # every candidate tried
@@ -121,6 +128,24 @@ class Listener:  # the continuous receiver
         first = self._number(max(start - pad, 0))  # the stream's number for its first sample
         self._cut(start, end)  # cut the frame out so it is not found again
         return Heard(result, audio, first)  # hand it over
+
+    def _combine(self, candidate, soft):  # a long-beacon candidate that did not decode alone
+        """Give `soft` to the combiner once; if it decodes with earlier copies, queue the long beacon to be handed over."""
+        start = int(round(candidate["start"]))  # where it begins in the store
+        soft.sample = self._number(start)  # and in the stream
+        place = soft.sample // (2 * longbeacon.LONG.samples)  # the same candidate found again lands in the same place, give or take
+        if any(key in self.offered for key in (place - 1, place, place + 1)):  # given to the combiner already
+            return  # once is enough
+        self.offered[place] = soft.sample  # remember it
+        for key in [key for key, sample in self.offered.items() if soft.sample - sample > 4 * self.window]:  # places long gone from the store
+            del self.offered[key]  # forget them
+        out = self.combiner.offer(soft, soft.sample / FS)  # try it with the copies kept (the stream's own clock)
+        if out is None:  # not readable yet
+            return  # kept for the next copy
+        fields, margin, copies = out  # the beacon, how clearly it stood out, and how many copies it took
+        result = RxResult(start=float(start), sync_quality=soft.quality, offset_hz=soft.offset_hz, drift_hz_s=soft.drift_hz_s, level=LONG_LEVEL, frame_type=FRAME_TYPE_LONG, header_copy="none (long beacon)", sample=soft.sample)  # a report for it, placed at the newest copy
+        longbeacon._fill(result, fields, margin, copies)  # the fields and the signal reading (per copy)
+        self.combined.append(Heard(result, self.store[max(start, 0):start + longbeacon.SAMPLES].copy(), self._number(max(start, 0))))  # hand it over with the newest copy's audio
 
     def _number(self, position):  # a place in the store, as a number in the stream
         """Return the stream's number for store position `position` (worked out past either end of the store)."""

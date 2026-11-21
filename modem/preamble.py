@@ -42,13 +42,19 @@ def make_preamble(spec):  # what the transmitter sends at the start of every fra
     return symbols_to_audio(pattern_tones(spec.number), spec)  # the level's twelve tones, one after another
 
 
-def detect_preamble(x, spec, max_offset_hz=50.0, keep=3):  # what the receiver does first, once per level
+def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False):  # what the receiver does first, once per level
     """Look for the preamble of level `spec` in `x`.
 
     Returns a list (strongest first, at most `keep` long, empty when `x`
     is too short) of dicts with: start (sample where the frame begins),
     offset_hz (how far off frequency the signal is) and quality (the
     pattern's energy compared with the background; about 1 for noise).
+
+    With `whiten`, the energy at each frequency is first divided by its
+    own typical (median) level over the whole of `x`, so a steady carrier
+    or a noisy patch of the band counts for no more than quiet noise does.
+    A Kestrel tone sits on any one frequency only briefly, so the typical
+    level there is still the noise's. The long beacon is searched this way.
     """
     tones = pattern_tones(spec.number)  # this level's pattern
     n, hop = spec.samples, spec.samples // HOPS  # block length and step between blocks, in samples
@@ -63,6 +69,8 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3):  # what the receiver d
     power = np.empty((count, high - low))  # the energy near the pattern's tones, block by block
     for first in range(0, count, CHUNK):  # a few hundred blocks at a time
         power[first:first + CHUNK] = np.abs(np.fft.rfft(blocks[first:first + CHUNK], PAD * n, axis=1)[:, low:high]) ** 2  # transform, keep the useful part
+    if whiten:  # level out the band first
+        power = power / (np.median(power, axis=0) + 1e-9 * float(power.max()) + 1e-30)  # each frequency in units of its own typical level (with a floor, so stretches of digital silence do not blow up)
     shifts = np.arange(-reach, reach + 1)  # the frequency errors tried
     total = np.zeros((starts, len(shifts)))  # the energy total for every start and every frequency error
     for k, centre in enumerate(bins):  # one tone of the pattern at a time
