@@ -8,7 +8,7 @@
 - Fading limits re-measured (Section 5.2), 40 frames a point: L0 -8, L1 -2, L2 -8, L3 -1, L4 0 dB (were -12, -10, -9, -4, -1, measured with fewer frames a point). Frames are now lost mainly in light, slow fading, where a fade can cover a whole preamble; retries recover them.
 - 80 m meeting frequency 3590.0 kHz added (Section 6.9), with working frequencies 3594.0 and 3597.0 kHz; notes on choosing 80 m or 40 m by time of day; the reference program now refuses to transmit outside the U.S. amateur data segments.
 - Roadmap (new Section 10): prove the link; a WSPR-like bottom level; nets and mail; a VARA-like top level. Document history is now Section 11.
-- Reference program (not part of the signal): optional recording of received audio to WAV files; File > Decode a recording; reports of Kestrel signatures heard but too weak or faded to read; callsign confirmation; a warning when the radio's ALC reads high during a transmission.
+- Reference program (not part of the signal): optional recording of received audio to WAV files; File > Decode a recording; reports of Kestrel signatures heard but too weak or faded to read; callsign confirmation; a warning when the radio's ALC reads high during a transmission; an optional signal log for analysis (every preamble candidate, frame, near miss, transmission and meter reading, on one sample timeline with the recordings) and tools/signal_report.py to summarise it.
 
 ## 0.25 (draft) - 19 November 2026
 

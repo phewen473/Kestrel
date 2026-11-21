@@ -59,6 +59,8 @@ class Recorder:  # writes received audio to hourly WAV files
         self.written = 0  # samples written to the open file
         self.path = ""  # the open file's name
         self.files = []  # every file this recorder has made
+        self.total = 0  # samples written so far, across all files (the recording's own timeline)
+        self.on_open = None  # if set, called with (path, sample) each time a file starts: sample is where it begins on that timeline
 
     def _open(self):  # start a new file
         stamp = time.strftime("%Y%m%d_%H%M%SZ", time.gmtime(self.clock()))  # UTC time, as in the logbook
@@ -74,6 +76,8 @@ class Recorder:  # writes received audio to hourly WAV files
         self.handle.setframerate(FS)  # 12,000 samples per second
         self.written = 0  # nothing in it yet
         self.files.append(self.path)  # remember it
+        if self.on_open is not None:  # someone keeps a record of where each file starts
+            self.on_open(self.path, self.total)  # tell them
         prune(self.folder)  # and tidy away old recordings
 
     def write(self, samples):  # add audio
@@ -87,6 +91,7 @@ class Recorder:  # writes received audio to hourly WAV files
             pcm = (np.clip(part, -1.0, 1.0) * 32767.0).astype("<i2")  # 16-bit little-endian integers, clipped at full scale
             self.handle.writeframes(pcm.tobytes())  # into the file
             self.written += len(part)  # count them
+            self.total += len(part)  # and on the whole timeline
             if self.written >= self.file_seconds * FS:  # the file is full
                 self.close()  # finish it; the next write starts another
 
@@ -97,29 +102,58 @@ class Recorder:  # writes received audio to hourly WAV files
             self.handle = None  # no file open now
 
 
-class RecordingSource:  # an audio source that records what passes through it
-    """Wraps a source with read() and flush() (see audio.AudioIn): everything read is also written to a Recorder."""
+class TimedSource:  # an audio source that keeps count of the samples read through it
+    """Wraps a source with read() and flush() (see audio.AudioIn) and counts every sample that passes, so each sample has a number and a time.
 
-    def __init__(self, source, recorder):  # wrap a source
+    Sample number n arrived at about t0 + n / 12000 seconds (UTC, as from
+    time.time()). The listener, the signal log and the recording all use
+    these numbers, so an event in the signal log can be found in the
+    recording and in the clock.
+    """
+
+    def __init__(self, source, clock=time.time):  # wrap a source
         self.source = source  # the real source
-        self.recorder = recorder  # where copies go
+        self.clock = clock  # where the time comes from (a test can supply its own)
+        self.samples = 0  # samples read so far: the number the next sample will get
+        self.t0 = None  # the UTC time of sample 0, set by the first audio to arrive
 
-    def read(self):  # collect audio, keeping a copy
-        """Return what the real source returns, after writing it to the recording."""
+    def _count(self, chunk):  # note audio that has passed through
+        """Count `chunk` and, the first time, fix the time of sample 0."""
+        if len(chunk) and self.t0 is None:  # the first audio of all
+            self.t0 = self.clock() - len(chunk) / FS  # it began this long ago
+        self.samples += len(chunk)  # count it
+
+    def utc_of(self, sample):  # when a numbered sample arrived
+        """Return the UTC time (seconds since 1970) of sample number `sample`, or None before any audio has arrived."""
+        return None if self.t0 is None else self.t0 + sample / FS  # from the start time and the sample rate
+
+    def read(self):  # collect audio, counting it
+        """Return what the real source returns, after counting it."""
         chunk = self.source.read()  # the new audio
-        if len(chunk):  # there is some
-            self.recorder.write(chunk)  # record it
+        self._count(chunk)  # count it
         return chunk  # and pass it on
 
-    def flush(self):  # throw away audio received while transmitting
-        """Discard what the real source has collected, after recording it, so the recording keeps an unbroken timeline."""
-        chunk = self.source.read()  # take what has piled up (mostly this station's own transmission, as the radio hears it)
-        if len(chunk):  # there is some
-            self.recorder.write(chunk)  # record it, so times in the file match the clock
+    def flush(self):  # throw away audio received while transmitting, still counting it
+        """Discard what the real source has collected, counting it so the numbers keep step with the clock."""
+        self._count(self.source.read())  # take what has piled up and count it
         self.source.flush()  # and let the real source drop anything left
 
-    def __getattr__(self, name):  # anything else (lost, level, spectrum ...) comes from the real source
+    def __getattr__(self, name):  # anything else (lost, level, spectrum, close ...) comes from the real source
         return getattr(self.source, name)  # look it up there
+
+
+class RecordingSource(TimedSource):  # an audio source that records what passes through it
+    """Wraps a source with read() and flush() (see audio.AudioIn): everything read is also written to a Recorder, and counted as TimedSource does."""
+
+    def __init__(self, source, recorder, clock=time.time):  # wrap a source
+        super().__init__(source, clock)  # counting, as TimedSource
+        self.recorder = recorder  # where copies go
+
+    def _count(self, chunk):  # note audio that has passed through
+        """Count `chunk` and write it to the recording."""
+        super()._count(chunk)  # count it
+        if len(chunk):  # there is some
+            self.recorder.write(chunk)  # record it, so the recording keeps the same unbroken timeline (audio heard while transmitting included)
 
 
 def read_wav(path):  # load a recording for decoding

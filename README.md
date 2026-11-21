@@ -133,6 +133,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-21: signal log for analysis and debugging (Settings > Logging > Signal log: off by default; text only, or with each frame's audio under a 500 MB cap), every received sample numbered on one timeline shared with the recordings, tools/signal_report.py to summarise the logs, decode_wav.py --signal-log.
 - 2026-11-21, spec v0.26 (new signal version): the second header copy moved to the end of every frame and the receiver ranks preambles by how much of their energy sits on the pattern, which removed most losses in simulated fading; fading limits re-measured; 80 m meeting frequency 3590.0 kHz; frequencies outside the U.S. data segments refused; received audio can be recorded and decoded later (File > Decode a recording, tools/decode_wav.py); signals heard but too weak to read are reported; callsign confirmation; ALC warning.
 - 2026-11-19: Windows setup program (packaging/): a self-contained installer with its own Python and Hamlib's rigctld, for a PC with nothing on it; installed copies keep each user's settings and logs in %LOCALAPPDATA%\Kestrel; Kestrel.exe --check.
 - 2026-11-19, spec v0.25: Available / Unavailable switch (Ctrl+U): when away, beacons are presence beacons and a call by name gets one short "not available" reply; every station's status shows in Stations heard.

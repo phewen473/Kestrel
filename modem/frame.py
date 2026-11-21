@@ -226,6 +226,8 @@ class RxResult:  # the receiver's report
     hops: int = 0  # relays so far (fully addressed frames only)
     life_hours: int = 0  # hours the message may still be kept (fully addressed frames only)
     seen_level: int = -1  # when no header could be read: the level whose signature pattern stood out most (a "near miss"); -1 otherwise
+    header_copy: str = ""  # which header copy was read: "first", "both" (the two combined) or "second"; empty when none was
+    sample: int = -1  # where the frame began in a continuous stream, counted in samples from the start of listening (set by live.Listener; -1 otherwise)
     fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
 
@@ -261,7 +263,12 @@ def _check_header(llrs, spec):  # decode soft header bits and check them
 
 
 def _read_header(x, header_start, offset, spec):  # read the header that follows a preamble
-    """Return the header bits found after a preamble of level `spec`, or None when no header checks out.
+    """Return the header bits found after a preamble of level `spec`, or None when no header checks out (see _read_header_how)."""
+    return _read_header_how(x, header_start, offset, spec)[0]  # the bits alone
+
+
+def _read_header_how(x, header_start, offset, spec):  # read the header, and say which copy gave it
+    """Return (header bits, which copy) after a preamble of level `spec`; (None, "") when no header checks out. Which copy is "first", "both" or "second".
 
     The first copy follows the preamble. If it does not check out, the
     second copy is read at the end of each possible body, combined with the
@@ -272,21 +279,21 @@ def _read_header(x, header_start, offset, spec):  # read the header that follows
     before believing a header.
     """
     if header_start < 0 or header_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x):  # the first copy is not (yet) wholly inside the recording
-        return None  # nothing to read
+        return None, ""  # nothing to read
     first = _header_llrs(x, header_start, offset, spec)  # soft bits of the first copy
     bits = _check_header(first, spec)  # try it alone
     if bits is not None:  # it checked out
-        return bits  # the usual case
+        return bits, "first"  # the usual case
     for total in _body_totals():  # every place the second copy could be
         second_start = header_start + (HEADER_SYMBOLS_ONCE + total) * spec.samples  # just after a body of that length
         if second_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x) + spec.samples // 4:  # not (yet) inside the recording
             continue  # cannot try this length yet
         second = _header_llrs(x, second_start, offset, spec)  # soft bits of the second copy
-        for llrs in (first + second, second):  # both copies together, then the second alone (in case the first was badly faded)
+        for llrs, how in ((first + second, "both"), (second, "second")):  # both copies together, then the second alone (in case the first was badly faded)
             bits = _check_header(llrs, spec)  # try it
             if bits is not None and _body_total(bits) == total:  # it checked out and agrees with where it was found
-                return bits  # found it
-    return None  # no header here
+                return bits, how  # found it, and which copy it came from
+    return None, ""  # no header here
 
 
 def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a frame once its header is known
@@ -371,12 +378,18 @@ def _score(result):  # how believable a failed attempt is
     return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
-def receive(x, blank=True, prior_llrs=None):  # the receiver
+def receive(x, blank=True, prior_llrs=None, trace=None):  # the receiver
     """Find and decode one frame in the audio `x`.
 
     `prior_llrs` may hold the body_llrs of an earlier failed copy of the
     same frame; they are added to this copy's soft bits before decoding
     (this is the "combine retries" feature, HARQ).
+
+    `trace`, if a list, receives one dict per preamble candidate tried, in
+    the order tried: level, start (sample in `x`), offset_hz, quality,
+    header ("first", "both", "second" or "" when none checked out), and,
+    when a body was tried, ok, reason, snr_db and fade_index. It is for
+    signal logs and debugging; the result does not depend on it.
     """
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
@@ -387,10 +400,15 @@ def receive(x, blank=True, prior_llrs=None):  # the receiver
     candidates.sort(key=lambda pair: -pair[0]["quality"])  # try the candidate that stands furthest above the background first
     best = None  # the most believable failed attempt so far
     for found, spec in candidates:  # each candidate, at the level its pattern belongs to
-        header = _read_header(x, found["start"] + preamble_samples(spec), found["offset_hz"], spec)  # the header follows the preamble
+        header, how = _read_header_how(x, found["start"] + preamble_samples(spec), found["offset_hz"], spec)  # the header follows the preamble
+        step = {"level": spec.number, "start": int(found["start"]), "offset_hz": float(found["offset_hz"]), "quality": float(found["quality"]), "header": how}  # what this candidate was (for the trace)
+        if trace is not None:  # someone wants the details
+            trace.append(step)  # record it now; the body's outcome is added below
         if header is None:  # no header there
             continue  # not a frame
         attempt = _decode_body(x, found, spec, header, prior_llrs)  # try to read the body
+        attempt.header_copy = how  # which header copy was read
+        step.update(ok=attempt.ok, reason=attempt.reason, snr_db=float(attempt.snr_db), fade_index=float(attempt.fade_index))  # the body's outcome, for the trace
         if attempt.ok:  # the body checked out too
             return attempt  # this is the frame
         if best is None or _score(attempt) > _score(best):  # otherwise remember the most believable failure

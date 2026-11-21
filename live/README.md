@@ -18,7 +18,8 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 | `logbook.py` | `Logbook`: a CSV file per UTC day at three levels of detail (basic, advanced, verbose) and an ADIF file of completed contacts |
 | `telemetry.py` | Telemetry messages (TLM1, spec Section 6.12): build one from the heard log, read one back, and compare stations |
 | `theme.py` | Light and dark looks for the control panel, and following Windows' own setting |
-| `recorder.py` | `Recorder` and `RecordingSource`: save the received audio to hourly 16-bit WAV files (12,000 samples per second, kept 7 days), and `read_wav` to read any WAV file back at the modem's rate |
+| `recorder.py` | `TimedSource`: numbers every received sample, so the listener, the signal log and the recordings share one timeline (sample n arrived at t0 + n / 12000); `Recorder` and `RecordingSource`: save the received audio to hourly 16-bit WAV files (12,000 samples per second, kept 7 days); `read_wav` reads any WAV file back at the modem's rate |
+| `signallog.py` | `SignalLog`: the signal log, a JSON Lines file per UTC day for analysis and debugging (every strong preamble candidate and what became of it, every frame with all the receiver's measurements, near misses, transmissions, the radio's meters, frequency changes, link decisions, input level and clock checks), with optional WAV clips of each frame under a size cap. Off unless turned on |
 | `mixer.py` | Windows' recording level for a sound device, through the `pycaw` package, for the panel's receive-level slider |
 
 The tools that use them are in `tools/`: `kestrel_panel.py` (the control panel), `live_devices.py`, `live_monitor.py`, `live_send.py`, `live_station.py` and `live_frequencies.py`.

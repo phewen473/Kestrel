@@ -139,7 +139,30 @@ def call_request(target, after_contact, say=print):  # a directed call the opera
     return request  # ready to hand to the station thread
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None):  # the live loop
+def feed_from(listener, source):  # read the source and give the audio to the listener
+    """Read new audio from `source` and feed it to `listener`, with its sample numbers when the source counts them (recorder.TimedSource); return the frames completed."""
+    chunk = source.read()  # the new audio
+    count = getattr(source, "samples", None)  # the timeline's count, if the source keeps one
+    return listener.feed(chunk, at=None if not isinstance(count, int) else count - len(chunk))  # numbered as the timeline numbers them
+
+
+def attach_signal_log(listener, signal_log, dial_khz=None):  # connect a listener to a signal log
+    """Have `listener` report its searches to `signal_log`; return a function to call with each near miss (it logs the miss with its audio)."""
+    if signal_log is None or not signal_log.on:  # no log
+        return lambda result: None  # nothing to do
+    listener.on_search = signal_log.search  # every search
+    return lambda result: signal_log.near(result, listener.near_audio, listener.near_audio_sample, dial_khz() if dial_khz else None)  # every near miss, with its audio
+
+
+def log_tick(signal_log, source):  # the signal log's regular lines
+    """Give `signal_log` the input level and dropout count, for its once-a-minute line."""
+    if signal_log is None or not signal_log.on:  # no log
+        return  # nothing to do
+    level = source.level() if hasattr(source, "level") else None  # the input level, if the source can say
+    signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
+
+
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -161,15 +184,25 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     `on_near`, if given, is called with the receiver's report whenever a
     Kestrel signature is heard whose header cannot be read (a near miss);
     such signals are always mentioned in the running log.
+    `signal_log`, if given (a signallog.SignalLog), gets everything: every
+    search's candidates, every frame and near miss, every transmission,
+    frequency change and line from the link rules. `dial_khz`, if given,
+    is called for the radio's dial frequency to put in those lines.
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
     started = time.monotonic()  # the moment the clock starts
+    log_near = attach_signal_log(listener, signal_log, dial_khz)  # searches and near misses go to the signal log, if there is one
+    logging = signal_log is not None and signal_log.on  # whether there is a signal log to write
+
+    def dial():  # the dial frequency, for the signal log
+        return dial_khz() if dial_khz is not None else None  # if the caller can say
 
     def near(result):  # a Kestrel signature too weak or faded to read
         stamp(near_line(result))  # always tell the operator: it shows a signal is getting through
+        log_near(result)  # and the signal log
         if on_near is not None:  # someone keeps a record
             on_near(result)  # pass it on
 
@@ -195,11 +228,15 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         stamp(f"sending {tx.kind} at L{tx.level}, {tx.seconds:.1f} s  {tx.note}")  # tell the operator
         ptt.key()  # transmitter on
         try:  # whatever happens...
+            if logging:  # a signal log is kept
+                signal_log.tx(tx, True, dial_khz=dial(), gain=getattr(sink, "gain", None))  # the transmitter is on
             if on_transmit is not None:  # someone wants to know the transmitter is on
                 on_transmit(tx, True)  # tell them
             sink.play(tx.audio)  # send the audio
         finally:  # ...the transmitter must come off
             ptt.unkey()  # transmitter off
+            if logging:  # a signal log is kept
+                signal_log.tx(tx, False, dial_khz=dial(), gain=getattr(sink, "gain", None), peak_dbfs=getattr(sink, "last_peak_db", None))  # and off again, with the peak level it reached
             if on_transmit is not None:  # someone wants to know it is off again
                 on_transmit(tx, False)  # tell them
         last_sent[0] = now()  # remember when this transmission ended
@@ -208,8 +245,10 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
 
     stamp(f"{station.call} on the air as {station.role or 'broadcaster'}")  # opening line (a station with no role is only sending a broadcast)
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
-        for heard in listener.feed(source.read()):  # every frame that has completed
+        for heard in feed_from(listener, source):  # every frame that has completed
             result = station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry)
+            if logging:  # a signal log is kept
+                signal_log.rx(heard, station_result=result, dial_khz=dial())  # both decodes, and the clip if clips are kept
             stamp(describe(result))  # tell the operator
             if on_frame is not None:  # someone keeps a detailed log
                 on_frame(result)  # pass on every report, decoded or not
@@ -222,6 +261,9 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         if getattr(source, "lost", 0) > lost:  # the sound card has dropped audio since the last look
             lost = source.lost  # remember the new count
             stamp(f"warning: the sound card lost some received audio ({lost} time(s) so far); a frame may fail and be asked for again")  # tell the operator
+            if logging:  # a signal log is kept
+                signal_log.note("sound card lost received audio", lost=lost)  # keep it there too
+        log_tick(signal_log, source)  # the signal log's once-a-minute lines
         if on_tick is not None:  # another part of the program may have asked for something
             on_tick(station, now())  # let it act, here in the station's own thread
         tx = station.poll(now())  # anything to send without having heard something?
@@ -229,6 +271,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             transmit(tx)  # send it
         for line in station.log[told:]:  # the station's own notes since last time
             say("          " + line)  # pass them on
+            if logging:  # a signal log is kept
+                signal_log.link(line)  # keep them there too
         told = len(station.log)  # remember how far we got
         wanted = station.tuning(now())  # where the link rules want the radio now
         if retune is not None and wanted != tuned:  # a move to a working frequency, or back
@@ -237,6 +281,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             source.flush()  # what was received on the old frequency no longer matters
             listener.clear()  # so forget it
             stamp(f"radio moved to the working frequency ({wanted / 1000.0:+.1f} kHz)" if wanted else "radio back on the calling frequency")  # tell the operator
+            if logging:  # a signal log is kept
+                signal_log.tune(dial(), why=f"working frequency {wanted / 1000.0:+.1f} kHz" if wanted else "back to the calling frequency")  # the move
         if station.state == "RELEASED":  # the contact is over
             if not stay_on:  # one contact was all that was wanted
                 break  # stop

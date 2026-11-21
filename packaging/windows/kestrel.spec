@@ -10,7 +10,7 @@ analysis = Analysis(  # find everything the panel imports
     [os.path.join(ROOT, "tools", "kestrel_panel.py")],  # the program to build
     pathex=[ROOT],  # so the link, live, modem and sim packages are found
     datas=[(os.path.join(ROOT, "VERSION"), ".")],  # the commit stamp, for Help > About
-    hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports"],  # imported inside functions, so the search may not see them
+    hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports", "tools.decode_wav", "tools.signal_report"],  # imported inside functions, so the search may not see them (the two tools serve File > Decode a recording and File > Signal log report)
     excludes=["matplotlib", "pytest", "IPython", "PyQt5", "PyQt6", "PySide6", "notebook"],  # used only by the study tools and tests, not by the panel
     noarchive=False,  # keep the Python files packed in one archive
 )

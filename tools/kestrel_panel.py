@@ -45,7 +45,9 @@ from live import KIND, Listener, call_request, describe, near_line, plain_line, 
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, describe_frequency, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
-from live.recorder import Recorder, RecordingSource, recordings_dir  # recording the received audio to WAV files  # noqa: E402
+from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir  # recording the received audio to WAV files, and numbering every sample received  # noqa: E402
+from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
+from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS  # the speed levels, for how wide each signal is on the scope  # noqa: E402
@@ -60,13 +62,15 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
-            "log_level": "basic", "record_rx": False, "theme": "system",  # (continued: logging, recording and looks)
+            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system",  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
 ANSWER_NAMES = {False: "Just listen: show me beacons and calls; I choose whether to respond", True: "Answer every beacon and call automatically"}  # whether Listen transmits by itself
 CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stations heard list this long
 LOG_NAMES = {"basic": "Basic: messages and contacts", "advanced": "Advanced: adds signal readings, power, stations heard, beacons", "verbose": "Verbose: everything, every frame and meter"}  # logging levels, as the operator sees them
+SIGNAL_NAMES = {"off": "Off", "on": "On: text only (a few MB a day)",  # the signal log, as the operator sees it (continued)
+                "clips": f"On, with each frame's audio (clips kept {KEEP_DAYS} days, at most {CLIPS_MAX_MB} MB)"}  # (continued)
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
 RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
 CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
@@ -213,6 +217,7 @@ class Panel:  # the control panel window
         self.tx_active = False  # True while the transmitter is keyed
         self.tx_kind = ""  # what is being sent, while the transmitter is keyed
         self.alc_warned = False  # whether the operator has been told the ALC is high during this transmission
+        self.signal_log = None  # the signal log of the run under way, if any
         self.meters = {"watts": None, "alc": None, "swr": None, "set_w": None}  # the radio's readings: power out, ALC and SWR while transmitting, and the power setting
         self.poller_stop = threading.Event()  # stops the thread that reads the radio's meters
         self.marks = {}  # stations decoded recently, for the scope: callsign -> (audio frequency, width, when)
@@ -357,6 +362,8 @@ class Panel:  # the control panel window
         file_menu.add_separator()  # a divider
         file_menu.add_command(label="Open the recordings folder", underline=9, command=lambda: self.open_path(recordings_dir(data_dir())))  # the received-audio WAV files
         file_menu.add_command(label="Decode a recording...", underline=0, command=self.decode_recording)  # play a WAV file through the receiver and list what it finds
+        file_menu.add_command(label="Open the signal log folder", underline=5, command=lambda: self.open_path(self.signal_folder()))  # the detailed signal logs
+        file_menu.add_command(label="Signal log report...", underline=7, command=self.signal_log_report)  # summarise the signal logs into a text file
         file_menu.add_separator()  # a divider
         file_menu.add_command(label="Exit", underline=1, accelerator="Alt+F4", command=self.close)  # close the panel
         bar.add_cascade(label="File", underline=0, menu=file_menu)  # put the menu on the bar
@@ -827,6 +834,38 @@ class Panel:  # the control panel window
         self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=f"L{result.seen_level}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
 
+    def signal_folder(self):  # where the signal log goes
+        """Return (creating it if needed) the signal log folder, beside the logbook."""
+        folder = os.path.join(LOG_FOLDER, "signal")  # beside the CSV logs
+        os.makedirs(folder, exist_ok=True)  # make sure it exists
+        return folder  # the folder
+
+    def signal_log_report(self):  # File > Signal log report
+        """Summarise the signal logs (all of them, or from a date the operator gives) into a text file beside them, and open it."""
+        from tkinter import simpledialog  # a one-line question
+        since = simpledialog.askstring("Kestrel - signal log report", "Report from which UTC date? (YYYY-MM-DD; leave blank for everything)", parent=self.root)  # the start date
+        if since is None:  # cancelled
+            return  # nothing to do
+        since = since.strip() or None  # blank means everything
+
+        def job():  # the background part
+            from tools import signal_report  # the report tool (imported here, so the panel starts as fast as before)
+            folder = self.signal_folder()  # where the logs are
+            try:  # the logs may be unreadable
+                events, files = signal_report.load([folder], since=since)  # read them
+                if not files:  # nothing logged yet
+                    self.say("no signal logs yet: turn on Settings > Logging > Signal log, then run Listen or Monitor")  # say how to start one
+                    return  # nothing to report
+                path = os.path.join(folder, time.strftime("report_%Y%m%d_%H%M%SZ.txt", time.gmtime()))  # the report file
+                with open(path, "w", encoding="utf-8") as handle:  # write it
+                    handle.write("\n".join(signal_report.report(events)) + "\n")  # the report
+                self.say(f"signal log report ({len(events)} events from {len(files)} file(s)) saved to {path}")  # say where
+                self.root.after(0, lambda: self.open_path(path))  # and open it, from the window's own thread
+            except (OSError, ValueError) as problem:  # unreadable
+                self.say(f"could not make the signal log report: {problem}")  # say why
+
+        threading.Thread(target=job, daemon=True).start()  # report without freezing the window
+
     def decode_recording(self):  # File > Decode a recording
         """Ask for a WAV file, play it through the receiver in the background, and list what it finds in the log window."""
         path = filedialog.askopenfilename(parent=self.root, title="Choose a recording to decode", initialdir=recordings_dir(data_dir()), filetypes=[("WAV recordings", "*.wav"), ("All files", "*.*")])  # which file
@@ -881,6 +920,9 @@ class Panel:  # the control panel window
                 if self.tx_active:  # transmitting: read the meters
                     self.meters["watts"], self.meters["alc"], self.meters["swr"] = read("RFPOWER_METER_WATTS"), read("ALC"), read("SWR")  # power out, ALC and SWR
                     alc = self.meters["alc"]  # the ALC reading, 0 to 1 of the radio's scale
+                    log = self.signal_log  # the run's signal log (read once: the run may end meanwhile)
+                    if log is not None:  # one is kept
+                        log.meters(self.meters["watts"], alc, self.meters["swr"])  # every reading during the transmission
                     if alc is not None and alc >= ALC_HIGH and not self.alc_warned:  # the audio is driving the radio too hard
                         self.alc_warned = True  # once per transmission is enough
                         self.say(f"warning: the radio's ALC reads {alc:.2f} of full scale; lower the transmit slider (Ctrl+J) until ALC barely moves, or the tones will be distorted")  # tell the operator what to do
@@ -1635,7 +1677,9 @@ class Panel:  # the control panel window
         note(logging, 1, f"Logs are kept in {LOG_FOLDER}:\none CSV file per UTC day (opens in a spreadsheet), and an ADIF file of completed contacts for logging programs.")  # where
         ttk.Button(logging, text="Open the log folder", command=self.open_logs).grid(row=2, column=0, sticky="w", padx=8)  # look at them
         field(logging, 3, "record_rx", "Record received audio", names=RECORD_NAMES, width=56)  # save what the receiver hears
-        note(logging, 4, f"Recordings go in {recordings_dir(data_dir())}, one WAV file per hour.\nTurn this on for on-air tests: File > Decode a recording plays a file back through the receiver and lists every\nframe and every signal that was heard but could not be read. It takes effect the next time Listen or Monitor starts.")  # what it is for
+        note(logging, 4, f"Recordings go in {recordings_dir(data_dir())}, one WAV file per hour (about 86 MB an hour, kept 7 days).\nTurn this on for on-air tests: File > Decode a recording plays a file back through the receiver and lists every\nframe and every signal that was heard but could not be read. It takes effect the next time Listen or Monitor starts.")  # what it is for
+        field(logging, 5, "signal_log", "Signal log (for analysis)", names=SIGNAL_NAMES, width=56)  # the detailed signal log
+        note(logging, 6, f"The signal log goes in {os.path.join(LOG_FOLDER, 'signal')}, one file per UTC day: every signal the receiver\nlooked at, every frame (SNR, fading, offset, which header copy was read), every transmission and the radio's meters.\ntools/signal_report.py summarises it. Off uses no disk space. It takes effect the next time Listen or Monitor starts.")  # what it is and what it costs
         quick = page("Quick messages")  # the quick messages
         for number in (1, 2, 3):  # each one
             field(quick, number - 1, f"quick{number}", f"Quick message {number}", width=60)  # its template
@@ -1710,7 +1754,7 @@ class Panel:  # the control panel window
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
-        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level", "record_rx")  # the ones that bear on a transmission
+        keys = ("call", "grid", "rig_model", "cat_port", "ptt", "audio_in", "audio_out", "gain", "keep_open", "working", "beacon_every_min", "beacon_autostop_min", "auto_answer", "log_level", "record_rx", "signal_log")  # the ones that bear on a transmission
         return "; ".join(f"{key}={self.settings[key]}" for key in keys)  # as one line
 
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)
@@ -1841,10 +1885,18 @@ class Panel:  # the control panel window
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
             self.audio = source  # let the scope and the meter show what it hears
+            signal_log = self.signal_log = SignalLog(self.signal_folder(), prefix=self.logbook.name, mode=job.get("signal_log", "off"))  # the detailed signal log (writes nothing when off)
             if job.get("record_rx"):  # the operator wants the received audio saved
                 recorder = Recorder(recordings_dir(data_dir()), label=job["call"])  # hourly WAV files
-                source = RecordingSource(source, recorder)  # everything read is also written to the recording
+                recorder.on_open = signal_log.recording_file  # the signal log notes where each file starts on the timeline
+                source = RecordingSource(source, recorder)  # everything read is also written to the recording, and numbered
                 self.say(f"recording received audio to {recorder.folder}")  # say where
+            else:  # no recording
+                source = TimedSource(source)  # still number every sample, for the signal log
+            signal_log.session_start(mode, timeline=source, call=job["call"], grid=job["grid"], dial_khz=job["entry"]["dial_khz"], band=job["entry"].get("band"), rig=self.rig_name(),  # (continued)
+                                     audio_in=job["audio_in"], audio_out=job["audio_out"], gain=job["gain"], recording=bool(job.get("record_rx")), settings=self.settings_summary())  # the run's starting point
+            if signal_log.on:  # the operator turned it on
+                self.say(f"signal log on ({signal_log.mode}): {signal_log.path()}")  # say where
             with self.rig_lock:  # one user of rig control at a time while it starts and tunes
                 address = self.rig_address(job)  # start or find rig control for the chosen radio
                 if address:  # rig control is set up
@@ -1857,18 +1909,21 @@ class Panel:  # the control panel window
             self.logbook.write("settings", station=job["call"], text=f"settings at the start of {mode}", dial_khz=job["entry"]["dial_khz"], detail=self.settings_summary())  # the verbose log keeps a record
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
-                listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result))  # signals heard but not readable are shown too
+                log_near = attach_signal_log(listener, signal_log, lambda: round(self.dial_hz() / 1000.0, 1))  # searches and near misses to the signal log, if on
+                listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result), log_near(result))  # signals heard but not readable are shown too
                 watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
                 self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
                 self.outbox = job["messages"] + self.outbox  # messages wait for the next time Listen runs
                 self.say("monitoring: receive only, nothing will be transmitted")  # opening line
                 while not self.stop.is_set():  # until stopped
-                    for heard in listener.feed(source.read()):  # every frame that has completed
+                    for heard in feed_from(listener, source):  # every frame that has completed
+                        signal_log.rx(heard, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the signal log (nothing when off)
                         self.say(describe(heard.result))  # show it
                         self.log_frame(heard.result)  # the verbose log
                         if heard.result.ok:  # it decoded
                             self.note_heard(heard.result)  # add its sender to the stations heard
                             watcher.handle(heard.result, time.monotonic())  # and let the watcher collect any broadcast
+                    log_tick(signal_log, source)  # the signal log's once-a-minute lines
                     time.sleep(0.1)  # a tenth of a second between looks
                 return  # done
             ptt = Ptt(job["ptt"], job["port"] or None, rig=rig)  # the transmit switch
@@ -1884,7 +1939,8 @@ class Panel:  # the control panel window
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
-            run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near)  # the live loop, until stopped
+            run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
+                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1))  # the live loop, until stopped, with the signal log
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
@@ -1893,9 +1949,14 @@ class Panel:  # the control panel window
             self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)")  # the outcome for sent traffic
         except Exception as problem:  # report any failure instead of dying silently
             self.say(f"stopped by a problem: {problem}")  # what went wrong
+            if self.signal_log is not None:  # a signal log was started
+                self.signal_log.note("stopped by a problem", problem=repr(problem))  # keep it there too
             self.mode = "off"  # nothing is running now
             self.root.after(0, lambda: self.mode_var.set("off"))  # show it (from the window's own thread)
         finally:  # always tidy up
+            if self.signal_log is not None:  # a signal log was started
+                self.signal_log.session_end(mode=mode)  # close the run in it
+                self.signal_log = None  # no log until the next run
             if recorder is not None:  # audio was being recorded
                 recorder.close()  # finish the file
                 self.say(f"recording saved: {', '.join(os.path.basename(path) for path in recorder.files)}")  # say which files
@@ -1948,6 +2009,11 @@ def self_check():  # Kestrel.exe --check: is everything the program needs presen
         note(bool(devices), f"sound system: {sum(1 for d in devices if d[2] > 0)} input and {sum(1 for d in devices if d[3] > 0)} output devices")  # how many
     except Exception as problem:  # no sound library or no sound system
         note(False, f"sound system: {problem}")  # say so
+    try:  # the tools the File menu uses (in the installed program they must have been packed in)
+        from tools import decode_wav, signal_report  # noqa: F401  # decoding recordings and summarising signal logs
+        note(True, "tools: decode a recording, signal log report")  # present
+    except Exception as problem:  # left out of the build
+        note(False, f"tools: {problem}")  # say so
     program = find_rigctld()  # the rig control program
     models = list_models(program) if program else []  # the radios it knows
     note(bool(program) and bool(models), f"rigctld: {os.path.basename(program) if program else 'not found'}, {len(models)} radio types")  # found and working (the name only: no folder names in the report)
