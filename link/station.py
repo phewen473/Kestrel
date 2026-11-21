@@ -204,6 +204,15 @@ class Station:  # the link rules for one station
             audio = build_frame(item["text"], level, item["part"], item["parts"], msg_id=number, dest="ALL", origin=self.call, hops=0, life_hours=BROADCAST_LIFE_HOURS)  # a fully addressed frame for everyone
             self.broadcasts.append((audio, level, f"to ALL, msg {number} part {item['part'] + 1}/{item['parts']}"))  # wait for a free moment
 
+    def unqueue(self, text, to=None):  # take back a message that has not started to go
+        """Remove the newest waiting message with this `text` and address from the outbox; return True if one was removed. A message already under way is left alone."""
+        wanted = clean_call(to) if to else None  # the address as the outbox holds it
+        for index in range(len(self.outbox) - 1, -1, -1):  # newest first
+            if self.outbox[index] == text and self.outbox_to[index] == wanted and not (index == 0 and self.plan):  # the same message, and not the one being sent
+                del self.outbox[index], self.outbox_to[index]  # take it out, with its address
+                return True  # removed
+        return False  # nothing matched
+
     def _sendable(self):  # which waiting message can go to the present partner?
         """Return the position in the outbox of the first message for this partner (or for anyone), or None."""
         for index, to in enumerate(self.outbox_to):  # oldest first

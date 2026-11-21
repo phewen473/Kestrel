@@ -409,3 +409,14 @@ def test_unavailable_station_sends_presence_beacons_that_nobody_answers():  # th
     heard = b.hear(beacon.audio)  # B hears it
     assert heard.ok and heard.fields["listening"] is False  # the beacon says A is not taking contacts
     assert b.handle(heard, beacon.seconds + 1.0) is None  # so B does not answer
+
+
+def test_a_waiting_message_can_be_taken_back():  # a queued message can be removed before it starts to go
+    station = Station("Q1AAAA", "EM92")  # a station with nothing under way
+    station.queue("FIRST", to="Q2BB")  # a message for one station
+    station.queue("SECOND")  # and one for whoever the partner is
+    assert station.unqueue("FIRST", "Q2BB") is True  # the addressed one is taken back
+    assert station.outbox == ["SECOND"] and station.outbox_to == [None]  # only the other remains, with its address
+    assert station.unqueue("FIRST", "Q2BB") is False  # it cannot be removed twice
+    station.plan = [{"text": "SECOND", "part": 0, "parts": 1}]  # the remaining message is now under way
+    assert station.unqueue("SECOND") is False and station.outbox == ["SECOND"]  # a message being sent is left alone

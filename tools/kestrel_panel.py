@@ -313,6 +313,15 @@ class Panel:  # the control panel window
         for column in range(3):  # the three lists share the width
             lists.columnconfigure(column, weight=1)  # equally
         self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
+        change = ttk.Frame(self.to_send.master)  # buttons under that list
+        change.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
+        ttk.Button(change, text="Edit message", command=self.edit_message).pack(side="left", padx=(0, 4))  # change the selected waiting message
+        ttk.Button(change, text="Delete message  Del", command=self.remove_message).pack(side="left")  # take back the selected messages
+        self.to_send.bind("<Delete>", lambda event: self.remove_message())  # the Delete key does the same
+        self.send_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a message brings up
+        self.send_menu.add_command(label="Edit message...", command=self.edit_message)  # change it
+        self.send_menu.add_command(label="Delete message", accelerator="Del", command=self.remove_message)  # take it back
+        self.to_send.bind("<Button-3>", self.send_menu_at)  # a right click selects the message under the pointer and shows the menu
         self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
         self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
         keep = ttk.Frame(self.stations.master)  # buttons under that list
@@ -1423,6 +1432,80 @@ class Panel:  # the control panel window
             self.say(f"queued for the next contact{' with ' + to if to else ''}: {text}")  # confirm
         self.save_outbox()  # a waiting message is kept even if the panel is closed
         return True  # accepted
+
+    def send_menu_at(self, event):  # a right click on the list of messages to send
+        row = self.to_send.identify_row(event.y)  # the message under the pointer
+        if not row:  # the click was on empty space
+            return  # no menu
+        if row not in self.to_send.selection():  # it is not among those already chosen
+            self.to_send.selection_set(row)  # choose it alone
+        self.send_menu.tk_popup(event.x_root, event.y_root)  # show Edit and Delete at the pointer
+
+    def edit_message(self):  # change a message that is still waiting
+        """Open a small window to change the address and text of the selected waiting message."""
+        rows = self.to_send.selection()  # the rows chosen
+        if len(rows) != 1 or self.to_send.set(rows[0], "state") != "waiting":  # not exactly one message that has yet to go
+            messagebox.showinfo("Kestrel", "Select one message that is still waiting in the Messages to send list.\n\nA message that is being sent, or has gone, cannot be changed.", parent=self.root)  # say what can be edited
+            return  # nothing to do
+        row = rows[0]  # the message to change
+        old_text, shown = self.to_send.set(row, "text"), self.to_send.set(row, "to")  # what it says and who it is for, as listed
+        old_to = "" if shown == "partner" else shown  # the address as the queue holds it
+        top = self.window("edit", "Kestrel - edit message")  # the window
+        ttk.Label(top, text="To (blank: whoever the partner is)").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))  # label of the address
+        to_box = ttk.Entry(top, width=12)  # the address
+        to_box.grid(row=0, column=1, sticky="w", padx=8, pady=(8, 2))  # place it
+        to_box.insert(0, old_to)  # as it is now
+        ttk.Label(top, text="Message").grid(row=1, column=0, sticky="w", padx=8, pady=2)  # label of the text
+        text_box = ttk.Entry(top, width=70)  # the text
+        text_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)  # place it
+        text_box.insert(0, old_text)  # as it is now
+        text_box.focus_set()  # ready to type
+
+        def save():  # the operator accepts the change
+            text, to = text_box.get().strip(), to_box.get().strip().upper()  # the new text and address
+            if not text or (to and to == self.settings["call"].strip().upper()):  # nothing to send, or addressed to this station itself
+                messagebox.showinfo("Kestrel", "The message needs some text, and To cannot be this station's own callsign.", parent=top)  # say so
+                return  # stay in the window
+            if not self.to_send.exists(row) or self.to_send.set(row, "state") != "waiting":  # the message went, or was deleted, while the window was open
+                messagebox.showinfo("Kestrel", "That message is no longer waiting, so it was not changed.", parent=top)  # say so
+                top.destroy()  # close the window
+                return  # nothing changed
+            if self.station is not None:  # a station is running and holds the queue
+                self.ask_station(lambda station: (station.unqueue(old_text, old_to or None) and station.queue(text, to=to or None)) or True, f"changed{' for ' + to if to else ''}: {text}")  # swap the old message for the new, unless the old has started to go
+            elif (old_text, old_to) in self.outbox:  # it waits here for the next run
+                self.outbox[self.outbox.index((old_text, old_to))] = (text, to)  # replace it where it stands
+                self.say(f"changed{' for ' + to if to else ''}: {text}")  # confirm
+            self.to_send.set(row, "to", to or "partner")  # the list shows the new address
+            self.to_send.set(row, "text", text)  # and the new text
+            self.save_outbox()  # the saved queue follows the list
+            top.destroy()  # close the window
+
+        buttons = ttk.Frame(top)  # Save and Cancel
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=8, pady=8)  # under the boxes
+        ttk.Button(buttons, text="Save", command=save).pack(side="left", padx=(0, 4))  # accept
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="left")  # back out
+        top.bind("<Return>", lambda event: save())  # Enter saves
+
+    def remove_message(self):  # take the selected messages off the list to send
+        """Remove the selected rows of "Messages to send": a waiting message is taken out of the queue, a finished one is only cleared from the list."""
+        rows = self.to_send.selection()  # the rows chosen
+        if not rows:  # none
+            messagebox.showinfo("Kestrel", "Select the message to remove in the Messages to send list first.", parent=self.root)  # say so
+            return  # nothing to do
+        for row in rows:  # each chosen row
+            state, text, to = self.to_send.set(row, "state"), self.to_send.set(row, "text"), self.to_send.set(row, "to")  # how far it has got, what it says, who it is for
+            if state == "sending":  # it is going out now
+                self.say(f"not removed, it is being sent: {text}")  # leave it alone
+                continue  # next row
+            if state == "waiting":  # not yet started
+                address = "" if to == "partner" else to  # the address as the queue holds it
+                if self.station is not None:  # a station is running and holds the queue
+                    self.ask_station(lambda station, text=text, address=address: station.unqueue(text, address or None) or True, f"removed from the queue: {text}")  # ask it to take the message back
+                elif (text, address) in self.outbox:  # it waits here for the next run
+                    self.outbox.remove((text, address))  # take it out
+                    self.say(f"removed from the queue: {text}")  # confirm
+            self.to_send.delete(row)  # off the list
+        self.save_outbox()  # the saved queue follows the list
 
     def broadcast_message(self):  # send the typed message to every station listening
         text = self.message.get().strip()  # what was typed
