@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.31R2 (draft) - 22 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.30**; 0.30, 0.31, 0.31R1 and 0.31R2 stations work together.
+- Near misses (a signature whose header cannot be read) are shown to the operator only when at least 7 of the 12 pattern tones stand out in their own slots: likely a real Kestrel frame (Section 5.3, "Receiver side"). Other modes' signals, which caused nearly all the "possible Kestrel signature" lines on the air, show 0 to 2. Weak real patterns, which the old strength test (6 times the background) never reached, are now reported. The same signal is shown once a minute at most. The signal log still keeps strong patterns that fail the test, with the tone count.
+- Measured and not adopted: guessing a control frame's header when it does not read (1 more frame in about 120 weak failures).
+- The reference program: compiled library interface 11 (every signature whose frame passed without a header is handed back to the caller, which decides). The signal log report counts the likely near misses separately.
+
 ## 0.31R1 (draft) - 22 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30**; 0.30, 0.31 and 0.31R1 stations work together. Every improvement below is in the receiver, so a station gains from it whatever the other station runs.

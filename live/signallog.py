@@ -247,7 +247,7 @@ class SignalLog:  # writes the signal log
         if not self.on:  # turned off
             return None  # nothing to do
         clip = self.clip(audio, "near", result.seen_level, audio_sample) if audio is not None else None  # the audio, if clips are kept
-        return self.write("near", sample=result.sample, sig_utc=self.sig_utc(result.sample), dial_khz=dial_khz, seen_level=result.seen_level, quality=result.sync_quality, offset_hz=result.offset_hz, clip=clip)  # the line
+        return self.write("near", sample=result.sample, sig_utc=self.sig_utc(result.sample), dial_khz=dial_khz, seen_level=result.seen_level, quality=result.sync_quality, offset_hz=result.offset_hz, pattern_tones=getattr(result, "pattern_tones", -1), clip=clip)  # the line (pattern_tones: how many of the 12 pattern tones stood out, since 0.31R2)
 
     # --- transmitting and the radio ----------------------------------------------------------------------
 

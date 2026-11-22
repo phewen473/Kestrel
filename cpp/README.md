@@ -12,7 +12,9 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 10)
+## What is in it so far (interface version 11)
+
+Interface 11 (0.31R2): the listener hands back every signature whose frame passed without a header (a possible near miss); Python counts its pattern tones, decides whether to report it, and cuts it out if it does.
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|

@@ -8,7 +8,7 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 
 | File | Contents |
 |---|---|
-| `listener.py` | `Listener`: a receiver that takes audio as it arrives and gives back each frame once, when it is complete; it can also report a Kestrel preamble heard clearly whose header could not be read (a "near miss": the other station is there but too weak or faded) |
+| `listener.py` | `Listener`: a receiver that takes audio as it arrives and gives back each frame once, when it is complete; it can also report a Kestrel preamble whose header could not be read (a "near miss": the other station is there but too weak or faded). Since 0.31R2 a near miss carries `pattern_tones`, how many of its 12 pattern tones stood out; `likely_kestrel` (7 or more) tells a real Kestrel frame from another mode's signal, and only those are shown to the operator (runner.py `NearFilter`, once a minute per signal) |
 | `audio.py` | Sound-card input and output (through the `sounddevice` package), with conversion between the card's 48,000 samples per second and the modem's 12,000 |
 | `ptt.py` | `Ptt`: keys the transmitter by rigctld, a CAT command, the RTS line, the DTR line, or not at all (VOX) |
 | `rig.py` | `RigCtl`: sets frequency and mode, and keys the transmitter, through Hamlib's `rigctld` |

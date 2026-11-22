@@ -152,6 +152,7 @@ All of these are now written into the specification (sections 4 and 5).
 | `interleave.py` | The bit shuffler |
 | `crc.py`, `bits.py`, `text.py` | Check values, bit helpers, and text to bits |
 | `blanker.py` | Static-crash blanker |
+| `frame.py` (0.31R2 addition) | `pattern_seen`: how many of a signature's 12 pattern tones are the strongest tone in their own slots (12 for a clear frame, 5 to 9 at the limit, 0 to 2 for other modes' signals); the listener's near-miss test |
 | `frame.py` (0.31R1 additions) | `Hints` and `Prior`: a control frame that fails alone is tried added to earlier failed copies and with the callsigns the station expects (`RxResult.assisted` says how it was read) |
 | `notch.py` | Steady signals (carriers) notched out of the whole band before searching and decoding (since 0.31R1) |
 | `native.py` | The bridge to the compiled library (`cpp/`): blanker, notch, Viterbi decoder, tone-band measurement, pattern search, fine timing, header reading, pilot tracking, noise tracking, the LDPC decoder, the whole body decoder, the continuous receiver, the transmitter, and (since interface 8) the packing of text, addresses, control fields and check values run compiled when it is present; each returns None otherwise, or when the library refuses, and the Python code runs instead (and raises its own error where there is one). `KESTREL_NATIVE=0` switches it off; `set_threads(n)` limits its threads |

@@ -249,6 +249,7 @@ class RxResult:  # the receiver's report
     fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
     assisted: str = ""  # how a control frame that failed alone was read after all (copies added together, an expected callsign); empty when it read alone (since 0.31R1)
+    pattern_tones: int = -1  # for a signature whose header could not be read: how many of the 12 pattern tones stood out in their slots (a real Kestrel frame shows most of them; another mode's signal only one or two); -1 when not measured (since 0.31R2)
 
 
 COMBINE_OFFSET_HZ = 4.0  # earlier failed copies of a control frame are added to a new one only if their frequency offsets agree this closely (the same station)
@@ -335,6 +336,21 @@ def _rescue_control(llrs, frame_type, offset_hz, sample, hints):  # read a faile
                 expected = ", ".join(f"{name} {call}" for name, call in assignment.items())  # what was assumed
                 return data, (together + "; " if together else "") + f"expecting {expected}"  # done
     return None, ""  # no help was enough
+
+
+def pattern_seen(x, found, spec):  # how much of a level's signature pattern is really there
+    """Return how many of the 12 pattern tones at `found` are the strongest of all the level's tones in their own slots.
+
+    A real Kestrel frame shows most of them (all 12 when it is clear; 5 to 9
+    at the edge of decoding). Another mode's signal that happens to match
+    the pattern's total shows only one or two. The strongest chance matches
+    in plain noise show 2 to 5, and 7 about once in two thousand (since
+    0.31R2; see live/listener.py NEAR_TONES).
+    """
+    if found["start"] < 0 or found["start"] + PREAMBLE_TONES * spec.samples > len(x):  # the pattern is not all in the audio
+        return 0  # nothing to count
+    energies = tone_energies(band_energies(x, found["start"], PREAMBLE_TONES, spec, found["offset_hz"]), spec)  # every tone's energy in each of the 12 slots
+    return int(np.sum(np.argmax(energies, axis=1) == np.asarray(pattern_tones(spec.number))))  # slots where the pattern's tone is the strongest
 
 
 def _body_total(bits):  # how many body tones a header says follow it

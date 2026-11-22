@@ -27,6 +27,7 @@ from modem import native  # the compiled modem library (when present, the patter
 from modem.blanker import blank_impulses  # removes static crashes before searching
 from modem.notch import remove_steady  # notches steady signals (carriers) out of the band
 from modem.frame import Hints, Prior  # help for reading weak control frames (since 0.31R1)
+from modem.frame import pattern_seen  # how much of a signature pattern is really there (since 0.31R2)
 from modem.frame import _body_total, _read_header_how  # how long a frame is by its header, and reading a header
 from modem.preamble import detect_preamble, fine_time, preamble_samples  # the signature-pattern search, the fine timing of a candidate, and a pattern's length
 from modem import longbeacon  # the long beacon's length and limit
@@ -38,7 +39,8 @@ WINDOW_S = 100.0  # how much audio is kept: longer than the longest frame (90 s)
 STEP_S = 1.0  # how often the stored audio is searched
 PAD_S = 0.5  # audio kept either side of a frame when it is handed over
 FAILED_SNR_SLACK_DB = 4.0  # a frame that fails its check is only reported if its pilots read within this many dB of its level's limit
-NEAR_QUALITY = 6.0  # a signature pattern standing this far above the background counts as a "near miss" when its header cannot be read (noise alone stays below about 3.5 in simulation; 6 leaves a margin for real band noise)
+NEAR_QUALITY = 6.0  # a signature whose header cannot be read, standing this far above the background, is reported (for the signal log) even when it is not likely Kestrel by the tone test below; before 0.31R2 this alone made a "near miss" (noise alone stays below about 3.5 in simulation)
+NEAR_TONES = 7  # a signature whose header cannot be read is "likely Kestrel" when at least this many of its 12 pattern tones stand out in their own slots (since 0.31R2). Measured in simulation: a real frame at the edge of decoding shows 5 to 9, another mode's signal 1 or 2, and the strongest chance matches in plain noise 2 to 5 (7 about once in two thousand, 8 never in 4,500)
 LONGEST_FRAME = (PREAMBLE_TONES + HEADER_SYMBOLS + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
 LONG_EVERY = 4  # the long beacon's pattern is looked for on every fourth search only: it costs about 0.4 s a search, and a long beacon lasts a minute, so finding it a few seconds later loses nothing
 NEAR_QUALITY_MAX = 10000.0  # above this the measure has broken down (stretches of digital silence), so it is not a signal
@@ -46,6 +48,16 @@ PRIOR_KEEP_S = 1800  # failed control frames are kept this long (half an hour), 
 PRIOR_MOST = 16  # and at most this many of them
 CONTEXT_S = 4.0  # incremental search: audio searched before the newest, beyond what one pattern needs, so the background is measured fairly
 GATE = (0.002, 0.002, 0.003, 0.010, 0.012)  # incremental search: a pattern scoring below this (by level) is not followed up. Measured on simulated noise and frames, the strongest chance match scored 0.001, 0.001, 0.002, 0.005 and 0.008, and real frames 1 dB below each level's decoding limit (steady and fading) at least 0.004, 0.006, 0.005, 0.028 and 0.032 (one L4 frame in 40 was not found at all). The long beacon has no gate: copies too weak to read alone are kept for adding together
+
+
+def likely_kestrel(result):  # is a near miss likely a real Kestrel frame?
+    """Return True when most of a near miss's signature pattern stood out (at least NEAR_TONES of its 12 tones): a real Kestrel frame too weak or faded to read, not another mode's signal (since 0.31R2)."""
+    return getattr(result, "pattern_tones", -1) >= NEAR_TONES  # the tone test
+
+
+def worth_reporting(result):  # should a near miss be reported at all?
+    """Return True for a near miss worth handing to on_near: likely Kestrel, or a signature standing well above the background (kept for the signal log, though the Activity log shows only likely ones)."""
+    return likely_kestrel(result) or NEAR_QUALITY <= result.sync_quality <= NEAR_QUALITY_MAX  # either test
 
 
 @dataclass  # a plain record
@@ -116,6 +128,7 @@ class Listener:  # the continuous receiver
         self.combined = []  # long beacons decoded by combining, waiting to be handed over
         self.on_near = None  # if set, called with the receiver's report whenever a Kestrel signature is seen but its header cannot be read
         self.near_audio, self.near_audio_sample = None, -1  # the audio of the latest near miss, while on_near is being called
+        self.near_strong = []  # stream samples where strong near misses that were not likely Kestrel began (not cut out, so the stretch after each is not reported again; since 0.31R2)
         self.on_search = None  # if set, called after every search with (result, trace): the receiver's report and its list of candidates tried, with "sample" (stream numbers) added to each
         self.incremental = incremental  # search only the new audio (since 0.31), or the whole store every time (the reference)
         self.pending = []  # incremental search: candidates found, as dicts: level, stream (sample number where the pattern starts), offset_hz, quality
@@ -284,7 +297,7 @@ class Listener:  # the continuous receiver
                     trace.append({"level": item["level"], "start": start, "offset_hz": item["offset_hz"], "quality": item["quality"], "header": ""})  # this try
                 if start + wait <= len(self.store):  # its whole frame has passed and no header was ever read
                     self.pending.remove(item)  # let it go
-                    self._near_miss(RxResult(reason="header check failed", start=float(start), sync_quality=item["quality"], offset_hz=item["offset_hz"], seen_level=item["level"]))  # but report a clear signature that could not be read
+                    self._near_miss(RxResult(reason="header check failed", start=float(start), sync_quality=item["quality"], offset_hz=item["offset_hz"], seen_level=item["level"]), x=x, found=found)  # but report a clear signature that could not be read
                 continue  # next candidate
             body = _body_total(header)  # its body length (None for a frame type that does not exist: a chance header from noise)
             if body is None:  # no such frame
@@ -330,9 +343,9 @@ class Listener:  # the continuous receiver
             if kind == 3:  # a candidate whose header could not be read (yet)
                 if trace is not None:  # someone wants the details
                     trace.append({"level": level, "start": start, "offset_hz": offset, "quality": quality, "header": ""})  # this try
-                if ev[6] == 1 and self.on_near is not None:  # also a clear signature that never gave a header: a near miss (already cut out)
-                    self.near_audio, self.near_audio_sample = core.near_audio(), int(ev[7])  # its audio, for a signal log that keeps clips
-                    self.on_near(RxResult(reason="header check failed", start=float(start), sync_quality=quality, offset_hz=offset, seen_level=level))  # report it
+                if ev[6] == 1 and self.on_near is not None:  # also a signature whose frame has passed without a header: perhaps a near miss
+                    near = RxResult(reason="header check failed", start=float(start), sync_quality=quality, offset_hz=offset, seen_level=level)  # what was seen
+                    self._near_miss(near, x=x, found={"start": found_start, "offset_hz": offset}, audio=core.near_audio(), audio_sample=int(ev[7]))  # reported if worth it, as the Python bookkeeping does
                 continue  # next candidate
             if kind == 2:  # a long beacon, all arrived
                 spec = longbeacon.LONG  # its pattern and tone length
@@ -490,16 +503,43 @@ class Listener:  # the continuous receiver
         self.store = np.concatenate([self.store[:start], self.store[end:]])  # the audio
         self.index = np.concatenate([self.index[:start], self.index[end:]])  # and its numbers
 
-    def _near_miss(self, result):  # a signature with no readable header
-        """Call on_near once for a clear Kestrel signature whose header could not be read (a frame heard but too weak or faded to decode)."""
-        if self.on_near is None or result.seen_level < 0 or not NEAR_QUALITY <= result.sync_quality <= NEAR_QUALITY_MAX:  # nobody wants to know, nothing stood out, or the measure broke down (digital silence)
+    def _near_miss(self, result, x=None, found=None, audio=None, audio_sample=-1):  # a signature with no readable header
+        """Call on_near once for a Kestrel signature whose header could not be read, when it is worth reporting (see worth_reporting).
+
+        `x` is the audio the signature was found in (the store, if not
+        given) and `found` its start and frequency (the result's, if not
+        given); how many of its pattern tones stand out is counted there
+        and kept in the result's `pattern_tones` (since 0.31R2). `audio` and
+        `audio_sample` are its clip and where that began in the stream, when
+        the library kept them (otherwise they are taken from the store).
+
+        A near miss likely to be Kestrel has its stretch cut out, so neither
+        it nor the chance matches inside the same signal are reported again.
+        One that is only strong (another mode's signal, most likely) is
+        reported for the signal log but cuts nothing, so it cannot remove a
+        real Kestrel pattern near it; others within the same stretch after
+        it are not reported (since 0.31R2).
+        """
+        if self.on_near is None or result.seen_level < 0 or result.seen_level >= len(LEVELS):  # nobody wants to know, or no level stood out
             return  # nothing to report
         start = int(round(result.start))  # where the signature begins in the store
         span = (PREAMBLE_TONES + HEADER_SYMBOLS // 2) * LEVELS[0].samples  # the longest a preamble and first header copy can be (the slowest level): the level guess from a pattern alone is not reliable
         wait = min(LONGEST_FRAME, self.window - 2 * self.step)  # the whole frame, or as long as the store can hold the signature (the longest frame outlasts the 100-second store)
-        if start + wait > len(self.store):  # the second header copy, at the end of the frame, may not have arrived yet
+        if start + wait > self._size():  # the second header copy, at the end of the frame, may not have arrived yet
             return  # look again later
-        self.near_audio = self.store[max(start, 0):start + span].copy()  # the signature's audio, for a signal log that keeps clips
-        self.near_audio_sample = self._number(max(start, 0))  # and where it began in the stream
+        x = self.store if x is None else x  # where to count the pattern's tones
+        found = found if found is not None else {"start": float(result.start), "offset_hz": result.offset_hz}  # and where in it
+        result.pattern_tones = pattern_seen(x, found, LEVELS[result.seen_level])  # how much of the pattern is really there
+        if not worth_reporting(result):  # neither likely Kestrel nor strong
+            return  # not reported
+        here = self._number(max(start, 0))  # where it began in the stream
+        likely = likely_kestrel(result)  # a real Kestrel frame, by the tone test
+        if not likely:  # only strong
+            if any(abs(here - other) < span for other in self.near_strong):  # inside the stretch of one reported already
+                return  # the same signal again
+            self.near_strong = [other for other in self.near_strong if here - other < 2 * span] + [here]  # remembered (recent ones only)
+        self.near_audio = audio if audio is not None else self._slice(start, start + span)  # the signature's audio, for a signal log that keeps clips
+        self.near_audio_sample = audio_sample if audio is not None else here  # and where it began in the stream
         self.on_near(result)  # report it
-        self._cut(start, start + span)  # and cut that stretch out so the same signature is not reported again
+        if likely:  # a real Kestrel pattern
+            self._cut(start, start + span)  # cut that stretch out so the same signature is not reported again

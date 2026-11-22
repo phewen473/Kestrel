@@ -41,8 +41,8 @@
 #define KES_CFG_KEEP 5  /* candidates kept per pattern and search */
 #define KES_CFG_HEADER_SYMBOLS 6  /* tones in the two header copies together */
 #define KES_CFG_PREAMBLE_TONES 7  /* tones in a pattern */
-#define KES_CFG_NEAR_QUALITY 8  /* weakest pattern reported as a near miss */
-#define KES_CFG_NEAR_QUALITY_MAX 9  /* strongest (above it the measure has broken down) */
+#define KES_CFG_NEAR_QUALITY 8  /* weakest pattern reported as a near miss (unused since interface 11: the caller decides) */
+#define KES_CFG_NEAR_QUALITY_MAX 9  /* strongest (above it the measure has broken down; unused since interface 11) */
 #define KES_CFG_BLANK_THRESHOLD 10  /* the blanker's threshold */
 #define KES_CFG_BLANK_GUARD 11  /* and guard */
 #define KES_CFG_NOTCH_BLOCK 12  /* the steady-signal notch: block length */
@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 10  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules) */
+#define KES_ABI_VERSION 11  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -185,8 +185,10 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
  *   kes_listener_feed returns 1 when a search is due; then kes_listener_begin (0: too little audio), and
  *   kes_listener_next until it returns 0. Its events, in ev[0..7]: 1 a frame to decode (level, start,
  *   receiver's start, offset, quality, end); 2 a long beacon to read (level, start, start, offset,
- *   quality); 3 a candidate whose header could not be read yet (ev[6] = 1 when it was also a near miss,
- *   whose audio is kes_listener_near_audio and whose stream sample is ev[7]; it has been cut out). The
+ *   quality); 3 a candidate whose header could not be read yet (ev[6] = 1 when its frame has passed
+ *   without one, so it is let go: a possible near miss, whose audio is kes_listener_near_audio and whose
+ *   stream sample is ev[7]; since interface 11 the caller decides whether to report it, and cuts it
+ *   out with kes_listener_cut if it does). The
  *   blanked and notched store the frames are read from is kes_listener_x, valid until the next search. */
 /* The transmitter (modem/frame.py build_frame and build_control, once the bits are packed): code the 24
  * header bits (K = 7) and the body (with its CRC: the convolutional code if is_control, else the LDPC code,

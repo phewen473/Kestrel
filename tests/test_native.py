@@ -289,7 +289,7 @@ def test_compiled_listener_hears_what_the_python_listener_hears():  # the contin
     def hear(compiled):  # run one listener over the stream
         listener = Listener(compiled=compiled)  # the compiled or the Python bookkeeping
         frames, nears, searches = [], [], []  # what it reports
-        listener.on_near = lambda result: nears.append((result.seen_level, listener.near_audio_sample, round(result.sync_quality, 9)))  # near misses
+        listener.on_near = lambda result: nears.append((result.seen_level, listener.near_audio_sample, round(result.sync_quality, 9), result.pattern_tones))  # near misses, with their pattern-tone count
         listener.on_search = lambda result, trace: searches.append([(step["level"], step["sample"], step["header"], step.get("ok")) for step in trace])  # every try, for a signal log
         for begin in range(0, len(x), FS):  # a second at a time
             frames += [(h.result.frame_type, h.result.ok, h.result.sample, h.result.text, h.audio_sample, len(h.audio)) for h in listener.feed(x[begin:begin + FS])]  # each frame handed over

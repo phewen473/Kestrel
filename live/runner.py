@@ -13,7 +13,7 @@ from modem.levels import level_name  # L0 to L4, or LB
 from modem.params import CONTROL_BITS, FRAME_TYPE_LONG  # which frame types are control frames, and the long beacon's
 
 from .busy import ChannelWatch, band_of  # listening before transmitting
-from .listener import Listener  # the continuous receiver
+from .listener import Listener, likely_kestrel  # the continuous receiver, and its test for a near miss that is likely a real Kestrel frame
 
 KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon", 7: "mail notice"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
@@ -116,9 +116,41 @@ def describe(result):  # one line about a received frame
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
 
 
+NEAR_MERGE_S = 60.0  # near misses of the same signal within this many seconds are shown as one line (since 0.31R2)
+NEAR_MERGE_HZ = 5.0  # "the same signal": the same level, within this many hertz
+
+
 def near_line(result):  # one line about a near miss
     """Return a line saying a Kestrel signature was heard but could not be read."""
-    return f"possible Kestrel signature heard (looks like {level_name(result.seen_level)}, about {1500.0 + result.offset_hz:.0f} Hz) but too weak or faded to read (strength {result.sync_quality:.1f})"  # likely level, audio frequency and how strongly the pattern stood out
+    tones = getattr(result, "pattern_tones", -1)  # how much of its pattern stood out, if counted
+    shown = f", {tones} of 12 pattern tones" if tones >= 0 else ""  # said when known
+    return f"possible Kestrel signature heard (looks like {level_name(result.seen_level)}, about {1500.0 + result.offset_hz:.0f} Hz{shown}) but too weak or faded to read (strength {result.sync_quality:.1f})"
+
+
+class NearFilter:  # which near misses the operator is shown (since 0.31R2)
+    """Pass on only near misses likely to be a real Kestrel frame, and only one line per signal per minute.
+
+    Every near miss still goes to the signal log; this decides only what
+    the Activity log and the logbook show. A near miss is shown when most
+    of its signature pattern stood out (listener.likely_kestrel); another
+    one at the same level within NEAR_MERGE_HZ of a signal shown in the last
+    NEAR_MERGE_S seconds is the same signal again, and is not shown.
+    """
+
+    def __init__(self, clock=time.monotonic):  # `clock` gives the time in seconds (a stand-in in tests)
+        self.clock = clock  # the clock
+        self.shown = []  # (level, offset in hertz, when) of the signals shown lately
+
+    def show(self, result):  # should this near miss be shown?
+        """Return True if `result` should be shown to the operator, and remember it."""
+        if not likely_kestrel(result):  # most of its pattern did not stand out: probably another mode's signal, or noise
+            return False  # the signal log has it; nobody else needs to see it
+        now = self.clock()  # the time now
+        self.shown = [item for item in self.shown if now - item[2] < NEAR_MERGE_S]  # forget signals shown more than a minute ago
+        if any(level == result.seen_level and abs(offset - result.offset_hz) <= NEAR_MERGE_HZ for level, offset, _ in self.shown):  # the same signal, shown lately
+            return False  # once a minute is enough
+        self.shown.append((result.seen_level, result.offset_hz, now))  # remembered
+        return True  # show it  # likely level, audio frequency and how strongly the pattern stood out
 
 
 def call_request(target, after_contact, say=print):  # a directed call the operator asked for, to be made in the station's own thread
@@ -226,9 +258,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     def dial():  # the dial frequency, for the signal log
         return dial_khz() if dial_khz is not None else None  # if the caller can say
 
-    def near(result):  # a Kestrel signature too weak or faded to read
-        stamp(near_line(result))  # always tell the operator: it shows a signal is getting through
-        log_near(result)  # and the signal log
+    shown = NearFilter()  # which near misses the operator sees (since 0.31R2)
+
+    def near(result):  # a signature too weak or faded to read
+        log_near(result)  # the signal log keeps every one
+        if not shown.show(result):  # not likely Kestrel, or the same signal again within the minute
+            return  # the operator is not told
+        stamp(near_line(result))  # tell the operator: it shows a Kestrel signal is getting through
         if on_near is not None:  # someone keeps a record
             on_near(result)  # pass it on
 

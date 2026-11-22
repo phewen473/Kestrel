@@ -42,6 +42,7 @@ if ROOT not in sys.path:  # when run as a script
     sys.path.insert(0, ROOT)  # make "modem" and "live" importable
 
 from live.bands import in_data_segment  # names the band a frequency is in  # noqa: E402
+from live.listener import NEAR_TONES  # how many pattern tones make a near miss "likely Kestrel" (since 0.31R2)  # noqa: E402
 from modem.levels import level_name  # L0 to L4, or LB for the long beacon  # noqa: E402
 
 
@@ -147,8 +148,9 @@ def report(events):  # the text report
 
     section("Near misses (Kestrel signature heard, header not readable)")  # signals that got through but not well enough
     near = by["near"]  # every near miss
-    rows = [[level_name(level), count] for level, count in sorted(Counter(event.get("seen_level") for event in near).items(), key=lambda item: item[0] if item[0] is not None else -1)]  # by level
-    out += table(rows, ["looks like", "count"]) if rows else ["none"]  # the table
+    likely = Counter(event.get("seen_level") for event in near if (event.get("pattern_tones") or -1) >= NEAR_TONES)  # those that were likely Kestrel by the tone test (logs from 0.31R2 on)
+    rows = [[level_name(level), count, likely.get(level, 0)] for level, count in sorted(Counter(event.get("seen_level") for event in near).items(), key=lambda item: item[0] if item[0] is not None else -1)]  # by level
+    out += table(rows, ["looks like", "count", "likely Kestrel"]) if rows else ["none"]  # the table
     if near:  # any
         out.append(f"strength {stats(event.get('quality') for event in near)} (min/med/max); audio offset {stats(event.get('offset_hz') for event in near)} Hz")  # how strong, and where
 

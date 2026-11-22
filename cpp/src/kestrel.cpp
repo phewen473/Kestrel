@@ -1439,18 +1439,14 @@ KES_API int kes_listener_next(KesListener *h, double *ev) {  /* listener.py _sea
                 double offset = item->offset, quality = item->quality;  /* its readings */
                 h->drop(id);  /* let it go */
                 ev[6] = 0;  /* no near miss yet */
-                double low = h->cfg[KES_CFG_NEAR_QUALITY], high = h->cfg[KES_CFG_NEAR_QUALITY_MAX];  /* the range a near miss's strength must be in */
-                if (h->near_on && quality >= low && quality <= high) {  /* wanted, and clear enough (listener.py _near_miss) */
+                if (h->near_on) {  /* near misses wanted: the caller counts the pattern's tones, decides, and cuts what it reports (since interface 11) */
                     long span = static_cast<long>(h->cfg[KES_CFG_NEAR_SPAN]);  /* the longest a preamble and first header copy can be */
-                    if (start + wait <= static_cast<long>(h->store.size())) {  /* the second header copy has had time to arrive */
-                        long from = std::max(start, 0L), to = std::min(start + span, static_cast<long>(h->store.size()));  /* the signature's stretch */
-                        h->near_audio.assign(h->store.begin() + from, h->store.begin() + std::max(from, to));  /* its audio */
-                        ev[6] = 1;  /* a near miss to report */
-                        ev[7] = static_cast<double>(h->number(from));  /* where it began in the stream */
-                        ev[4] = offset;  /* its frequency error */
-                        ev[5] = quality;  /* and strength */
-                        h->cut(start, start + span);  /* cut out so it is not reported again */
-                    }  /* end of the report */
+                    long from = std::max(start, 0L), to = std::min(start + span, static_cast<long>(h->store.size()));  /* the signature's stretch */
+                    h->near_audio.assign(h->store.begin() + from, h->store.begin() + std::max(from, to));  /* its audio */
+                    ev[6] = 1;  /* a possible near miss to look at */
+                    ev[7] = static_cast<double>(h->number(from));  /* where it began in the stream */
+                    ev[4] = offset;  /* its frequency error */
+                    ev[5] = quality;  /* and strength */
                 }  /* end of the near miss */
             }  /* end of the timeout */
             return 3;  /* the caller notes the try (and the near miss, if ev[6] is 1) */

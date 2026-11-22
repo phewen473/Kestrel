@@ -329,8 +329,71 @@ def test_listener_reports_a_near_miss_once():  # a clear signature whose header 
     listener.on_near = seen.append  # collect them
     for begin in range(0, len(audio), FS):  # one second at a time
         assert not listener.feed(audio[begin:begin + FS])  # nothing decodes
-    assert len(seen) == 1  # the signature was reported, exactly once
-    assert seen[0].seen_level >= 0  # with a guess at its level
+    from live.listener import NEAR_TONES, likely_kestrel  # the tone test (since 0.31R2)
+    likely = [result for result in seen if likely_kestrel(result)]  # the near misses the operator is shown
+    assert len(likely) == 1  # the signature was reported as likely Kestrel, exactly once
+    assert likely[0].seen_level == 3 and likely[0].pattern_tones >= NEAR_TONES  # at its own level, with most of its pattern there
+    assert len(seen) <= 2  # at most one chance match besides (a strong pattern total just before it, kept only for the signal log)
+
+
+def _feed_all(audio):  # run a listener over some audio, collecting its near misses (for the tests below)
+    from live.listener import Listener  # the continuous receiver
+    from modem.params import FS  # 12,000 samples per second
+    listener, seen, frames = Listener(), [], []  # a receiver, and what it reports
+    listener.on_near = seen.append  # near misses
+    for begin in range(0, len(audio), FS):  # one second at a time
+        frames += listener.feed(audio[begin:begin + FS])  # frames handed over
+    return seen, frames  # both
+
+
+def test_weak_signature_is_reported_as_likely_kestrel():  # a real pattern far too weak for the old strength test (since 0.31R2)
+    import numpy as np  # numerical arrays
+    from live.listener import NEAR_QUALITY, likely_kestrel  # the old test, and the tone test
+    from modem.levels import LEVELS  # the speed levels
+    from modem.params import FS  # 12,000 samples per second
+    from modem.preamble import make_preamble  # a signature pattern with nothing after it
+    rng = np.random.default_rng(21)  # repeatable noise
+    pattern = make_preamble(LEVELS[0])  # an L0 signature, its header lost
+    noise = rng.standard_normal(130 * FS) * 0.05  # 130 seconds of band noise (the frame must pass before a near miss is reported)
+    place = 10 * FS  # where the pattern goes
+    noise[place:place + len(pattern)] += pattern * 0.05 * np.sqrt(10 ** (-18.0 / 10) * (2500 / 6000) / np.mean(np.square(pattern)))  # at -18 dB in 2,500 Hz
+    seen, frames = _feed_all(noise)  # run the receiver over it
+    assert not frames and len(seen) == 1  # nothing decodes; one near miss
+    assert seen[0].seen_level == 0 and seen[0].sync_quality < NEAR_QUALITY  # far below the old strength test, so not reported before 0.31R2
+    assert likely_kestrel(seen[0])  # but most of its pattern stood out
+
+
+def test_other_mode_signal_is_not_likely_kestrel():  # strong 8-FSK bursts (an FT8-like signal) are not taken for Kestrel (since 0.31R2)
+    import numpy as np  # numerical arrays
+    from live.listener import likely_kestrel  # the tone test
+    from modem.params import FS  # 12,000 samples per second
+    rng = np.random.default_rng(8)  # repeatable noise and symbols
+    audio = rng.standard_normal(150 * FS) * 0.05  # band noise
+    t = np.arange(int(12.64 * FS)) / FS  # one burst's time
+    for at in range(5, 120, 15):  # a burst every 15 seconds
+        tones = rng.integers(0, 8, size=len(t) // int(FS / 6.25) + 1)  # random 8-FSK symbols at 6.25 baud
+        freq = 1400.0 + 6.25 * tones[(t * 6.25).astype(int)]  # the frequency over time
+        audio[at * FS:at * FS + len(t)] += 0.5 * np.cos(2 * np.pi * np.cumsum(freq) / FS)  # a strong burst
+    seen, _ = _feed_all(audio)  # run the receiver over it
+    assert not any(likely_kestrel(result) for result in seen)  # whatever matched the pattern's total, none is likely Kestrel
+
+
+def test_near_filter_shows_likely_ones_once_a_minute():  # what the Activity log shows (since 0.31R2)
+    from live.runner import NearFilter, near_line  # the filter, and the line shown
+    from modem.frame import RxResult  # the receiver's report
+    now = [0.0]  # a stand-in clock
+    shown = NearFilter(clock=lambda: now[0])  # the filter
+    def near(level, offset, tones):  # a near miss
+        return RxResult(reason="header check failed", seen_level=level, offset_hz=offset, sync_quality=0.01, pattern_tones=tones)  # as the listener reports it
+    assert not shown.show(near(0, 3.0, 2))  # most of the pattern missing: not shown
+    assert shown.show(near(0, 3.0, 9))  # likely Kestrel: shown
+    assert "9 of 12 pattern tones" in near_line(near(0, 3.0, 9))  # and the line says how much of the pattern was there
+    now[0] = 30.0  # half a minute later
+    assert not shown.show(near(0, 5.0, 10))  # the same signal again: merged
+    assert shown.show(near(0, 40.0, 10))  # another signal (40 Hz away): shown
+    assert shown.show(near(2, 5.0, 10))  # another level: shown
+    now[0] = 61.0  # a minute after the first
+    assert shown.show(near(0, 3.0, 9))  # shown again
 
 
 def test_rig_list_says_why_it_is_empty_and_falls_back(tmp_path, monkeypatch):  # the Settings window's rig type list

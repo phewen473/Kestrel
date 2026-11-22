@@ -38,6 +38,7 @@ if ROOT not in sys.path:  # when run as a script
 from live.listener import Listener  # the continuous receiver  # noqa: E402
 from live.recorder import read_wav  # loads WAV files at the modem's rate  # noqa: E402
 from live.runner import attach_signal_log, describe, near_line  # one-line descriptions of a frame and of a near miss, and the signal log hook-up  # noqa: E402
+from live.listener import likely_kestrel  # whether a near miss is likely a real Kestrel frame (since 0.31R2)  # noqa: E402
 from live.signallog import SignalLog  # the detailed signal log  # noqa: E402
 from modem.params import FS  # the modem's sample rate (12,000)  # noqa: E402
 
@@ -80,7 +81,7 @@ def decode_file(path, say=print, progress=None, signal_log=None):  # one recordi
     def near(result):  # a signature too weak or faded to read
         log_near(result)  # the signal log, if one is kept
         where = result.sample / FS  # its time into the file
-        rows.append({"file": os.path.basename(path), "seconds": round(where, 1), "kind": "near miss", "level": result.seen_level,  # (continued)
+        rows.append({"file": os.path.basename(path), "seconds": round(where, 1), "kind": "near miss, likely Kestrel" if likely_kestrel(result) else "near miss", "level": result.seen_level,  # (continued)
                      "snr_db": "", "fade": "", "offset_hz": round(result.offset_hz, 1), "quality": round(result.sync_quality, 1), "detail": near_line(result)})  # the row
         say(f"  {where:8.1f}s  {near_line(result)}")  # report it
 

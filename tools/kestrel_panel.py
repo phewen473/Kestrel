@@ -50,7 +50,7 @@ from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
 from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir  # recording the received audio to WAV files, and numbering every sample received  # noqa: E402
-from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
+from live.runner import NearFilter, attach_signal_log, feed_from, log_tick  # which near misses to show, the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, Guarded, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
@@ -2759,7 +2759,8 @@ class Panel:  # the control panel window
                 listener = Listener()  # the continuous receiver
                 listener.expect = lambda: (job["call"], self.expected_calls())  # this station's callsign and those it expects, to help read weak frames
                 log_near = attach_signal_log(listener, signal_log, lambda: round(self.dial_hz() / 1000.0, 1))  # searches and near misses to the signal log, if on
-                listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result), log_near(result))  # signals heard but not readable are shown too
+                shown = NearFilter()  # which near misses the operator sees: likely Kestrel, once a minute per signal (since 0.31R2)
+                listener.on_near = lambda result: (log_near(result), shown.show(result) and (self.say(near_line(result)), self.note_near(result)))  # every one to the signal log; the likely ones shown too
                 watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
                 watcher.mail, watcher.carries = self.mailroom, False  # it reads mail notices (a receipt for one of this station's messages still counts) but never holds mail
                 self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
