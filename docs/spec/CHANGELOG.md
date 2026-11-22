@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.31 (draft) - 22 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.30**; 0.30 and 0.31 stations work together.
+- The reference program's continuous receiver searches incrementally: only the audio that arrived since the last search is searched for signature patterns, patterns below a per-level score gate are not followed up, each candidate is timed, read and decoded once, and a candidate whose first header copy failed is retried only where its second copy may now be. On a 2014 computer the old search needed about 1.5 seconds of computing per second of audio and fell behind; the new one needs a fraction of that (live/README.md). The old search is kept as the reference and both decode the same frames in the tests.
+- First step towards a compiled modem core (C++ with a C interface), with the Python modem kept as the reference it must match.
+
 ## 0.30 (draft) - 21 November 2026
 
 - **Signal version 0.30.** Store and forward, the first part of roadmap step 3 (Section 8, rewritten). Stations following 0.29 or earlier cannot carry or deliver mail and ignore mail notices.

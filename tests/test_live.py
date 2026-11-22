@@ -381,3 +381,24 @@ def test_scope_spectrum_zoomed_separates_long_beacon_tones():  # a zoomed-in sco
     assert len(levels) == 720  # one level per point across
     dip = levels[np.argmin(np.abs(hz - 1501.29))]  # the level midway between the two tones
     assert levels[np.argmin(np.abs(hz - 1500.0))] - dip > 5.0 and levels[np.argmin(np.abs(hz - 1502.571))] - dip > 5.0  # each tone stands clear of the gap between them
+
+
+def test_incremental_search_finds_what_the_whole_store_search_finds():  # the 0.31 search against the reference
+    from live.listener import Listener  # the continuous receiver
+    from modem import ChannelReport, build_ack, build_beacon, build_frame  # frames to hide in the noise
+    from sim.channel import run_channel  # fading and frequency error
+    rng = np.random.default_rng(11)  # repeatable
+    x = rng.normal(0.0, 1.0, 90 * FS)  # 90 seconds of band noise at unit power
+    t = 3 * FS  # where the first frame goes
+    for audio, snr in ((build_beacon("Q1AAAA", "EM92", level=2), -10.0), (build_frame("Test message through the noise", level=4), -4.0), (build_ack(5, 7, 0, 0, ChannelReport(-5, 0.1, 2, 3), level=3), -8.0), (build_beacon("Q2BB", "FN31", level=0), -17.0)):  # four frames
+        sig = run_channel(audio, None, rng, "moderate", offset_hz=float(rng.uniform(-15, 15)), lead_s=0.0, tail_s=0.0)  # faded and shifted
+        x[t:t + len(sig)] += sig * np.sqrt(10 ** (snr / 10) * (2500 / 6000) / np.mean(np.square(audio)))  # at its SNR against the noise
+        t += len(sig) + 4 * FS  # a gap, then the next
+    decoded = {}  # what each search decoded
+    for incremental in (False, True):  # the reference, then the new search
+        listener = Listener(incremental=incremental)  # a fresh receiver
+        got = []  # its decodes
+        for begin in range(0, len(x), FS):  # one second at a time
+            got += [(h.result.frame_type, h.result.level, round(h.result.sample / FS)) for h in listener.feed(x[begin:begin + FS]) if h.result.ok]  # each frame decoded, with where it began
+        decoded[incremental] = got  # kept
+    assert decoded[True] == decoded[False] and len(decoded[True]) >= 3  # the same frames, at the same places

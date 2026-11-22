@@ -27,7 +27,16 @@ The tools that use them are in `tools/`: `kestrel_panel.py` (the control panel),
 
 ## How the listener works
 
-The modem's receiver works on a finished recording. A live station only has a stream. The `Listener` keeps the last 100 seconds of audio (longer than the longest frame) and looks through it once a second, which takes well under half a second of computing. When it finds a whole frame it hands the frame over and cuts it out of its store, so no frame is reported twice. A frame that is still arriving is left alone until the rest comes in.
+The modem's receiver works on a finished recording. A live station only has a stream. The `Listener` keeps the last 100 seconds of audio (longer than the longest frame) and looks at it once a second. When it finds a whole frame it hands the frame over and cuts it out of its store, so no frame is reported twice. A frame that is still arriving is left alone until the rest comes in.
+
+**Incremental search (since 0.31).** Before 0.31 the listener searched the whole 100 seconds again every second. That cost about 1.5 seconds of computing per second of audio on a 2014 Xeon, so on older computers it fell behind and decoded frames late. Now it:
+
+- looks for signature patterns only in the audio that arrived since the last look, plus enough before it to hold a whole pattern and 4 seconds more to measure the background;
+- follows up a pattern only if it scores above a per-level gate (`GATE`) set at about twice the best chance match seen in noise, and below what real frames score 1 dB beneath each level's decoding limit (the long beacon has no gate, so weak copies still reach the combiner that adds repeats together);
+- times each pattern finely once, when it is followed up, rather than every candidate every second;
+- remembers each candidate by its place in the stream, reads its header once, keeps the header, and decodes the frame once it has all arrived; a candidate whose first header copy failed is tried again only at places its second copy could now be, until its frame has passed.
+
+On simulated band noise this is about a seventh of the old computing, and on streams with frames about a quarter. On the 2014 Xeon workstation, 24 simulated six-minute streams (frames at every level, steady and fading, long beacons, mostly near their decoding limits) took the old search 1.1 to 1.8 times real time and the new one 0.2 to 0.4 times; the new search decoded 116 frames to the old one's 114 (three the old missed, one it missed itself: a frame at its level's limit whose header read depends on small timing differences). The old search is kept (`Listener(incremental=False)`) and a test checks that both decode the same frames at the same places. The static-crash blanker was also made faster without changing what it does.
 
 ## Rig control
 

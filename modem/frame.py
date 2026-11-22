@@ -272,7 +272,7 @@ def _read_header(x, header_start, offset, spec):  # read the header that follows
     return _read_header_how(x, header_start, offset, spec)[0]  # the bits alone
 
 
-def _read_header_how(x, header_start, offset, spec):  # read the header, and say which copy gave it
+def _read_header_how(x, header_start, offset, spec, since=None):  # read the header, and say which copy gave it
     """Return (header bits, which copy) after a preamble of level `spec`; (None, "") when no header checks out. Which copy is "first", "both" or "second".
 
     The first copy follows the preamble. If it does not check out, the
@@ -282,17 +282,24 @@ def _read_header_how(x, header_start, offset, spec):  # read the header, and say
     looks like a preamble will now and then pass the header check (a few
     times in a thousand), which is why the caller goes on to check the body
     before believing a header.
+
+    `since`, if given, is the length `x` had at an earlier try that found
+    nothing: the first copy alone is not tried again, and the second copy is
+    tried only at places that have arrived since (the continuous receiver
+    tries each candidate again as audio arrives; since 0.31).
     """
     if header_start < 0 or header_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x):  # the first copy is not (yet) wholly inside the recording
         return None, ""  # nothing to read
     first = _header_llrs(x, header_start, offset, spec)  # soft bits of the first copy
-    bits = _check_header(first, spec)  # try it alone
+    bits = _check_header(first, spec) if since is None else None  # try it alone (unless it was tried before)
     if bits is not None:  # it checked out
         return bits, "first"  # the usual case
     for total in _body_totals():  # every place the second copy could be
         second_start = header_start + (HEADER_SYMBOLS_ONCE + total) * spec.samples  # just after a body of that length
         if second_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x) + spec.samples // 4:  # not (yet) inside the recording
             continue  # cannot try this length yet
+        if since is not None and second_start + HEADER_SYMBOLS_ONCE * spec.samples <= since:  # tried at the earlier try already, with the whole copy there (a copy up to a quarter tone short is tried, but tried again once it is all in)
+            continue  # nothing new here
         second = _header_llrs(x, second_start, offset, spec)  # soft bits of the second copy
         for llrs, how in ((first + second, "both"), (second, "second")):  # both copies together, then the second alone (in case the first was badly faded)
             bits = _check_header(llrs, spec)  # try it
@@ -384,7 +391,7 @@ def _score(result):  # how believable a failed attempt is
     return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
-def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_failed=None):  # the receiver
+def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_failed=None, candidates=None):  # the receiver
     """Find and decode one frame in the audio `x`.
 
     `prior_llrs` may hold the body_llrs of an earlier failed copy of the
@@ -402,21 +409,31 @@ def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_
     LONG_LEVEL and frame type FRAME_TYPE_LONG. `long_failed`, if a list,
     receives (candidate, Soft) for each long-beacon candidate that was all
     there but did not decode, for longbeacon.LongCombiner.
+
+    `candidates`, if given, is a list of (found, level) pairs to try instead
+    of searching `x` for signature patterns: found is a dict like those of
+    preamble.detect_preamble (start, offset_hz, quality). The continuous
+    receiver uses it to decode a frame it has already found (since 0.31).
     """
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
         x = blank_impulses(x)  # silence static crashes
     from . import longbeacon  # the long beacon (imported here: it uses this module's body layout)
-    candidates = [(found, spec) for spec in LEVELS for found in detect_preamble(x, spec)]  # look for every level's signature pattern (best few candidates of each)
-    if long_beacons:  # the long beacon's pattern too (signal version 0.27)
-        long_x = longbeacon.clean(x)  # the audio with any steady carrier near the long beacon's tones removed
-        candidates += [(found, longbeacon.LONG) for found in longbeacon.candidates(long_x)]  # its best few
+    long_x = None  # the audio with steady carriers removed, made only if a long beacon is to be read
+    if candidates is not None:  # the caller already knows where to look
+        candidates = list(candidates)  # a copy, to sort
+    else:  # search for them
+        candidates = [(found, spec) for spec in LEVELS for found in detect_preamble(x, spec)]  # look for every level's signature pattern (best few candidates of each)
+        if long_beacons:  # the long beacon's pattern too (signal version 0.27)
+            long_x = longbeacon.clean(x)  # the audio with any steady carrier near the long beacon's tones removed
+            candidates += [(found, longbeacon.LONG) for found in longbeacon.candidates(long_x)]  # its best few
     if not candidates:  # recording too short to hold any preamble
         return RxResult(reason="no preamble found")  # give up
     candidates.sort(key=lambda pair: -pair[0]["quality"])  # try the candidate that stands furthest above the background first
     best = None  # the most believable failed attempt so far
     for found, spec in candidates:  # each candidate, at the level its pattern belongs to
         if spec is longbeacon.LONG:  # a long beacon has no header: its body follows the pattern
+            long_x = longbeacon.clean(x) if long_x is None else long_x  # the audio with carriers removed (made now, when candidates were given)
             attempt = longbeacon.decode_at(long_x, found, RxResult(start=found["start"], sync_quality=found["quality"]), failed=long_failed)  # read it (a copy that fails is handed to the caller for combining)
             step = {"level": spec.number, "start": int(found["start"]), "offset_hz": float(found["offset_hz"]), "quality": float(found["quality"]), "header": "long", "ok": attempt.ok, "reason": attempt.reason, "snr_db": float(attempt.snr_db), "fade_index": float(attempt.fade_index)}  # for the trace
             if trace is not None:  # someone wants the details

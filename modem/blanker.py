@@ -17,14 +17,20 @@ def blank_impulses(x, threshold=4.5, guard=12):  # remove loud spikes
     blocks = -(-len(level) // BLOCK)  # number of neighbourhoods, rounding up
     if blocks == 0:  # an empty recording
         return x.copy()  # nothing to do
-    padded = np.concatenate([level, np.full(blocks * BLOCK - len(level), np.nan)])  # fill the last neighbourhood out with blanks
-    typical = np.nanmedian(padded.reshape(blocks, BLOCK), axis=1) / 0.6745  # the normal level in each neighbourhood (a median is not fooled by a brief spike)
+    full = len(level) // BLOCK  # neighbourhoods that are whole
+    typical = np.empty(blocks)  # the normal level in each neighbourhood (a median is not fooled by a brief spike)
+    if full:  # the whole ones, all at once
+        typical[:full] = np.median(level[:full * BLOCK].reshape(full, BLOCK), axis=1) / 0.6745  # one median per neighbourhood
+    if blocks > full:  # the last one is short
+        typical[full] = np.median(level[full * BLOCK:]) / 0.6745  # its median, from the samples it has (as the padded, NaN-skipping median gave before 0.31)
     quiet = np.median(level[level > 0]) / 0.6745 if (level > 0).any() else 0.0  # the normal level of the whole recording
     typical = np.maximum(typical, quiet)  # a neighbourhood is never judged quieter than the recording as a whole (pure silence would make everything look loud)
     loud = level > threshold * np.repeat(typical, BLOCK)[:len(level)]  # samples much louder than their neighbourhood
     if not loud.any():  # no spikes found
         return x.copy()  # leave the signal alone
-    spread = np.convolve(loud.astype(float), np.ones(2 * guard + 1), mode="same") > 0  # widen each spike by a millisecond either side
+    places = np.flatnonzero(loud)  # where the spikes are
+    widened = (places[:, None] + np.arange(-guard, guard + 1)[None, :]).ravel()  # each spike widened by a millisecond either side
+    widened = widened[(widened >= 0) & (widened < len(x))]  # kept inside the recording
     out = x.copy()  # work on a copy
-    out[spread] = 0.0  # silence the spikes and their edges
+    out[widened] = 0.0  # silence the spikes and their edges
     return out  # the cleaned signal

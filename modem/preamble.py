@@ -42,7 +42,7 @@ def make_preamble(spec):  # what the transmitter sends at the start of every fra
     return symbols_to_audio(pattern_tones(spec.number), spec)  # the level's twelve tones, one after another
 
 
-def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False):  # what the receiver does first, once per level
+def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False, fine=True):  # what the receiver does first, once per level
     """Look for the preamble of level `spec` in `x`.
 
     Returns a list (strongest first, at most `keep` long, empty when `x`
@@ -55,6 +55,11 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False):  # what 
     or a noisy patch of the band counts for no more than quiet noise does.
     A Kestrel tone sits on any one frequency only briefly, so the typical
     level there is still the noise's. The long beacon is searched this way.
+
+    With `fine` False the start is left at the coarse search's quarter-tone
+    step and the frequency at its half-bin step (each dict also gets
+    "coarse": True); fine_time() can then refine a candidate later, which
+    the continuous receiver does only for the few it keeps (since 0.31).
     """
     tones = pattern_tones(spec.number)  # this level's pattern
     n, hop = spec.samples, spec.samples // HOPS  # block length and step between blocks, in samples
@@ -84,30 +89,46 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False):  # what 
         row, col = np.unravel_index(int(np.argmax(work)), work.shape)  # the largest total left
         quality = float(work[row, col]) / background  # how far it stands above the background
         work[max(row - HOPS, 0):row + HOPS + 1, :] = 0  # cross off everything within a tone of it
-        last = len(x) - n * len(tones)  # the latest start that leaves room for the pattern
-        rows = np.arange(len(tones))  # one row per tone
-        column = bins + shifts[col]  # where the pattern's tones sit at this frequency error
-
-        def measure(start):  # the pattern's energy when the recording is cut into tones from `start`
-            pieces = x[start:start + n * len(tones)].reshape(len(tones), n)  # cut exactly into the pattern's tones
-            energy = np.abs(np.fft.rfft(pieces, PAD * n, axis=1)) ** 2  # the energy at every frequency in each
-            return float(energy[rows, column].sum()), float(energy[rows, column - 1].sum()), float(energy[rows, column + 1].sum())  # at the pattern's tones, and half a bin either side
-
-        centre, reach_samples = row * hop, hop  # the search starts a quarter of a tone either side of the coarse answer
-        for step in (max(n // 16, 1), max(n // 128, 1)):  # first a sixteenth of a tone at a time, then an eighth of that
-            span = reach_samples // step  # how many steps to look each side of the centre
-            trial = [centre + k * step for k in range(-span, span + 1) if 0 <= centre + k * step <= last]  # the start times to try, always including the centre itself
-            scores = [measure(t) for t in trial]  # the pattern's energy at each
-            top = int(np.argmax([score[0] for score in scores]))  # the best of them
-            centre, reach_samples = trial[top], step  # look more finely around it next time
-        here, below, above = scores[top]  # the energy at the best start, and half a bin either side in frequency
-        bend = below - 2 * here + above  # how sharply the energy peaks across frequency
-        nudge = 0.5 * (below - above) / bend if bend < 0 else 0.0  # where the true peak lies between the half-bin steps
-        start = float(centre)  # the best start found
-        if 0 < top < len(trial) - 1:  # there is a neighbour on each side: place the start between steps
-            early, late = scores[top - 1][0], scores[top + 1][0]  # the energy one step earlier and one step later
-            curve = early - 2 * here + late  # how sharply the energy peaks across time
-            if curve < 0:  # a true peak
-                start += 0.5 * (early - late) / curve * step  # the top of the parabola through the three points
-        found.append({"start": start, "offset_hz": float((shifts[col] + nudge) * spec.bin_hz / PAD), "quality": quality})  # this candidate
+        if not fine:  # the coarse answer is wanted
+            found.append({"start": float(row * hop), "offset_hz": float(shifts[col] * spec.bin_hz / PAD), "quality": quality, "coarse": True})  # this candidate, unrefined
+            continue  # next
+        found.append(fine_time(x, spec, {"start": float(row * hop), "offset_hz": float(shifts[col] * spec.bin_hz / PAD), "quality": quality}))  # this candidate, refined
     return found  # strongest first
+
+
+def fine_time(x, spec, found):  # refine a candidate's start and frequency
+    """Return a copy of the candidate `found` (start, offset_hz, quality, as detect_preamble gives) with its start found to about 1/128 of a tone and its frequency to a fraction of a half-bin, by measuring the pattern's energy in `x` around the coarse answer."""
+    tones = pattern_tones(spec.number)  # this level's pattern
+    n, hop = spec.samples, spec.samples // HOPS  # tone length and the coarse search's step, in samples
+    bins = PAD * spec.tone_bins[tones]  # where each tone of the pattern sits, in half-bin steps
+    shift = int(round(found["offset_hz"] / (spec.bin_hz / PAD)))  # the coarse frequency error, in half-bin steps
+    row = int(round(found["start"] / hop))  # the coarse start, in quarter tones
+    last = len(x) - n * len(tones)  # the latest start that leaves room for the pattern
+    rows = np.arange(len(tones))  # one row per tone
+    column = bins + shift  # where the pattern's tones sit at this frequency error
+
+    def measure(start):  # the pattern's energy when the recording is cut into tones from `start`
+        pieces = x[start:start + n * len(tones)].reshape(len(tones), n)  # cut exactly into the pattern's tones
+        energy = np.abs(np.fft.rfft(pieces, PAD * n, axis=1)) ** 2  # the energy at every frequency in each
+        return float(energy[rows, column].sum()), float(energy[rows, column - 1].sum()), float(energy[rows, column + 1].sum())  # at the pattern's tones, and half a bin either side
+
+    if last < 0:  # too little audio to hold the pattern
+        return dict(found)  # nothing to refine
+    centre, reach_samples = min(max(row * hop, 0), last), hop  # the search starts a quarter of a tone either side of the coarse answer (kept inside the audio)
+    for step in (max(n // 16, 1), max(n // 128, 1)):  # first a sixteenth of a tone at a time, then an eighth of that
+        span = reach_samples // step  # how many steps to look each side of the centre
+        trial = [centre + k * step for k in range(-span, span + 1) if 0 <= centre + k * step <= last]  # the start times to try, always including the centre itself
+        scores = [measure(t) for t in trial]  # the pattern's energy at each
+        top = int(np.argmax([score[0] for score in scores]))  # the best of them
+        centre, reach_samples = trial[top], step  # look more finely around it next time
+    here, below, above = scores[top]  # the energy at the best start, and half a bin either side in frequency
+    bend = below - 2 * here + above  # how sharply the energy peaks across frequency
+    nudge = 0.5 * (below - above) / bend if bend < 0 else 0.0  # where the true peak lies between the half-bin steps
+    start = float(centre)  # the best start found
+    if 0 < top < len(trial) - 1:  # there is a neighbour on each side: place the start between steps
+        early, late = scores[top - 1][0], scores[top + 1][0]  # the energy one step earlier and one step later
+        curve = early - 2 * here + late  # how sharply the energy peaks across time
+        if curve < 0:  # a true peak
+            start += 0.5 * (early - late) / curve * step  # the top of the parabola through the three points
+    return {"start": start, "offset_hz": float((shift + nudge) * spec.bin_hz / PAD), "quality": found["quality"]}  # the candidate, refined
+
