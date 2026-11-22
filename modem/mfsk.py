@@ -123,6 +123,9 @@ def noise_profile(tone_e, span=NOISE_SPAN):  # how strong the background noise i
     signal does not disturb it), never less than a tenth of the level of
     the whole frame.
     """
+    done = native.noise_profile(tone_e, span, NOISE_TRACKING)  # the compiled version, when the library is in use
+    if done is not None:  # it was
+        return done  # the same levels as the Python below
     whole = noise_level(tone_e)  # the level over the whole frame
     if not NOISE_TRACKING or tone_e.shape[0] < 2 * span + 1:  # tracking is off, or the frame is too short to track within
         return np.full(tone_e.shape[0], whole)  # one level throughout
@@ -151,6 +154,9 @@ def pilot_frequency_fit(x, start, positions, tones, level, offset_hz):  # track 
     """
     positions = np.asarray(positions)  # which symbols are pilots
     tones = np.asarray(tones)  # which tone each pilot used
+    done = native.pilot_fit(x, start, positions, tones, level.samples, level.tone_bins, PAD, FINE_SPAN, offset_hz)  # the compiled version, when the library is in use
+    if done is not None:  # it was
+        return done  # the same fit, to rounding
     groups = max(1, len(positions) // 8)  # split the frame into stretches of about 8 pilots
     track = 0.0  # frequency error found so far, on top of the preamble's estimate
     times = []  # middle time of each stretch

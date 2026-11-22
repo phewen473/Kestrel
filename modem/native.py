@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 3  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 4  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -88,6 +88,13 @@ def _load():  # find, open and check the library
         lib.kes_read_header.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
                                         ctypes.c_int, ctypes.c_int, _INT_P, _INT_P, ctypes.c_size_t, ctypes.c_double, _BYTE_P]  # x, n, start, offset, samples, lo, hi, step, level, totals by type, body totals, count, since, bits
         lib.kes_read_header.restype = ctypes.c_int  # 1 first, 2 both, 3 second, 0 none, -1 bad arguments
+        lib.kes_ldpc_decode.argtypes = [_DOUBLE_P, ctypes.c_long, _LONG_P, _LONG_P, ctypes.c_long, _LONG_P, ctypes.c_double, ctypes.c_int, _BYTE_P]  # llrs, k, edge bits, edge checks, edges, starts, scale, rounds, bits
+        lib.kes_ldpc_decode.restype = ctypes.c_int  # 1 all checks satisfied, 0 gave up, -1 bad arguments
+        lib.kes_noise_profile.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, _DOUBLE_P]  # tone energies, rows, span, tracking, level
+        lib.kes_noise_profile.restype = ctypes.c_int  # 0, or -1
+        lib.kes_pilot_fit.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, _LONG_P, _INT_P, ctypes.c_size_t, ctypes.c_size_t,
+                                      _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
+        lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
         why = ""  # in use: no reason to give
         return lib  # ready
     if not why:  # nothing was found at all
@@ -168,6 +175,15 @@ def band_energies(x, start, nsym, samples, offset_hz, drift_hz_s, lo, hi):  # mo
     return out  # the energies
 
 
+_C_LONG = np.int64 if ctypes.sizeof(ctypes.c_long) == 8 else np.int32  # NumPy's name for a C long (8 bytes on Linux, 4 on Windows)
+
+
+def _longs(values):  # a C array of longs
+    """Return `values` as a contiguous array of C longs, and a pointer to it."""
+    array = np.ascontiguousarray(values, dtype=_C_LONG)  # plain C longs
+    return array, array.ctypes.data_as(_LONG_P)  # the array (kept alive by the caller) and its address
+
+
 def _ints(values):  # a C array of ints
     """Return `values` as a contiguous array of C ints, and a pointer to it."""
     array = np.ascontiguousarray(values, dtype=np.intc)  # plain C ints
@@ -180,7 +196,7 @@ def detect_preamble(x, samples, bins, pad, hops, reach, whiten, keep):  # modem/
         return None  # the caller uses Python
     x = _doubles(x)  # plain doubles
     tones, tones_p = _ints(bins)  # the pattern's tones, in fine steps
-    rows = np.zeros(keep, dtype=np.int_ if ctypes.sizeof(ctypes.c_long) == 8 else np.int32)  # room for the starts (C long: 8 bytes on Linux, 4 on Windows)
+    rows = np.zeros(keep, dtype=_C_LONG)  # room for the starts
     shifts = np.zeros(keep, dtype=np.intc)  # room for the frequency errors
     quality = np.zeros(keep)  # room for the qualities
     got = _lib.kes_detect_preamble(_ptr(x), len(x), int(samples), tones_p, len(tones), int(pad), int(hops), int(reach), int(bool(whiten)), int(keep),
@@ -224,3 +240,48 @@ def read_header(x, header_start, offset_hz, samples, lo, hi, step, level, totals
     if got == 0:  # no header
         return None, ""  # as the Python says it
     return bits, _HOW[got]  # the header, and which copy gave it
+
+
+_GRAPHS = {}  # the LDPC wiring for each code size, converted once for the library
+
+
+def ldpc_decode(llrs, k, graph, scale, rounds):  # modem/ldpc.py decode, compiled
+    """Return (k data bits, True if every check is satisfied), or None when the library is not in use. `graph` is ldpc._graph(k)."""
+    if _lib is None:  # no library
+        return None  # the caller uses Python
+    if k not in _GRAPHS:  # this size not converted yet
+        checks, bits, starts = graph  # the code's wiring
+        _GRAPHS[k] = (_longs(bits), _longs(checks), _longs(starts), len(bits))  # as C arrays, kept for next time
+    (_bits, bits_p), (_checks, checks_p), (_starts, starts_p), edges = _GRAPHS[k]  # the converted wiring
+    llrs = _doubles(llrs)  # plain doubles
+    out = np.zeros(k, dtype=np.uint8)  # room for the data bits
+    ok = _lib.kes_ldpc_decode(_ptr(llrs), int(k), bits_p, checks_p, int(edges), starts_p, float(scale), int(rounds), out.ctypes.data_as(_BYTE_P))  # decode
+    if ok < 0:  # the library refused the arguments
+        return None  # the Python code will handle them
+    return out, bool(ok)  # the bits, and whether every check held
+
+
+def noise_profile(tone_e, span, tracking):  # modem/mfsk.py noise_profile, compiled
+    """Return the noise level at each symbol of `tone_e` (symbols x 32), or None when the library is not in use."""
+    if _lib is None or tone_e.ndim != 2 or tone_e.shape[1] != 32 or tone_e.shape[0] == 0:  # no library, or not the usual shape
+        return None  # the caller uses Python
+    tone_e = _doubles(tone_e)  # plain doubles, row after row
+    level = np.empty(tone_e.shape[0])  # room for the answer
+    if _lib.kes_noise_profile(_ptr(tone_e), tone_e.shape[0], int(span), int(bool(tracking)), _ptr(level)) < 0:  # the library refused
+        return None  # the Python code will handle it
+    return level  # one level per symbol
+
+
+def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, offset_hz):  # modem/mfsk.py pilot_frequency_fit, compiled
+    """Return (extra offset at the first symbol in Hz, drift in Hz per second), or None when the library is not in use."""
+    if _lib is None or len(positions) == 0:  # no library, or no pilots
+        return None  # the caller uses Python
+    x = _doubles(x)  # plain doubles
+    where, where_p = _longs(positions)  # which symbols are pilots
+    which, which_p = _ints(tones)  # which tone each sends
+    bins, bins_p = _ints(tone_bins)  # every tone's FFT bin
+    extra, drift = ctypes.c_double(), ctypes.c_double()  # room for the answers
+    if _lib.kes_pilot_fit(_ptr(x), len(x), float(start), where_p, which_p, len(where), int(samples), bins_p, int(pad), int(fine_span), float(offset_hz),
+                          ctypes.byref(extra), ctypes.byref(drift)) < 0:  # the library refused
+        return None  # the Python code will handle it
+    return extra.value, drift.value  # the fit

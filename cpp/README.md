@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 3)
+## What is in it so far (interface version 4)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -22,6 +22,9 @@ quietly runs in pure Python, as it always has.
 | `kes_detect_preamble` | `modem/preamble.py` `detect_preamble` (coarse search) | same candidates; quality to rounding | about 1.3x on one thread, more with threads |
 | `kes_fine_time` | `modem/preamble.py` `fine_time` | start and frequency to rounding | about 8x |
 | `kes_read_header` | `modem/frame.py` `_read_header_how` | bit for bit | removes almost all the Python work of the header search |
+| `kes_ldpc_decode` | `modem/ldpc.py` `decode` | bit for bit (bits and verdict) | about 2.5x |
+| `kes_noise_profile` | `modem/mfsk.py` `noise_profile` | bit for bit | - |
+| `kes_pilot_fit` | `modem/mfsk.py` `pilot_frequency_fit` | to rounding (about 1e-13 Hz) | - |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is
@@ -32,8 +35,9 @@ beacon side by side, since the library lets go of Python's lock while it works.
 Whole receiver, a simulated 6-minute stream with 8 frames (the same 8 decoded every way):
 pure Python 52.6 s; interface 1 (three routines) 39.7 s; interface 3 15-18 s (sandbox, 2 cores).
 
-Still in Python, in the order they cost: the long beacon's carrier notch, the body decoder
-(pilots, noise tracking, LDPC), and the listener's own bookkeeping. They move next.
+Still in Python: the long beacon's carrier notch and decoder, the small steps that glue the body
+decoder together (soft bits, de-interleaving, the body check, the field unpacking), and the
+listener's own bookkeeping. They move next.
 
 ## Files
 
@@ -70,9 +74,10 @@ match the Python reference.
 
 ## Where things were left
 
-Interface version 3: the receiver's whole front end (blanker, pattern search, fine timing, header
-reading) runs compiled and tested against Python. Next: the body decoder (pilot tracking, noise
-tracking, soft bits, LDPC), then the listener loop itself, then the transmitter and the link rules,
-so that Python is left only in the operator panel.
+Interface version 4: the receiver's front end (blanker, pattern search, fine timing, header reading)
+and the heavy parts of the body decoder (pilot tracking, noise tracking, LDPC) run compiled, tested
+against Python. Next: a single compiled body decoder (soft bits to checked body), the long beacon,
+then the listener loop itself, then the transmitter and the link rules, so that Python is left only
+in the operator panel.
 
 Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).

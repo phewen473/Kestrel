@@ -17,6 +17,8 @@ from functools import lru_cache  # remembers each code after building it once
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, used when present
+
 SEEDS = (0x4B455301, 0x4B455302, 0x4B455303)  # starting values for the three shuffles ("KES" + 1, 2, 3)
 SCALE = 0.8  # min-sum correction factor (the usual choice)
 MAX_ITERATIONS = 80  # give up after this many decoding rounds
@@ -111,6 +113,9 @@ def _graph(k):  # the decoder's wiring for a code with k data bits
 def decode(llrs, k):  # soft codeword -> data bits
     """Decode 2k soft values (positive = probably 0). Returns (k data bits, True if every check is satisfied)."""
     llrs = np.asarray(llrs, dtype=float)  # make sure we have floating-point numbers
+    done = native.ldpc_decode(llrs, k, _graph(k), SCALE, MAX_ITERATIONS)  # the compiled decoder, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits and verdict as the Python below
     checks, bits, starts = _graph(k)  # the code's wiring
     to_check = llrs[bits].copy()  # messages from bits to checks start as the received values
     total = llrs  # running belief about every bit

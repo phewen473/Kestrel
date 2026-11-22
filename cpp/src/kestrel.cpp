@@ -17,6 +17,7 @@
 #include <complex>  /* complex numbers for the FFT */
 #include <cstdint>  /* fixed-size integers */
 #include <cstring>  /* memcpy */
+#include <limits>  /* infinity */
 #include <thread>  /* worker threads */
 #include <vector>  /* growable arrays */
 
@@ -604,5 +605,202 @@ KES_API int kes_read_header(const double *x, size_t n, double header_start, doub
     }  /* end of the places */
     return 0;  /* no header here */
 }  /* end of kes_read_header */
+
+KES_API int kes_ldpc_decode(const double *llrs, long k, const long *edge_bits, const long *edge_checks, long nedges, const long *starts,
+                            double scale, int max_iterations, uint8_t *bits) {  /* modem/ldpc.py decode: normalised min-sum */
+    if (k < 1 || nedges < 1) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    long nbits = 2 * k;  /* the codeword: k data bits then k parity bits */
+    std::vector<double> to_check(static_cast<size_t>(nedges)), to_bit(static_cast<size_t>(nedges));  /* the messages along every edge, each way */
+    std::vector<double> total(llrs, llrs + nbits), sums(static_cast<size_t>(nbits));  /* the belief about every bit, and the check messages added up */
+    std::vector<double> low(static_cast<size_t>(k)), second(static_cast<size_t>(k));  /* per check: the least confident message, and the next */
+    std::vector<long> ties(static_cast<size_t>(k));  /* per check: how many edges carry that least confidence */
+    std::vector<int> odd(static_cast<size_t>(k));  /* per check: is the number of "1" votes odd? */
+    const double inf = std::numeric_limits<double>::infinity();  /* larger than any message */
+    for (long e = 0; e < nedges; ++e) {  /* every edge */
+        to_check[static_cast<size_t>(e)] = llrs[edge_bits[e]];  /* starts as the received value of its bit */
+    }  /* end of the edges */
+    auto check_end = [&](long c) { return c + 1 < k ? starts[c + 1] : nedges; };  /* where check c's edges end */
+    for (int round = 0; round < max_iterations; ++round) {  /* repeat until satisfied, or give up */
+        for (long c = 0; c < k; ++c) {  /* each check */
+            double least = inf;  /* the least confident message into it */
+            long count = 0;  /* how many tie for least */
+            int parity = 0;  /* the parity of its "1" votes */
+            for (long e = starts[c]; e < check_end(c); ++e) {  /* each of its edges */
+                double mag = std::fabs(to_check[static_cast<size_t>(e)]);  /* that message's confidence */
+                least = std::min(least, mag);  /* the least so far */
+                parity ^= to_check[static_cast<size_t>(e)] < 0 ? 1 : 0;  /* its vote */
+            }  /* end of the edges */
+            double runner = inf;  /* the least among the others */
+            for (long e = starts[c]; e < check_end(c); ++e) {  /* each edge again */
+                double mag = std::fabs(to_check[static_cast<size_t>(e)]);  /* its confidence */
+                if (mag == least) {  /* carries the least */
+                    ++count;  /* one more tie */
+                } else {  /* does not */
+                    runner = std::min(runner, mag);  /* a candidate for second */
+                }  /* end of the test */
+            }  /* end of the edges */
+            low[static_cast<size_t>(c)] = least;  /* kept */
+            ties[static_cast<size_t>(c)] = count;  /* kept */
+            second[static_cast<size_t>(c)] = count > 1 ? least : runner;  /* with a tie, the runner-up equals the minimum */
+            odd[static_cast<size_t>(c)] = parity;  /* kept */
+        }  /* end of the checks */
+        std::fill(sums.begin(), sums.end(), 0.0);  /* the check messages, added up per bit, start at zero */
+        for (long e = 0; e < nedges; ++e) {  /* every edge, in order (as NumPy's bincount adds them) */
+            long c = edge_checks[e];  /* its check */
+            double mag = std::fabs(to_check[static_cast<size_t>(e)]);  /* its incoming confidence */
+            bool is_low = mag == low[static_cast<size_t>(c)];  /* it carries the least */
+            double out_mag = (is_low && ties[static_cast<size_t>(c)] == 1) ? second[static_cast<size_t>(c)] : low[static_cast<size_t>(c)];  /* each edge hears the minimum of the others */
+            int neg = to_check[static_cast<size_t>(e)] < 0 ? 1 : 0;  /* its own vote */
+            int out_neg = odd[static_cast<size_t>(c)] ^ neg;  /* the parity of the others */
+            double message = scale * out_mag * (1.0 - 2.0 * out_neg);  /* the message back to the bit */
+            to_bit[static_cast<size_t>(e)] = message;  /* kept */
+            sums[static_cast<size_t>(edge_bits[e])] += message;  /* added to its bit */
+        }  /* end of the edges */
+        for (long b = 0; b < nbits; ++b) {  /* every bit */
+            total[static_cast<size_t>(b)] = llrs[b] + sums[static_cast<size_t>(b)];  /* the received value plus all check messages */
+        }  /* end of the bits */
+        bool satisfied = true;  /* do all checks hold? */
+        for (long c = 0; c < k && satisfied; ++c) {  /* each check, until one fails */
+            int parity = 0;  /* the parity of its bits' current guesses */
+            for (long e = starts[c]; e < check_end(c); ++e) {  /* each edge */
+                parity ^= total[static_cast<size_t>(edge_bits[e])] < 0 ? 1 : 0;  /* that bit's guess */
+            }  /* end of the edges */
+            satisfied = parity == 0;  /* holds or not */
+        }  /* end of the checks */
+        if (satisfied) {  /* the codeword checks out */
+            for (long b = 0; b < k; ++b) {  /* the data bits */
+                bits[b] = total[static_cast<size_t>(b)] < 0 ? 1 : 0;  /* their decisions */
+            }  /* end of the bits */
+            return 1;  /* every check satisfied */
+        }  /* end of the success */
+        for (long e = 0; e < nedges; ++e) {  /* every edge */
+            to_check[static_cast<size_t>(e)] = total[static_cast<size_t>(edge_bits[e])] - to_bit[static_cast<size_t>(e)];  /* each bit tells a check everything except what that check said */
+        }  /* end of the edges */
+    }  /* end of the rounds */
+    for (long b = 0; b < k; ++b) {  /* gave up: the data bits */
+        bits[b] = total[static_cast<size_t>(b)] < 0 ? 1 : 0;  /* best guesses */
+    }  /* end of the bits */
+    return 0;  /* not every check satisfied */
+}  /* end of kes_ldpc_decode */
+
+KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int tracking, double *level) {  /* modem/mfsk.py noise_profile */
+    if (rows == 0 || span < 0) {  /* nothing to do */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    size_t cells = rows * kTones;  /* every tone position of every symbol */
+    double top = *std::max_element(tone_e, tone_e + cells);  /* the strongest energy */
+    std::vector<double> scratch(tone_e, tone_e + cells);  /* a copy to find the median in */
+    double whole = std::max(median_inplace(scratch.data(), cells) / std::log(2.0), 1e-12 * top + 1e-300);  /* the level over the whole frame (mfsk.py noise_level) */
+    size_t width = 2 * static_cast<size_t>(span) + 1;  /* symbols in each neighbourhood */
+    if (!tracking || rows < width) {  /* tracking off, or the frame too short to track within */
+        std::fill(level, level + rows, whole);  /* one level throughout */
+        return 0;  /* done */
+    }  /* end of the simple case */
+    std::vector<double> window(width * kTones);  /* one neighbourhood's energies */
+    for (size_t i = 0; i < rows; ++i) {  /* each symbol */
+        for (size_t w = 0; w < width; ++w) {  /* each symbol of its neighbourhood, mirrored at the frame's ends (as the Python pads) */
+            long at = static_cast<long>(i + w) - span;  /* its place in the frame */
+            if (at < 0) {  /* before the first symbol */
+                at = -at;  /* mirrored: rows span, span - 1, ... 1 */
+            } else if (at >= static_cast<long>(rows)) {  /* after the last */
+                at = 2 * static_cast<long>(rows) - 2 - at;  /* mirrored: rows n - 2, n - 3, ... */
+            }  /* end of the mirroring */
+            std::memcpy(window.data() + w * kTones, tone_e + static_cast<size_t>(at) * kTones, kTones * sizeof(double));  /* its 32 energies */
+        }  /* end of the neighbourhood */
+        double local = median_inplace(window.data(), window.size()) / std::log(2.0);  /* the middle value, as an average noise energy */
+        level[i] = std::max(local, 0.1 * whole);  /* never wildly below the frame's own level */
+    }  /* end of the symbols */
+    return 0;  /* done */
+}  /* end of kes_noise_profile */
+
+KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *positions, const int *tones, size_t npilots, size_t samples,
+                          const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out) {  /* modem/mfsk.py pilot_frequency_fit */
+    if (npilots == 0 || samples == 0 || pad < 1 || fine_span < 0) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    size_t length = static_cast<size_t>(pad) * samples;  /* the padded transform length */
+    std::vector<double> cosine(length), sine(length);  /* the turning for every step round the circle */
+    for (size_t m = 0; m < length; ++m) {  /* each step */
+        double angle = (-2.0 * kPi) * static_cast<double>(m) / static_cast<double>(length);  /* its angle */
+        cosine[m] = std::cos(angle);  /* its cosine */
+        sine[m] = std::sin(angle);  /* and sine */
+    }  /* end of the table */
+    double bin_hz = kSampleRate / static_cast<double>(samples);  /* one FFT bin, in hertz */
+    size_t groups = std::max<size_t>(1, npilots / 8);  /* stretches of about eight pilots */
+    double track = 0.0;  /* the frequency error found so far, on top of the preamble's estimate */
+    std::vector<double> times, errors;  /* each stretch's middle time and measured error */
+    std::vector<double> re(samples), im(samples);  /* one pilot's shifted audio */
+    size_t base = npilots / groups, extra_items = npilots % groups;  /* how NumPy's array_split shares the pilots: the first `extra_items` stretches get one more */
+    size_t index = 0;  /* the next pilot */
+    for (size_t g = 0; g < groups; ++g) {  /* each stretch, in order */
+        size_t count = base + (g < extra_items ? 1 : 0);  /* pilots in it */
+        std::vector<double> avg(2 * static_cast<size_t>(fine_span) + 1, 0.0);  /* the fine spectra added up */
+        double position_sum = 0.0;  /* for the stretch's middle time */
+        for (size_t p = index; p < index + count; ++p) {  /* each pilot in the stretch */
+            position_sum += static_cast<double>(positions[p]);  /* its position, for the mean */
+            long first = static_cast<long>(std::nearbyint(start + static_cast<double>(positions[p] * static_cast<long>(samples))));  /* its first sample (mfsk.py _mixed_blocks rounds) */
+            double shift = offset_hz + track;  /* the correction so far */
+            for (size_t m = 0; m < samples; ++m) {  /* each sample */
+                long at = first + static_cast<long>(m);  /* its place in x */
+                double value = (at >= 0 && static_cast<size_t>(at) < n) ? x[at] : 0.0;  /* the audio, or silence outside it */
+                double phase = (-2.0 * kPi) * (shift * (static_cast<double>(m) / kSampleRate));  /* the turning that cancels the offset */
+                re[m] = value * std::cos(phase);  /* shifted down: real part */
+                im[m] = value * std::sin(phase);  /* imaginary part */
+            }  /* end of the samples */
+            long centre = static_cast<long>(tone_bins[tones[p]]) * pad;  /* where the pilot should be on the fine grid */
+            for (int j = -fine_span; j <= fine_span; ++j) {  /* the few fine steps either side */
+                long bin = ((centre + j) % static_cast<long>(length) + static_cast<long>(length)) % static_cast<long>(length);  /* that fine frequency, on the circle */
+                double sr = 0.0, si = 0.0;  /* the transform there */
+                size_t step_index = 0;  /* (bin * m) modulo the length */
+                for (size_t m = 0; m < samples; ++m) {  /* each sample */
+                    double c = cosine[step_index], s = sine[step_index];  /* the turning */
+                    sr += re[m] * c - im[m] * s;  /* real part of the product */
+                    si += re[m] * s + im[m] * c;  /* imaginary part */
+                    step_index += static_cast<size_t>(bin);  /* the next sample's step */
+                    if (step_index >= length) {  /* past a full turn */
+                        step_index -= length;  /* back round */
+                    }  /* end of the wrap */
+                }  /* end of the samples */
+                avg[static_cast<size_t>(j + fine_span)] += sr * sr + si * si;  /* its energy, added */
+            }  /* end of the fine steps */
+        }  /* end of the pilots */
+        size_t peak = static_cast<size_t>(std::max_element(avg.begin(), avg.end()) - avg.begin());  /* the fine step with most energy */
+        double frac = 0.0;  /* the fraction-of-a-step correction */
+        if (peak > 0 && peak < avg.size() - 1) {  /* a neighbour each side */
+            double a = avg[peak - 1], b = avg[peak], c = avg[peak + 1];  /* the peak and its neighbours */
+            double bend = a - 2 * b + c;  /* how sharply they curve */
+            if (bend != 0) {  /* not flat */
+                frac = 0.5 * (a - c) / bend;  /* the top of the parabola */
+            }  /* end of the test */
+        }  /* end of the refinement */
+        track += (static_cast<double>(peak) + frac - fine_span) * bin_hz / pad;  /* move to where this stretch found the signal */
+        errors.push_back(track);  /* recorded */
+        times.push_back(position_sum / static_cast<double>(count) * (static_cast<double>(samples) / kSampleRate));  /* and when */
+        index += count;  /* on to the next stretch */
+    }  /* end of the stretches */
+    if (groups >= 2) {  /* a trend can be seen */
+        double mean_t = 0.0, mean_e = 0.0;  /* the averages */
+        for (size_t g = 0; g < groups; ++g) {  /* each stretch */
+            mean_t += times[g];  /* added */
+            mean_e += errors[g];  /* added */
+        }  /* end of the sums */
+        mean_t /= static_cast<double>(groups);  /* the mean time */
+        mean_e /= static_cast<double>(groups);  /* the mean error */
+        double sxy = 0.0, sxx = 0.0;  /* the least-squares sums */
+        for (size_t g = 0; g < groups; ++g) {  /* each stretch */
+            sxy += (times[g] - mean_t) * (errors[g] - mean_e);  /* how time and error move together */
+            sxx += (times[g] - mean_t) * (times[g] - mean_t);  /* how time spreads */
+        }  /* end of the sums */
+        double slope = sxx > 0 ? sxy / sxx : 0.0;  /* the straight line's slope: the drift */
+        *extra_out = mean_e - slope * mean_t;  /* its value at time zero: the error at the start */
+        *drift_out = slope;  /* the drift, in hertz per second */
+    } else {  /* one stretch only */
+        *extra_out = errors[0];  /* a fixed correction */
+        *drift_out = 0.0;  /* no drift */
+    }  /* end of the fit */
+    return 0;  /* done */
+}  /* end of kes_pilot_fit */
 
 }  /* end of the exported functions */

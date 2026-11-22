@@ -156,5 +156,42 @@ def test_thread_count_does_not_change_results():  # sharing work among threads m
         assert np.array_equal(blanked, answers[0][0]) and found == answers[0][1]  # exactly the same
 
 
+def test_ldpc_decoder_matches_python(python_only):  # the body's error correction
+    from modem import ldpc  # the code under test
+    rng = np.random.default_rng(12)  # repeatable
+    verdicts = set()  # whether decoding succeeded, to be sure both outcomes were tried
+    for k in (374, 752, 1452):  # a short, a middle and the longest body
+        for noise in (0.8, 1.6, 3.0):  # easy, hard, hopeless
+            bits = rng.integers(0, 2, k)  # random data
+            llrs = (1.0 - 2.0 * ldpc.encode(bits)) * 2.0 + rng.normal(size=2 * k) * noise  # through the noise
+            mine, ref = ldpc.decode(llrs, k), python_only(ldpc.decode, llrs, k)  # compiled and Python
+            assert np.array_equal(mine[0], ref[0]) and mine[1] == ref[1]  # the same bits and verdict
+            verdicts.add(ref[1])  # noted
+    assert verdicts == {True, False}  # both a success and a give-up were compared
+
+
+def test_noise_profile_matches_python(python_only):  # the noise level followed through a frame
+    from modem.mfsk import noise_profile  # the routine under test
+    rng = np.random.default_rng(13)  # repeatable
+    for rows in (5, 16, 17, 60, 620):  # too short to track, just long enough, and long frames
+        energies = rng.exponential(size=(rows, 32)) * np.linspace(1, 10, rows)[:, None]  # noise that grows through the frame
+        energies[:, 7] += 20.0  # and a signal on one tone
+        assert np.array_equal(noise_profile(energies), python_only(noise_profile, energies))  # exactly the same levels
+
+
+def test_pilot_fit_matches_python(python_only):  # frequency and drift from the pilot tones
+    from modem.levels import LEVELS  # every speed level
+    from modem.mfsk import pilot_frequency_fit  # the routine under test
+    rng = np.random.default_rng(14)  # repeatable
+    positions = np.arange(0, 320, 16)  # pilots every sixteenth tone
+    tones = (7 * np.arange(len(positions)) + 2) % 32  # which tone each sends
+    for spec in LEVELS:  # each level
+        x = rng.normal(size=int(330 * spec.samples + 2 * FS))  # noise long enough for the pilots
+        for offset in (0.0, 4.2, -9.7):  # frequency errors from the preamble
+            mine = pilot_frequency_fit(x, 1500.5, positions, tones, spec, offset)  # compiled
+            ref = python_only(pilot_frequency_fit, x, 1500.5, positions, tones, spec, offset)  # Python
+            assert abs(mine[0] - ref[0]) < 1e-9 and abs(mine[1] - ref[1]) < 1e-9  # the same fit, to rounding
+
+
 def test_describe_says_what_is_in_use():  # the About box line
     assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so

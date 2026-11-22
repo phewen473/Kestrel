@@ -38,7 +38,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 3  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader) */
+#define KES_ABI_VERSION 4  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -94,6 +94,25 @@ KES_API int kes_fine_time(const double *x, size_t n, size_t samples, const int *
 KES_API int kes_read_header(const double *x, size_t n, double header_start, double offset_hz, size_t samples, size_t lo, size_t hi,
                             int step, int level, const int *totals_by_type, const int *body_totals, size_t nbody, double since,
                             uint8_t *bits);
+
+/* modem/ldpc.py decode: normalised min-sum decoding of 2k soft values (positive = probably 0). The code's
+ * wiring is given edge by edge, sorted by check: edge_bits[e] and edge_checks[e], with check c's edges
+ * from starts[c] (as ldpc.py _graph gives them). Writes k data bits; returns 1 when every check is
+ * satisfied, 0 when it gave up after max_iterations rounds, -1 on bad arguments. */
+KES_API int kes_ldpc_decode(const double *llrs, long k, const long *edge_bits, const long *edge_checks, long nedges, const long *starts,
+                            double scale, int max_iterations, uint8_t *bits);
+
+/* modem/mfsk.py noise_profile: the noise energy per tone position at each of `rows` symbols of tone_e
+ * (rows x 32), the median of each symbol and `span` either side (mirrored at the ends) over ln 2, never
+ * below a tenth of the whole frame's level; with tracking 0 (or a short frame), the whole frame's level. */
+KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int tracking, double *level);
+
+/* modem/mfsk.py pilot_frequency_fit: measure the pilots (positions[i] tones after `start`, each sending
+ * tone tones[i]) in stretches of about eight, each searched around where the last found the signal, on a
+ * grid `pad` times finer than one bin, `fine_span` steps each side; fit a straight line through the
+ * stretches. Writes the extra offset at the first symbol (Hz) and the drift (Hz per second). */
+KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *positions, const int *tones, size_t npilots, size_t samples,
+                          const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out);
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */
