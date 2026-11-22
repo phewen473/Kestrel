@@ -91,7 +91,7 @@ LOCKED = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progr
 SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("F1", "this list"), ("F2", "Listen (nothing is sent unless you start it)"), ("F3", "Monitor (receive only)"), ("F4", "Off (stop receiving and transmitting)"),  # (continued)
     ("Ctrl+U", "Available / Unavailable for contacts"), ("F5", "Beacon (call anyone) on or off"), ("F6", "Call the station in the To box"), ("F7", "End the contact"), ("F8", "Stations heard in the last 48 hours"),  # (continued)
-    ("F9", "Telemetry received"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
+    ("F9", "Telemetry received"), ("F10", "Mail held and carried"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
     ("Ctrl+Y", "Respond: call the station selected in the Stations heard list"),  # (continued)
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
     ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
@@ -442,7 +442,7 @@ class Panel:  # the control panel window
         stations.add_command(label="Respond to the selected station (call it)", underline=0, accelerator="Ctrl+Y", command=self.respond)  # answer a beacon by hand
         stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
         stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
-        stations.add_command(label="Mail held and carried...", underline=0, command=self.mail_window)  # store and forward: mail this station carries, and its own messages out with carriers
+        stations.add_command(label="Mail held and carried...", underline=0, accelerator="F10", command=self.mail_window)  # store and forward: mail this station carries, and its own messages out with carriers
         stations.add_separator()  # a divider
         stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
         stations.add_command(label="Put the selected callsign in To", underline=0, accelerator="Enter", command=self.pick_station)  # use it
@@ -471,7 +471,7 @@ class Panel:  # the control panel window
 
     def _shortcuts(self):  # tie the keys to their jobs
         keys = {"<F1>": self.shortcuts_window, "<F2>": lambda: self.set_mode("listen"), "<F3>": lambda: self.set_mode("monitor"), "<F4>": lambda: self.set_mode("off"),  # (continued)
-                "<F5>": self.beacon_key, "<F6>": self.call_to, "<F7>": self.end_contact, "<F8>": self.heard_window, "<F9>": self.telemetry_window,  # (continued)
+                "<F5>": self.beacon_key, "<F6>": self.call_to, "<F7>": self.end_contact, "<F8>": self.heard_window, "<F9>": self.telemetry_window, "<F10>": self.mail_window,  # (continued: F10 also stops Windows' usual jump to the menu bar)
                 "<F11>": self.broadcast_message, "<F12>": lambda: self.settings_window(0), "<Control-l>": lambda: self.to.focus_set(), "<Control-m>": lambda: self.message.focus_set(),  # (continued)
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
