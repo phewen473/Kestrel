@@ -66,6 +66,13 @@ in `work\`, the log in `build.log`), passed to the script with `-Work`.
 Keeping every build under the development folder keeps the antivirus
 exceptions to one place.
 
+To run a build unattended and keep its log, capture the output from
+outside PowerShell, for example
+`cmd /c powershell -ExecutionPolicy Bypass -File packaging\windows\build_windows.ps1 -Work <folder> > build.log 2>&1`.
+Do not redirect inside Windows PowerShell 5.1 (`& build_windows.ps1 *> build.log`):
+it turns PyInstaller's ordinary progress messages into errors, and the
+script, which stops at the first error, quits silently as PyInstaller starts.
+
 ### Files
 
 | File | What it is |
