@@ -383,6 +383,8 @@ class Panel:  # the control panel window
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
         self._scope(bottom)  # build the scope
         self._meters(bottom)  # build the level meters and sliders
+        bottom.bind("<Configure>", lambda event: self.root.after_idle(self.keep_meters_visible), add="+")  # when the row changes size, the meters keep their width
+        bottom.bind("<ButtonRelease-1>", lambda event: self.root.after_idle(self.keep_meters_visible), add="+")  # and when a divider is let go
         root.rowconfigure(6, weight=1)  # the lists, the log and the scopes stretch with the window
         root.after(250, self.restore_layout)  # once the window is up, put it and the dividers back as they were left
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
@@ -946,8 +948,31 @@ class Panel:  # the control panel window
             for name, places in (layout.get("sashes") or {}).items():  # each divided area
                 for index, place in enumerate(places):  # each divider in turn
                     self.panes[name].sashpos(index, int(place))  # back where it was
+            self.keep_meters_visible()  # but never with the level meters squeezed out of sight
         except (ValueError, KeyError, tk.TclError):  # the saved layout could not be used
             self.default_layout()  # fall back on the usual arrangement
+
+    def keep_meters_visible(self, event=None):  # the level meters and sliders must always show
+        """Move the divider beside the level meters back, if needed, so the meters keep the width they need.
+
+        The meters share the bottom row with the log and the scopes, with
+        draggable dividers between them. A divider dragged to the edge, or
+        a window made narrower, could otherwise squeeze the meters and their
+        sliders to nothing, and the saved layout would keep them hidden.
+        """
+        try:  # the window may be closing
+            bottom = self.panes["bottom"]  # the row holding the log, the scopes and the meters
+            width = bottom.winfo_width()  # its width now
+            need = self.levels_frame.winfo_reqwidth() + 6  # the meters' own width, and a little room
+            if width <= need + 100:  # not laid out yet (or absurdly small): leave it
+                return  # nothing sensible to do
+            limit = width - need  # the furthest right the divider may sit
+            if bottom.sashpos(1) > limit:  # it is further right than that
+                bottom.sashpos(1, limit)  # bring it back
+            if bottom.sashpos(0) > bottom.sashpos(1) - 100:  # and the log's divider must leave the scopes some room
+                bottom.sashpos(0, max(0, bottom.sashpos(1) - 100))  # move it left too
+        except (tk.TclError, KeyError, AttributeError):  # the window or its panels are gone
+            pass  # nothing to keep
 
     def colour_plain_widgets(self):  # colour the widgets the theme cannot reach
         c = self.colours  # the palette
