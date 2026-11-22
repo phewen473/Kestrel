@@ -59,7 +59,8 @@ project folder, on its own, ready to run on another computer. Only the
 current one is kept there. Git ignores that folder: setup programs are
 published as GitHub releases, not committed.
 
-Builds themselves run in `C:\devel\build\Kestrel\v<version>\<commit>\`
+Builds themselves run in a folder of their own under the development
+folder, `<development folder>\build\Kestrel\v<version>\<commit>\`
 (a clean copy of the repository at that commit in `repo\`, the work folder
 in `work\`, the log in `build.log`), passed to the script with `-Work`.
 Keeping every build under the development folder keeps the antivirus
