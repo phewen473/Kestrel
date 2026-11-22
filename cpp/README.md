@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 4)
+## What is in it so far (interface version 5)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -25,6 +25,8 @@ quietly runs in pure Python, as it always has.
 | `kes_ldpc_decode` | `modem/ldpc.py` `decode` | bit for bit (bits and verdict) | about 2.5x |
 | `kes_noise_profile` | `modem/mfsk.py` `noise_profile` | bit for bit | - |
 | `kes_pilot_fit` | `modem/mfsk.py` `pilot_frequency_fit` | to rounding (about 1e-13 Hz) | - |
+| `kes_viterbi_decode_known` | `modem/fec.py` `viterbi_decode(llrs, known)` | bit for bit | (expected-callsign decoding, 0.31R1) |
+| `kes_remove_steady` | `modem/notch.py` `remove_steady` | to rounding | (steady-signal notch, 0.31R1) |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is

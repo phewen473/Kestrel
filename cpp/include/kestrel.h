@@ -38,7 +38,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 4  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts) */
+#define KES_ABI_VERSION 5  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -56,6 +56,11 @@ KES_API void kes_blank_impulses(const double *x, size_t n, double threshold, int
  * into n/2 - 6 data bits, written to bits as 0 or 1. Returns the number of
  * data bits written, or -1 if n is too short. */
 KES_API long kes_viterbi_decode(const double *llrs, size_t n, uint8_t *bits);
+
+/* The same decoder with some data bits known in advance (modem/fec.py viterbi_decode(llrs, known)):
+ * known[i] is 0 or 1 for a known data bit i, -1 for an unknown one; only paths that agree survive.
+ * nknown may be shorter than the data (the rest are unknown). */
+KES_API long kes_viterbi_decode_known(const double *llrs, size_t n, const int8_t *known, size_t nknown, uint8_t *bits);
 
 /* modem/mfsk.py band_energies: from audio x[0..n), take nsym blocks of `samples`
  * samples each, the first starting at round(start) (missing audio counts as
@@ -113,6 +118,15 @@ KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int t
  * stretches. Writes the extra offset at the first symbol (Hz) and the drift (Hz per second). */
 KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *positions, const int *tones, size_t npilots, size_t samples,
                           const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out);
+
+/* modem/notch.py remove_steady: copy x[0..n) to out with every steady signal between low_hz and high_hz
+ * notched out. Blocks of `block` samples, each weighted by a Hann window; a step whose 10th-percentile energy over the blocks is `times`
+ * the band's median, and `times` the median of the steps within `local_steps` of it, is steady; with none, or
+ * more than `most`, nothing is changed. Each notch is
+ * `half_hz` either side, cut in one transform of `size` samples (size >= n). Returns how many steps were
+ * notched (0 for none), or -1 on bad arguments. */
+KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double low_hz, double high_hz, double times, int local_steps, int most,
+                              double half_hz, size_t size, double *out);
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

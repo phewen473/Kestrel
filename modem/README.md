@@ -126,7 +126,7 @@ All of these are now written into the specification (sections 4 and 5).
 | Sample rate | 12,000 samples per second |
 | Preamble | 12 tones at the frame's level, a fixed pattern per level (`PREAMBLE_PATTERNS` in `params.py`) |
 | Tones | 32 per level (5 bits each), centred near 1500 Hz |
-| Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalised min-sum, up to 80 passes |
+| Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalised min-sum, scale 0.9, up to 200 passes (0.8 and 80 before 0.31R1) |
 | Header error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder |
 | Interleaver | Golden-ratio step formula over the whole frame |
 | Checks | CRC-8 on the header, CRC-16 on the body |
@@ -152,6 +152,8 @@ All of these are now written into the specification (sections 4 and 5).
 | `interleave.py` | The bit shuffler |
 | `crc.py`, `bits.py`, `text.py` | Check values, bit helpers, and text to bits |
 | `blanker.py` | Static-crash blanker |
+| `frame.py` (0.31R1 additions) | `Hints` and `Prior`: a control frame that fails alone is tried added to earlier failed copies and with the callsigns the station expects (`RxResult.assisted` says how it was read) |
+| `notch.py` | Steady signals (carriers) notched out of the whole band before searching and decoding (since 0.31R1) |
 | `native.py` | The bridge to the compiled library (`cpp/`): blanker, Viterbi decoder, tone-band measurement, pattern search, fine timing, header reading, pilot tracking, noise tracking and the LDPC decoder run compiled when it is present; each returns None otherwise and the Python code runs instead. `KESTREL_NATIVE=0` switches it off; `set_threads(n)` limits its threads |
 
 ## Measured results for L0 under fading (18 November 2026)

@@ -20,8 +20,8 @@ import numpy as np  # numerical arrays
 from . import native  # the compiled library, used when present
 
 SEEDS = (0x4B455301, 0x4B455302, 0x4B455303)  # starting values for the three shuffles ("KES" + 1, 2, 3)
-SCALE = 0.8  # min-sum correction factor (the usual choice)
-MAX_ITERATIONS = 80  # give up after this many decoding rounds
+SCALE = 0.9  # min-sum correction factor (0.8 until 0.31R1; 0.9 read 37% more weak bodies in a test of 183 frames near each level's limit, and lost none of 168 easier ones)
+MAX_ITERATIONS = 200  # give up after this many decoding rounds (80 until 0.31R1; more rounds rescue a few slow-to-settle frames, and cost little in the compiled decoder)
 
 
 def _xorshift32(state):  # the random-number routine

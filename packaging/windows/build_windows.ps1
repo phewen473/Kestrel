@@ -44,7 +44,7 @@ Push-Location $Repo                                                      # work 
 $Commit = (git rev-parse --short HEAD).Trim()                            # the commit being built
 $Dirty = git status --porcelain --untracked-files=no                     # uncommitted changes to tracked files
 if ($Dirty) { Write-Warning "There are uncommitted changes; the installer is built from the last commit ($Commit), without them." }  # the build uses committed code only
-$SpecVersion = (Select-String -Path "modem\params.py" -Pattern '^SPEC_VERSION = "([0-9.]+)"').Matches[0].Groups[1].Value  # the specification version
+$SpecVersion = (Select-String -Path "modem\params.py" -Pattern '^SPEC_VERSION = "([0-9A-Za-z.]+)"').Matches[0].Groups[1].Value  # the specification version (a release letter may follow, as in 0.31R1)
 Write-Host "Building Kestrel $SpecVersion from commit $Commit"            # say what is being built
 
 if (Test-Path $Work) { Remove-Item -Recurse -Force $Work }               # start from nothing

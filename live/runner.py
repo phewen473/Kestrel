@@ -104,6 +104,8 @@ def describe(result):  # one line about a received frame
     line = f"heard {name} at {level_name(result.level)}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
     if result.frame_type == FRAME_TYPE_LONG and (result.fields or {}).get("copies", 1) > 1:  # a long beacon read by adding copies together
         line = line.replace("heard long beacon", f"heard long beacon ({result.fields['copies']} copies added together)").replace(", fading nan", "")  # say so
+    if result.assisted:  # a weak control frame read only with help (since 0.31R1)
+        line += f" (weak: read with help: {result.assisted})"  # say how, so the operator knows it was a hard one
     if result.frame_type in CONTROL_BITS or result.frame_type == FRAME_TYPE_LONG:  # a control frame, or a long beacon
         return line.replace(", fading nan", "") + f"  {result.fields}"  # show its fields
     who = f"{result.origin} to {result.dest}" if result.frame_type == 1 else f"link {result.link}"  # addresses, or the link number
@@ -158,10 +160,10 @@ def feed_from(listener, source, watch=None):  # read the source and give the aud
 
 def attach_signal_log(listener, signal_log, dial_khz=None):  # connect a listener to a signal log
     """Have `listener` report its searches to `signal_log`; return a function to call with each near miss (it logs the miss with its audio)."""
-    if signal_log is None or not signal_log.on:  # no log
+    if signal_log is None:  # no log at all
         return lambda result: None  # nothing to do
-    listener.on_search = signal_log.search  # every search
-    return lambda result: signal_log.near(result, listener.near_audio, listener.near_audio_sample, dial_khz() if dial_khz else None)  # every near miss, with its audio
+    listener.on_search = lambda result, trace: signal_log.search(result, trace) if signal_log.on else None  # every search, while the log is on (it may be turned on or off during a run)
+    return lambda result: signal_log.near(result, listener.near_audio, listener.near_audio_sample, dial_khz() if dial_khz else None) if signal_log.on else None  # every near miss, with its audio, likewise
 
 
 def log_tick(signal_log, source):  # the signal log's regular lines
@@ -172,7 +174,7 @@ def log_tick(signal_log, source):  # the signal log's regular lines
     signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -202,17 +204,24 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     starts unasked (a beacon, a long beacon, a directed call, a broadcast)
     while another signal is heard where it would transmit (busy.py; spec
     Section 6.14). Replies inside an exchange are never held.
+    `expect`, if given, is called for more callsigns the station expects to
+    hear (saved contacts, stations heard lately); with the station's own,
+    the one it calls and its partner, they help read weak control frames.
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
+    listener.expect = lambda: (station.call, [station.target, station.partner] + list(expect() if expect is not None else ()))  # this station's callsign, and those it expects: the one it calls, its partner, and any the caller adds (since 0.31R1)
     started = time.monotonic()  # the moment the clock starts
     watch = ChannelWatch() if listen_first else None  # listens for other signals on the frequency
     if watch is not None:  # listening before transmitting
         station.busy = lambda level: watch.busy(*band_of(level))  # the station asks before it starts anything unasked
     log_near = attach_signal_log(listener, signal_log, dial_khz)  # searches and near misses go to the signal log, if there is one
-    logging = signal_log is not None and signal_log.on  # whether there is a signal log to write
+    class _Logging:  # whether the signal log is being written, asked afresh each time (it may be turned on or off during a run)
+        def __bool__(self):  # true while the log is on
+            return signal_log is not None and signal_log.on  # there is one, and it is on
+    logging = _Logging()  # used as a yes-or-no
 
     def dial():  # the dial frequency, for the signal log
         return dial_khz() if dial_khz is not None else None  # if the caller can say

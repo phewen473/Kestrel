@@ -75,6 +75,7 @@ QUICK_MOST = 10  # the most quick messages an operator may keep
 QUICK_NAME_MOST = 40  # the longest name a quick message may have
 QUICK_OLD_NAMES = ("Call, name and grid", "Rig and power", "Telemetry")  # names given to the three quick messages kept by versions before 0.30, which had no names
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
+EXPECT_MOST = 8  # at most this many expected callsigns are tried when a weak control frame fails alone (each try is a small chance of a false read; the frame's own soft bits must also agree)
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
 ANSWER_NAMES = {False: "Just listen: show me beacons and calls; I choose whether to respond", True: "Answer every beacon and call automatically"}  # whether Listen transmits by itself
 CALLING_KEEP_S = 300.0  # a station that beaconed stays highlighted in the Stations heard list this long
@@ -1129,6 +1130,16 @@ class Panel:  # the control panel window
 
     def rig_name(self):  # the radio, for the log
         return self.settings["rig_text"] or (self.settings["rig_model"].split("  ", 1)[-1] if self.settings["rig_model"] else "")  # the operator's description, else the rig type
+
+    def expected_calls(self):  # callsigns this station expects to hear (called from the receiving thread)
+        """Return up to EXPECT_MOST callsigns: stations heard in the last 48 hours, most recent first, then saved contacts.
+
+        The receiver tries them in the callsign fields of a weak control frame
+        that fails alone (since 0.31R1), with the station's own callsign, the
+        station it is calling and its partner, which the station adds itself.
+        """
+        calls = [row["call"] for row in self.heardlog.summary()] + list(self.contacts)  # heard lately, then saved (both safe to read from this thread)
+        return [call for call in dict.fromkeys(calls) if call and call != self.settings["call"]][:EXPECT_MOST]  # no repeats, not this station, at most a few
 
     def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
         call = (result.fields or {}).get("origin") or (result.origin if result.frame_type == 1 else "")  # the callsign it carries: in a beacon, an answer, an identification or a fully addressed message
@@ -2396,6 +2407,15 @@ class Panel:  # the control panel window
             self.beacon_button.configure(text=self.beacon_words())  # and the button's label
             if self.station is not None:  # a station is listening now
                 self.station.answer_beacons = self.station.answer_calls = bool(new["auto_answer"])  # the change applies at once
+            log = self.signal_log  # the signal log of the run under way, if any (read once: the run may end meanwhile)
+            if log is not None and log.mode != new.get("signal_log", "off"):  # turned on, off or to clips during a run
+                was = log.mode  # what it was
+                log.mode = new.get("signal_log", "off")  # it applies at once (it used to wait for the next start of Listen)
+                if log.on:  # it is on now
+                    log.note(f"signal log changed from {was} to {log.mode} during the run", settings=self.settings_summary())  # the first line, with the settings in use
+                    self.say(f"signal log on ({log.mode}): {log.path()}")  # say where
+                else:  # turned off
+                    self.say("signal log off")  # say so
             if new["theme"] != self.theme_var.get():  # a different look
                 self.set_theme(new["theme"])  # apply it
             self.show_me()  # show the callsign and grid at the top
@@ -2583,6 +2603,7 @@ class Panel:  # the control panel window
             self.logbook.write("settings", station=job["call"], text=f"settings at the start of {mode}", dial_khz=job["entry"]["dial_khz"], detail=self.settings_summary())  # the verbose log keeps a record
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
+                listener.expect = lambda: (job["call"], self.expected_calls())  # this station's callsign and those it expects, to help read weak frames
                 log_near = attach_signal_log(listener, signal_log, lambda: round(self.dial_hz() / 1000.0, 1))  # searches and near misses to the signal log, if on
                 listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result), log_near(result))  # signals heard but not readable are shown too
                 watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
@@ -2617,7 +2638,7 @@ class Panel:  # the control panel window
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
             run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
-                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)))  # the live loop, until stopped, with the signal log and the listen-first check
+                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency

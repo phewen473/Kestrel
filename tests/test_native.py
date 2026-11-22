@@ -193,5 +193,27 @@ def test_pilot_fit_matches_python(python_only):  # frequency and drift from the 
             assert abs(mine[0] - ref[0]) < 1e-9 and abs(mine[1] - ref[1]) < 1e-9  # the same fit, to rounding
 
 
+def test_notch_matches_python(python_only):  # the steady-signal notch (0.31R1)
+    from modem.notch import remove_steady  # the routine under test
+    rng = np.random.default_rng(15)  # repeatable
+    t = np.arange(100 * FS) / FS  # 100 seconds
+    for carriers in ((), (1489.3, ), (1466.9, 1433.0, 2000.2)):  # none, one, several
+        x = rng.normal(size=len(t))  # band noise
+        for frequency in carriers:  # each carrier
+            x += 0.4 * np.cos(2 * np.pi * frequency * t)  # added
+        assert np.max(np.abs(remove_steady(x) - python_only(remove_steady, x))) < 1e-9  # the same audio, to rounding
+
+
+def test_viterbi_with_known_bits_matches_python(python_only):  # the decoder with expected callsigns (0.31R1)
+    from modem.fec import conv_encode, viterbi_decode  # the code under test
+    rng = np.random.default_rng(16)  # repeatable
+    for length in (75, 124, 192):  # beacon, answer and notice bodies (with their check values)
+        bits = rng.integers(0, 2, length + 16)  # random data
+        llrs = (1.0 - 2.0 * conv_encode(bits)) + rng.normal(size=2 * (length + 22)) * 2.5  # very noisy
+        known = -np.ones(length + 16, dtype=np.int8)  # nothing known...
+        known[:48] = bits[:48]  # ...but the first callsign
+        assert np.array_equal(viterbi_decode(llrs, known), python_only(viterbi_decode, llrs, known))  # the same decision for every bit
+
+
 def test_describe_says_what_is_in_use():  # the About box line
     assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so

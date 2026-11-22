@@ -25,6 +25,8 @@ import numpy as np  # numerical arrays
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
 from modem import native  # the compiled modem library (when present, the patterns are searched side by side)
 from modem.blanker import blank_impulses  # removes static crashes before searching
+from modem.notch import remove_steady  # notches steady signals (carriers) out of the band
+from modem.frame import Hints, Prior  # help for reading weak control frames (since 0.31R1)
 from modem.frame import _body_total, _read_header_how  # how long a frame is by its header, and reading a header
 from modem.preamble import detect_preamble, fine_time, preamble_samples  # the signature-pattern search, the fine timing of a candidate, and a pattern's length
 from modem import longbeacon  # the long beacon's length and limit
@@ -40,6 +42,8 @@ NEAR_QUALITY = 6.0  # a signature pattern standing this far above the background
 LONGEST_FRAME = (PREAMBLE_TONES + HEADER_SYMBOLS + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
 LONG_EVERY = 4  # the long beacon's pattern is looked for on every fourth search only: it costs about 0.4 s a search, and a long beacon lasts a minute, so finding it a few seconds later loses nothing
 NEAR_QUALITY_MAX = 10000.0  # above this the measure has broken down (stretches of digital silence), so it is not a signal
+PRIOR_KEEP_S = 1800  # failed control frames are kept this long (half an hour), for adding to a later copy
+PRIOR_MOST = 16  # and at most this many of them
 CONTEXT_S = 4.0  # incremental search: audio searched before the newest, beyond what one pattern needs, so the background is measured fairly
 GATE = (0.002, 0.002, 0.003, 0.010, 0.012)  # incremental search: a pattern scoring below this (by level) is not followed up. Measured on simulated noise and frames, the strongest chance match scored 0.001, 0.001, 0.002, 0.005 and 0.008, and real frames 1 dB below each level's decoding limit (steady and fading) at least 0.004, 0.006, 0.005, 0.028 and 0.032 (one L4 frame in 40 was not found at all). The long beacon has no gate: copies too weak to read alone are kept for adding together
 
@@ -96,6 +100,8 @@ class Listener:  # the continuous receiver
         self.pending = []  # incremental search: candidates found, as dicts: level, stream (sample number where the pattern starts), offset_hz, quality
         self.unsearched = 0  # incremental search: samples not yet searched for the patterns of the speed levels
         self.unsearched_long = 0  # and for the long beacon's pattern (looked for on every fourth search)
+        self.expect = None  # if set, called with no arguments for (this station's callsign, callsigns it expects to hear), to help read weak control frames (since 0.31R1)
+        self.priors = []  # control frames whose bodies failed their check, kept so a later copy can be added to them (frame.Prior; since 0.31R1)
 
     def clear(self):  # forget everything heard so far
         """Empty the store (used after transmitting, so the station does not decode itself)."""
@@ -187,7 +193,7 @@ class Listener:  # the continuous receiver
             return None  # nothing to find
         trace = [] if self.on_search is not None else None  # the candidates tried, if anyone wants them
         self.searches += 1  # count it
-        x = blank_impulses(self.store)  # the store with static crashes removed
+        x = remove_steady(blank_impulses(self.store))  # the store with static crashes removed, and steady signals (carriers) notched out
         if self.unsearched > 0 or (self.unsearched_long > 0 and self.searches % LONG_EVERY == 0):  # new audio to look at
             self._detect(x)  # look for patterns in it
         wait = min(LONGEST_FRAME, self.window - 2 * self.step)  # how long a candidate whose header cannot be read is kept (its second header copy, at the end of the frame, may yet arrive)
@@ -246,7 +252,8 @@ class Listener:  # the continuous receiver
             if end > len(self.store):  # still arriving
                 continue  # wait for the rest
             self.pending.remove(item)  # decoded once only
-            attempt = receive(x, blank=False, trace=trace, candidates=[(found, spec)])  # read the whole frame
+            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(start))  # read the whole frame (already blanked and notched), with help for a weak control frame
+            self._remember_failure(attempt, start)  # a control frame that failed is kept, to add to its next copy
             if attempt.ok:  # it decoded
                 result, heard = attempt, self._take(attempt, start, end)  # hand it over
                 break  # one frame per search
@@ -261,6 +268,30 @@ class Listener:  # the continuous receiver
             result.sample = heard.result.sample if heard is not None else -1  # where the frame began, if one was found
             self.on_search(result, trace)  # hand it over
         return heard  # the frame, or None
+
+    def _hints(self, start):  # help for reading weak control frames
+        """Return the frame.Hints for a candidate at store position `start`: expected callsigns, and earlier failed copies (never the frame itself)."""
+        own, calls = ("", ())  # nothing expected unless the station says
+        if self.expect is not None:  # the station can say
+            try:  # it is called from the receiving thread
+                own, calls = self.expect()  # its callsign, and those it expects
+            except Exception:  # whatever went wrong there, keep receiving
+                own, calls = ("", ())  # carry on without
+        here = self._number(start) if 0 <= start < len(self.index) else -1  # this candidate's place in the stream
+        priors = [p for p in self.priors if here < 0 or abs(p.sample - here) > FS]  # earlier copies, not this frame itself
+        return Hints(own=own or "", calls=tuple(calls or ()), priors=priors, base=-1)  # the hints (positions already handled here)
+
+    def _remember_failure(self, attempt, start):  # keep a failed control frame for combining
+        """Keep the soft bits of a control frame that failed its check, so a later copy can be added to them."""
+        if attempt.frame_type not in CONTROL_BITS or attempt.body_llrs is None or attempt.reason != "body check failed":  # not a control frame that failed its check
+            return  # nothing to keep
+        here = self._number(start) if 0 <= start < len(self.index) else -1  # where it began in the stream
+        newest = int(self.index[-1]) if len(self.index) else here  # the latest sample heard
+        self.priors = [p for p in self.priors if p.sample < 0 or newest - p.sample <= PRIOR_KEEP_S * FS]  # drop copies too old to be the same transmission round
+        if any(p.sample >= 0 and abs(p.sample - here) <= FS for p in self.priors):  # this frame is kept already
+            return  # once is enough
+        self.priors.append(Prior(attempt.frame_type, attempt.body_llrs, float(attempt.offset_hz), here))  # kept
+        self.priors = self.priors[-PRIOR_MOST:]  # only the most recent
 
     def _take(self, result, start, end):  # hand a frame over and cut it out of the store
         """Return a Heard for the frame from store position `start` to `end`, and cut it out of the store."""
@@ -280,7 +311,8 @@ class Listener:  # the continuous receiver
         trace = [] if self.on_search is not None else None  # the receiver's candidate list, if anyone wants it
         self.searches += 1  # count it
         long_failed = []  # long-beacon candidates that were all there but did not decode alone
-        result = receive(self.store, trace=trace, long_beacons=self.searches % LONG_EVERY == 0, long_failed=long_failed)  # run the modem receiver over everything kept (the long pattern too, every fourth time)
+        result = receive(self.store, trace=trace, long_beacons=self.searches % LONG_EVERY == 0, long_failed=long_failed, hints=self._hints(-1))  # run the modem receiver over everything kept (the long pattern too, every fourth time), with help for weak control frames
+        self._remember_failure(result, int(round(result.start)))  # a control frame that failed is kept, to add to its next copy
         for candidate, soft in long_failed:  # each may be one copy of a beacon heard before, or to be heard again
             self._combine(candidate, soft)  # try it with the copies kept
         result.sample = self._number(result.start)  # where it began in the stream

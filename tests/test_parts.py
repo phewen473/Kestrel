@@ -160,5 +160,5 @@ def test_program_and_specification_agree_on_the_version():  # the About box must
     from modem.params import SPEC_VERSION  # the version the program claims
     spec = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "spec", "kestrel-spec.md")  # the specification
     with open(spec, "r", encoding="utf-8") as handle:  # open it
-        found = re.search(r"\*\*Version (\d+\.\d+)", handle.read())  # its version line
+        found = re.search(r"\*\*Version (\d+\.\d+(?:R\d+)?)", handle.read())  # its version line (a release letter and number, as in 0.31R1, may follow)
     assert found and found.group(1) == SPEC_VERSION  # the two agree

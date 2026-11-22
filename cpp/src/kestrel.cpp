@@ -199,6 +199,10 @@ KES_API void kes_blank_impulses(const double *x, size_t n, double threshold, int
 }  /* end of kes_blank_impulses */
 
 KES_API long kes_viterbi_decode(const double *llrs, size_t n, uint8_t *bits) {  /* the soft Viterbi decoder */
+    return kes_viterbi_decode_known(llrs, n, nullptr, 0, bits);  /* the same, with nothing known in advance */
+}  /* end of kes_viterbi_decode */
+
+KES_API long kes_viterbi_decode_known(const double *llrs, size_t n, const int8_t *known, size_t nknown, uint8_t *bits) {  /* the soft Viterbi decoder, with some data bits known */
     long steps = static_cast<long>(n / 2);  /* one decoding step per pair of coded bits */
     if (steps < kTail) {  /* too short to hold even the tail */
         return -1;  /* refuse */
@@ -225,6 +229,13 @@ KES_API long kes_viterbi_decode(const double *llrs, size_t n, uint8_t *bits) {  
             choices[static_cast<size_t>(t) * kStates + s] = pick ? 1 : 0;  /* remember the winner */
             next[s] = pick ? c1 : c0;  /* keep its score */
         }  /* end of the states */
+        if (known != nullptr && static_cast<size_t>(t) < nknown && known[t] >= 0) {  /* this data bit is known */
+            for (int s = 0; s < kStates; ++s) {  /* each state */
+                if ((s & 1) != known[t]) {  /* reached by the other bit */
+                    next[s] = -1e18;  /* impossible */
+                }  /* end of the test */
+            }  /* end of the states */
+        }  /* end of the known bit */
         metric.swap(next);  /* the new scores become the current ones */
     }  /* end of the forward pass */
     int state = 0;  /* the tail forces the encoder to finish in state 0 */
@@ -235,7 +246,7 @@ KES_API long kes_viterbi_decode(const double *llrs, size_t n, uint8_t *bits) {  
     }  /* end of the traceback */
     std::memcpy(bits, all.data(), static_cast<size_t>(steps - kTail));  /* the data bits, without the tail */
     return steps - kTail;  /* how many */
-}  /* end of kes_viterbi_decode */
+}  /* end of kes_viterbi_decode_known */
 
 KES_API int kes_band_energies(const double *x, size_t n, double start, size_t nsym, size_t samples,
                               double offset_hz, double drift_hz_s, size_t lo, size_t hi, double *out) {  /* tone blocks -> energy per FFT bin */
@@ -802,5 +813,103 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
     }  /* end of the fit */
     return 0;  /* done */
 }  /* end of kes_pilot_fit */
+
+KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double low_hz, double high_hz, double times, int local_steps, int most,
+                              double half_hz, size_t size, double *out) {  /* modem/notch.py remove_steady */
+    std::memcpy(out, x, n * sizeof(double));  /* start from an unchanged copy */
+    if (block == 0 || size < n) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    size_t blocks = n / block;  /* whole blocks in the audio */
+    if (blocks < 8) {  /* too little audio to tell steady from brief */
+        return 0;  /* nothing removed */
+    }  /* end of the short case */
+    double bin_hz = kSampleRate / static_cast<double>(block);  /* one analysis step, in hertz */
+    size_t low = static_cast<size_t>(low_hz / bin_hz), high = static_cast<size_t>(high_hz / bin_hz);  /* the band, in steps (truncated, as Python's int()) */
+    size_t half = block / 2 + 1;  /* steps in one block's spectrum */
+    if (high <= low || high > half) {  /* the band does not fit */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    size_t width = high - low;  /* steps in the band */
+    std::vector<double> power(blocks * width);  /* the band's energy, block by block */
+    std::vector<double> window(block);  /* a smooth window (NumPy's hanning), so a strong carrier does not spill far */
+    for (size_t m = 0; m < block; ++m) {  /* each point */
+        window[m] = 0.5 - 0.5 * std::cos(2.0 * kPi * static_cast<double>(m) / static_cast<double>(block - 1));  /* its weight */
+    }  /* end of the window */
+    parallel_for(blocks, 16, [&](size_t from, size_t to) {  /* the blocks, shared among threads */
+        std::vector<std::complex<double>> spectrum(half);  /* one block's spectrum */
+        std::vector<double> piece(block);  /* one block, windowed */
+        for (size_t b = from; b < to; ++b) {  /* each block in this share */
+            for (size_t m = 0; m < block; ++m) {  /* each sample */
+                piece[m] = x[b * block + m] * window[m];  /* weighted */
+            }  /* end of the samples */
+            pocketfft::r2c(pocketfft::shape_t{block}, pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(double))},
+                           pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(std::complex<double>))}, 0, pocketfft::FORWARD,
+                           piece.data(), spectrum.data(), 1.0);  /* transform it (as NumPy's rfft) */
+            for (size_t c = 0; c < width; ++c) {  /* each step of the band */
+                double size_c = std::abs(spectrum[low + c]);  /* its size */
+                power[b * width + c] = size_c * size_c;  /* its energy */
+            }  /* end of the steps */
+        }  /* end of the blocks */
+    });  /* end of the shared loop */
+    /* each step's 10th percentile over the blocks, as NumPy's percentile(..., 10) works it out (linear) */
+    const double q = 0.1;  /* the tenth, as NumPy turns 10 per cent into a fraction */
+    double index = static_cast<double>(blocks) * q + (1.0 + q * (1.0 - 1.0 - 1.0)) - 1.0;  /* NumPy's "virtual index" for the linear method */
+    size_t below = static_cast<size_t>(std::floor(index));  /* the sorted place at or below it */
+    size_t above = std::min(below + 1, blocks - 1);  /* and the next */
+    double gamma = index - static_cast<double>(below);  /* how far between them */
+    std::vector<double> typical(width);  /* each step's quietest-tenth energy */
+    parallel_for(width, 32, [&](size_t from, size_t to) {  /* the steps, shared among threads */
+        std::vector<double> column(blocks);  /* one step's energies through the audio */
+        for (size_t c = from; c < to; ++c) {  /* each step in this share */
+            for (size_t b = 0; b < blocks; ++b) {  /* each block */
+                column[b] = power[b * width + c];  /* copied out */
+            }  /* end of the copy */
+            std::nth_element(column.begin(), column.begin() + static_cast<long>(below), column.end());  /* the value at the lower place */
+            double a = column[below];  /* kept */
+            double b = a;  /* the value at the upper place (the same when they coincide) */
+            if (above != below) {  /* a different place */
+                b = *std::min_element(column.begin() + static_cast<long>(below) + 1, column.end());  /* the smallest of those above */
+            }  /* end of the upper value */
+            double diff = b - a;  /* the gap between them */
+            typical[c] = gamma >= 0.5 ? b - diff * (1.0 - gamma) : a + diff * gamma;  /* in between, as NumPy's _lerp does */
+        }  /* end of the steps */
+    });  /* end of the shared loop */
+    std::vector<double> scratch(typical);  /* a copy for the median */
+    double level = median_inplace(scratch.data(), scratch.size());  /* the band's typical quiet level */
+    std::vector<size_t> busy;  /* the steady steps */
+    std::vector<double> near;  /* one step's neighbourhood */
+    for (size_t c = 0; c < width; ++c) {  /* each step */
+        size_t from = c >= static_cast<size_t>(local_steps) ? c - static_cast<size_t>(local_steps) : 0;  /* the neighbourhood's start */
+        size_t to = std::min(width, c + static_cast<size_t>(local_steps) + 1);  /* and end */
+        near.assign(typical.begin() + static_cast<long>(from), typical.begin() + static_cast<long>(to));  /* copied out */
+        double local = median_inplace(near.data(), near.size());  /* its quiet level */
+        if (typical[c] > times * level && typical[c] > times * local) {  /* far above the band, and above its own neighbours, even at its quietest */
+            busy.push_back(c);  /* steady and narrow */
+        }  /* end of the test */
+    }  /* end of the steps */
+    if (busy.empty() || busy.size() > static_cast<size_t>(most)) {  /* nothing steady; or so much that it is a strong wide signal */
+        return 0;  /* nothing removed */
+    }  /* end of the test */
+    std::vector<double> padded(size, 0.0);  /* the audio, padded to the transform length */
+    std::memcpy(padded.data(), x, n * sizeof(double));  /* copied in */
+    std::vector<std::complex<double>> spectrum(size / 2 + 1);  /* the whole audio's spectrum */
+    pocketfft::r2c(pocketfft::shape_t{size}, pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(double))},
+                   pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(std::complex<double>))}, 0, pocketfft::FORWARD,
+                   padded.data(), spectrum.data(), 1.0);  /* transform it all at once */
+    double per_hz = static_cast<double>(size) / kSampleRate;  /* steps of that transform per hertz */
+    for (size_t c : busy) {  /* each steady step */
+        double centre = static_cast<double>(low + c) * bin_hz;  /* its frequency */
+        long first = static_cast<long>((centre - half_hz) * per_hz), last = static_cast<long>((centre + half_hz) * per_hz) + 1;  /* the notch, in fine steps (truncated, as Python's int()) */
+        for (long k = std::max(first, 0L); k < std::min(last, static_cast<long>(spectrum.size())); ++k) {  /* each fine step in it */
+            spectrum[static_cast<size_t>(k)] = 0.0;  /* cut out */
+        }  /* end of the notch */
+    }  /* end of the steady steps */
+    pocketfft::c2r(pocketfft::shape_t{size}, pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(std::complex<double>))},
+                   pocketfft::stride_t{static_cast<ptrdiff_t>(sizeof(double))}, 0, pocketfft::BACKWARD,
+                   spectrum.data(), padded.data(), 1.0 / static_cast<double>(size));  /* back to audio (scaled, as NumPy's irfft) */
+    std::memcpy(out, padded.data(), n * sizeof(double));  /* the original length */
+    return static_cast<int>(busy.size());  /* how many steps were notched */
+}  /* end of kes_remove_steady */
 
 }  /* end of the exported functions */

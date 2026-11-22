@@ -16,7 +16,7 @@ level and accepts the one whose check value matches and whose level field
 agrees with the level it was tried at.
 """
 
-from dataclasses import dataclass  # simple record type for the receiver's report
+from dataclasses import dataclass, field  # simple record types for the receiver's report and its hints
 from math import ceil  # round up
 
 import numpy as np  # numerical arrays
@@ -26,8 +26,9 @@ from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .blanker import blank_impulses  # static-crash blanker
 from .preamble import detect_preamble, make_preamble, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
-from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header
+from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header and the control frames
 from . import control, ldpc, native  # control-frame fields, error correction for the message body, and the compiled library
+from .notch import remove_steady  # takes steady signals out of the band
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
@@ -235,6 +236,93 @@ class RxResult:  # the receiver's report
     sample: int = -1  # where the frame began in a continuous stream, counted in samples from the start of listening (set by live.Listener; -1 otherwise)
     fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
+    assisted: str = ""  # how a control frame that failed alone was read after all (copies added together, an expected callsign); empty when it read alone (since 0.31R1)
+
+
+COMBINE_OFFSET_HZ = 4.0  # earlier failed copies of a control frame are added to a new one only if their frequency offsets agree this closely (the same station)
+COMBINE_MOST = 4  # at most this many earlier copies are tried, the most recent first
+RESCUE_AGREE = 0.74  # a frame read only with help must still agree with this share of its own soft bits (real weak frames measured 0.78 and up; noise that happens to pass the check, mostly 0.62-0.68)
+CALL_SLOTS = {FRAME_TYPE_BEACON: ("origin", ), FRAME_TYPE_IDENT: ("origin", ), FRAME_TYPE_NOTICE: ("origin", ), FRAME_TYPE_ANSWER: ("dest", "origin")}  # the callsign fields of each control frame, in order from the first body bit
+
+
+@dataclass  # a plain record
+class Prior:  # a control frame's body that failed its check, kept so a later copy can be added to it
+    """The soft bits of one failed control-frame body, and enough about it to know which later copies may be the same frame."""
+
+    frame_type: int  # beacon, answer, identification, ...
+    llrs: np.ndarray  # its soft bits, in the order the decoder takes them
+    offset_hz: float  # its frequency offset: copies from one station agree
+    sample: int = -1  # where it began in the continuous stream (so a frame is never added to itself)
+
+
+@dataclass  # a plain record
+class Hints:  # what the receiver may assume when a control frame fails alone (since 0.31R1)
+    """Help for reading weak control frames: this station's callsign, the callsigns it expects to hear, and earlier failed copies."""
+
+    own: str = ""  # this station's callsign (calls and answers addressed to it)
+    calls: tuple = ()  # callsigns it expects: the station it called, its partner, saved contacts, stations heard recently
+    priors: list = field(default_factory=list)  # earlier failed control-frame bodies (Prior), most recent last
+    base: int = 0  # the stream sample at the start of the audio being decoded (to tell a frame's earlier copies from itself)
+
+
+def _known_bits(frame_type, assignment):  # data bits fixed by expected callsigns
+    """Return the known-bit list (0/1 known, -1 unknown) for a control frame with callsign fields set as in `assignment` (name -> callsign)."""
+    known = -np.ones(CONTROL_BITS[frame_type] + BODY_CRC_BITS, dtype=np.int8)  # nothing known yet
+    for index, name in enumerate(CALL_SLOTS.get(frame_type, ())):  # each callsign field, in order
+        if name in assignment:  # this one is assumed
+            known[index * CALL_BITS:(index + 1) * CALL_BITS] = call_to_bits(assignment[name])  # its 48 bits
+    return known  # the list
+
+
+def _assignments(frame_type, hints):  # which callsigns to try in which fields
+    """Return the field assignments (name -> callsign) to try for a failed control frame, most likely first."""
+    slots = CALL_SLOTS.get(frame_type, ())  # its callsign fields
+    others = [call for call in dict.fromkeys(hints.calls) if call and call != hints.own]  # the expected stations, without repeats or this station
+    tries = []  # the list
+    if slots == ("origin", ):  # a beacon, identification or mail notice: who sent it
+        tries = [{"origin": call} for call in others]  # each expected station
+    elif slots == ("dest", "origin") and hints.own:  # an answer or call: addressed to this station?
+        tries = [{"dest": hints.own, "origin": call} for call in others] + [{"dest": hints.own}]  # from an expected station, or from anyone
+    return tries  # the list
+
+
+def _plausible(frame_type, data, llrs):  # is a frame read with help believable?
+    """True when the body `data` passes its check, unpacks, carries callsign-shaped callsigns and agrees with enough of its soft bits."""
+    if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the check value
+        return False  # fails
+    try:  # the fields must make sense
+        fields = control.unpack(frame_type, data[:-BODY_CRC_BITS])  # unpacked
+    except ValueError:  # a field that cannot be (a bad grid, say)
+        return False  # not a frame
+    from .longbeacon import CALL_SHAPE  # the shape every callsign has
+    for name in CALL_SLOTS.get(frame_type, ()):  # each callsign it carries
+        if not CALL_SHAPE.match(fields.get(name, "")):  # not shaped like a callsign
+            return False  # not a frame
+    coded = 1.0 - 2.0 * conv_encode(data)  # what it would have sent, as +1 / -1
+    agree = float(np.mean(np.sign(llrs[:len(coded)]) == coded[:len(llrs)]))  # the share of soft bits that agree with it
+    return agree >= RESCUE_AGREE  # a real frame agrees well beyond chance
+
+
+def _rescue_control(llrs, frame_type, offset_hz, sample, hints):  # read a failed control frame with help
+    """Return (data bits, how) for a control frame that failed alone, using earlier copies and expected callsigns, or (None, "")."""
+    copies = [p for p in reversed(hints.priors) if p.frame_type == frame_type and len(p.llrs) == len(llrs)
+              and abs(p.offset_hz - offset_hz) <= COMBINE_OFFSET_HZ and (sample < 0 or p.sample < 0 or abs(p.sample - sample) > FS)][:COMBINE_MOST]  # earlier copies that may be the same frame, most recent first
+    sets = [(llrs, 1)] + [(llrs + p.llrs, 2) for p in copies]  # this copy alone, and with each earlier one
+    if len(copies) > 1:  # several earlier copies
+        sets.append((llrs + sum(p.llrs for p in copies), len(copies) + 1))  # all of them together
+    tries = _assignments(frame_type, hints)  # expected callsigns to try
+    for soft, count in sets:  # each set of soft bits
+        together = f"{count} copies added together" if count > 1 else ""  # how it was put together
+        if count > 1:  # added copies, with nothing assumed
+            data = viterbi_decode(soft)  # decode
+            if _plausible(frame_type, data, soft):  # it reads
+                return data, together  # done
+        for assignment in tries:  # each expected callsign (or pair)
+            data = viterbi_decode(soft, _known_bits(frame_type, assignment))  # decode with those bits known
+            if _plausible(frame_type, data, soft):  # it reads
+                expected = ", ".join(f"{name} {call}" for name, call in assignment.items())  # what was assumed
+                return data, (together + "; " if together else "") + f"expecting {expected}"  # done
+    return None, ""  # no help was enough
 
 
 def _body_total(bits):  # how many body tones a header says follow it
@@ -336,7 +424,7 @@ def _read_header_how(x, header_start, offset, spec, since=None):  # read the hea
     return None, ""  # no header here
 
 
-def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a frame once its header is known
+def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the rest of a frame once its header is known
     """Return the receiver's report for the frame that `header` describes."""
     result = RxResult(start=found["start"], sync_quality=found["quality"], level=spec.number)  # start the report with what the preamble and header told us
     result.frame_type = bits_to_int(header[0:3])  # first field: frame type
@@ -363,8 +451,14 @@ def _decode_body(x, found, spec, header, prior_llrs):  # read the rest of a fram
     _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
     level = noise_profile(tone_e)  # the noise level tone by tone through the frame (it is not always steady)
     llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]] / level[layout["data_pos"], None], 1.0))[:layout["coded"]]  # soft bits back in original order, padding dropped, each tone judged against the noise around it
-    if is_control:  # short frames: the convolutional code, and no combining of retries
+    if is_control:  # short frames: the convolutional code
         data = viterbi_decode(llrs)  # correct errors in the body
+        result.body_llrs = llrs  # kept, so a later copy of the same frame can be added to it (since 0.31R1)
+        if hints is not None and not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # it failed alone, and help is offered
+            sample = hints.base + int(found["start"]) if hints.base >= 0 else -1  # where it began in the stream
+            rescued, result.assisted = _rescue_control(llrs, result.frame_type, result.offset_hz, sample, hints)  # earlier copies, expected callsigns
+            if rescued is not None:  # it read with help
+                data = rescued  # use that
     else:  # message frames: the LDPC code, with retries combined
         if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
             llrs = llrs + prior_llrs  # combine the two copies
@@ -419,7 +513,7 @@ def _score(result):  # how believable a failed attempt is
     return result.snr_db if result.reason == "body check failed" and np.isfinite(result.snr_db) else -1e9  # the pilots of the real frame show the highest SNR
 
 
-def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_failed=None, candidates=None):  # the receiver
+def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_failed=None, candidates=None, notch=True, hints=None):  # the receiver
     """Find and decode one frame in the audio `x`.
 
     `prior_llrs` may hold the body_llrs of an earlier failed copy of the
@@ -442,10 +536,21 @@ def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_
     of searching `x` for signature patterns: found is a dict like those of
     preamble.detect_preamble (start, offset_hz, quality). The continuous
     receiver uses it to decode a frame it has already found (since 0.31).
+
+    With `notch` (the default) steady signals in the band are notched out
+    first (notch.py, since 0.31R1); the continuous receiver does that
+    itself, once for all its searches, and passes notch=False.
+
+    `hints` (a Hints, since 0.31R1) helps with control frames that fail
+    alone: earlier failed copies are added to them, and the callsigns the
+    station expects are tried in their callsign fields. What is read that
+    way says so in the result's `assisted`.
     """
     x = np.asarray(x, dtype=float)  # make sure we have floating-point audio
     if blank:  # optional first step
         x = blank_impulses(x)  # silence static crashes
+    if notch:  # the next step
+        x = remove_steady(x)  # carriers and other steady signals out of the band
     from . import longbeacon  # the long beacon (imported here: it uses this module's body layout)
     long_x = None  # the audio with steady carriers removed, made only if a long beacon is to be read
     if candidates is not None:  # the caller already knows where to look
@@ -475,7 +580,7 @@ def receive(x, blank=True, prior_llrs=None, trace=None, long_beacons=True, long_
             trace.append(step)  # record it now; the body's outcome is added below
         if header is None:  # no header there
             continue  # not a frame
-        attempt = _decode_body(x, found, spec, header, prior_llrs)  # try to read the body
+        attempt = _decode_body(x, found, spec, header, prior_llrs, hints)  # try to read the body (with help, if offered, for a control frame that fails alone)
         attempt.header_copy = how  # which header copy was read
         step.update(ok=attempt.ok, reason=attempt.reason, snr_db=float(attempt.snr_db), fade_index=float(attempt.fade_index))  # the body's outcome, for the trace
         if attempt.ok:  # the body checked out too

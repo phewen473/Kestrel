@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 4  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 5  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -76,6 +76,8 @@ def _load():  # find, open and check the library
         lib.kes_blank_impulses.restype = None  # returns nothing
         lib.kes_viterbi_decode.argtypes = [_DOUBLE_P, ctypes.c_size_t, _BYTE_P]  # llrs, n, bits
         lib.kes_viterbi_decode.restype = ctypes.c_long  # bits written, or -1
+        lib.kes_viterbi_decode_known.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int8), ctypes.c_size_t, _BYTE_P]  # llrs, n, known bits, how many, bits
+        lib.kes_viterbi_decode_known.restype = ctypes.c_long  # bits written, or -1
         lib.kes_band_energies.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t,
                                           ctypes.c_double, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t, _DOUBLE_P]  # x, n, start, nsym, samples, offset, drift, lo, hi, out
         lib.kes_band_energies.restype = ctypes.c_int  # 0, or -1 on bad arguments
@@ -95,6 +97,9 @@ def _load():  # find, open and check the library
         lib.kes_pilot_fit.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, _LONG_P, _INT_P, ctypes.c_size_t, ctypes.c_size_t,
                                       _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
         lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
+        lib.kes_remove_steady.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, low, high, times, neighbourhood, most, half width, size, out
+        lib.kes_remove_steady.restype = ctypes.c_int  # steps notched, or -1
         why = ""  # in use: no reason to give
         return lib  # ready
     if not why:  # nothing was found at all
@@ -148,13 +153,17 @@ def blank_impulses(x, threshold, guard):  # modem/blanker.py blank_impulses, com
     return out  # the cleaned audio
 
 
-def viterbi_decode(llrs):  # modem/fec.py viterbi_decode, compiled
-    """Return the decoded data bits, or None when the library is not in use (or the input is too short)."""
+def viterbi_decode(llrs, known=None):  # modem/fec.py viterbi_decode, compiled
+    """Return the decoded data bits, or None when the library is not in use (or the input is too short). `known`: 0/1 per known data bit, -1 unknown."""
     if _lib is None:  # no library
         return None  # the caller uses Python
     llrs = _doubles(llrs)  # plain doubles
     bits = np.empty(max(len(llrs) // 2, 0), dtype=np.uint8)  # room for every step's bit (the tail is dropped below)
-    count = _lib.kes_viterbi_decode(_ptr(llrs), len(llrs), bits.ctypes.data_as(_BYTE_P))  # decode
+    if known is None:  # nothing known in advance
+        count = _lib.kes_viterbi_decode(_ptr(llrs), len(llrs), bits.ctypes.data_as(_BYTE_P))  # decode
+    else:  # some bits known
+        hints = np.ascontiguousarray(known, dtype=np.int8)  # -1, 0 or 1 per data bit
+        count = _lib.kes_viterbi_decode_known(_ptr(llrs), len(llrs), hints.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)), len(hints), bits.ctypes.data_as(_BYTE_P))  # decode
     if count < 0:  # too short to decode
         return None  # let the Python code deal with it as it always has
     return bits[:count]  # the data bits
@@ -285,3 +294,14 @@ def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, of
                           ctypes.byref(extra), ctypes.byref(drift)) < 0:  # the library refused
         return None  # the Python code will handle it
     return extra.value, drift.value  # the fit
+
+
+def remove_steady(x, block, low_hz, high_hz, times, local_steps, most, half_hz, size):  # modem/notch.py remove_steady, compiled
+    """Return `x` with steady signals notched out, or None when the library is not in use."""
+    if _lib is None:  # no library
+        return None  # the caller uses Python
+    x = _doubles(x)  # plain doubles
+    out = np.empty_like(x)  # room for the result
+    if _lib.kes_remove_steady(_ptr(x), len(x), int(block), float(low_hz), float(high_hz), float(times), int(local_steps), int(most), float(half_hz), int(size), _ptr(out)) < 0:  # the library refused
+        return None  # the Python code will handle it
+    return out  # the audio, notched where needed

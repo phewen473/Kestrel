@@ -1,5 +1,14 @@
 # Kestrel specification changelog
 
+## 0.31R1 (draft) - 22 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.30**; 0.30, 0.31 and 0.31R1 stations work together. Every improvement below is in the receiver, so a station gains from it whatever the other station runs.
+- Steady signals (carriers and other narrow signals that do not move) are notched out of the whole band, 700-2300 Hz, before searching and decoding (Section 5.3, "Receiver side"). They hid weak frames and matched the signature patterns by chance.
+- A control frame whose body fails its check is kept for 30 minutes and added to later failed copies of the same frame type from about the same frequency (within 4 Hz).
+- The callsigns a station expects (the station it calls, its partner, saved contacts, stations heard in 48 hours; at most 8) are tried in a failed control frame's callsign fields, with its own callsign as an answer's destination. A frame read with help must also agree with 74% of its own soft bits; the receiver says how it was read.
+- The LDPC decoder: scale 0.9 (was 0.8), up to 200 passes (was 80): 37% more of 183 weak bodies read, none of 168 easier ones lost.
+- The reference program: the signal log setting now takes effect at once during a run; the panel's level meters can no longer be squeezed out of sight; compiled modem library (C++, interface 5) with every new routine checked against the Python reference.
+
 ## 0.31 (draft) - 22 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30**; 0.30 and 0.31 stations work together.

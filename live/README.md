@@ -41,6 +41,9 @@ On simulated band noise this is about a seventh of the old computing, and on str
 
 With the compiled modem library (`cpp/`, loaded by `modem/native.py`) the pattern search, fine timing and header reading run in C++, and the five levels and the long beacon are searched side by side on worker threads (the library lets go of Python's lock while it works). The answers are the same as the pure Python search; only the time changes.
 
+
+Since 0.31R1 the listener also helps weak control frames: it notches steady signals out of the store before searching (modem/notch.py), keeps the soft bits of control frames that fail their check for 30 minutes (`priors`), and asks the station, through `expect`, for its own callsign and the callsigns it expects; each failed control frame is then tried added to earlier copies and with those callsigns (modem/frame.py `Hints`). The panel supplies stations heard in the last 48 hours and saved contacts; run_station adds the station being called and the partner.
+
 ## Rig control
 
 Kestrel controls the radio through **Hamlib's rigctld**, the same rig-control engine WSJT-X uses. Any radio Hamlib supports can be tuned and keyed, and rigctld can run on another computer on the network. Kestrel does not include Hamlib; it talks to rigctld over a network socket.
