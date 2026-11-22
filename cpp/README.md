@@ -80,8 +80,10 @@ The easy way, from the top of the repository:
 
 That runs CMake, builds the library and copies it to `modem/_native/`
 (`kestrel.dll` on Windows, `kestrel.so` on Linux), where the modem finds it.
-It needs CMake and a C++17 compiler: g++ or clang on Linux and the Raspberry Pi,
-MinGW-w64 or Visual Studio on Windows. With MinGW the C++ runtime is linked into the DLL,
+It needs CMake and a C++17 compiler with full `<charconv>`: g++ 11 or newer on Linux and the
+Raspberry Pi, MinGW-w64 g++ 11 or newer (MSYS2) on Windows. On Windows the script looks for
+MSYS2's g++ first and passes over an older g++ earlier on the PATH (Strawberry Perl's g++ 8 cannot
+build the library: it has no floating-point `to_chars`). With MinGW the C++ runtime is linked into the DLL,
 so the DLL needs nothing else.
 
 By hand:

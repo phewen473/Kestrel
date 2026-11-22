@@ -10,6 +10,9 @@
 cmake_minimum_required(VERSION 3.16)  # an old enough CMake for every platform Kestrel aims at
 project(kestrel VERSION 0.31 LANGUAGES CXX)  # the library, versioned with the program
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11)  # too old a g++
+  message(FATAL_ERROR "libkestrel needs g++ 11 or newer (floating-point std::to_chars and std::from_chars); this is g++ ${CMAKE_CXX_COMPILER_VERSION} at ${CMAKE_CXX_COMPILER}. On Windows use MSYS2's mingw-w64 gcc.")  # say so plainly
+endif()  # end of the check
 set(CMAKE_CXX_STANDARD 17)  # C++17
 set(CMAKE_CXX_STANDARD_REQUIRED ON)  # and nothing older
 set(CMAKE_CXX_EXTENSIONS OFF)  # plain standard C++, no compiler extensions
