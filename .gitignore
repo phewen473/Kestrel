@@ -21,3 +21,5 @@ build/
 dist/
 # the compiled modem library, built by tools/build_native.py (the installer builds its own)
 modem/_native/
+# the finished setup program, ready to install (kept on the build computer, published as a release, not in Git)
+install/
