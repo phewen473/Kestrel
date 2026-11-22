@@ -38,7 +38,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 5  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi) */
+#define KES_ABI_VERSION 6  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -120,13 +120,30 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
                           const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out);
 
 /* modem/notch.py remove_steady: copy x[0..n) to out with every steady signal between low_hz and high_hz
- * notched out. Blocks of `block` samples, each weighted by a Hann window; a step whose 10th-percentile energy over the blocks is `times`
- * the band's median, and `times` the median of the steps within `local_steps` of it, is steady; with none, or
+ * notched out (also modem/longbeacon.py clean, with windowed 0 and local_steps -1). Blocks of `block` samples,
+ * each weighted by a Hann window when `windowed`; a step whose 10th-percentile energy over the blocks is `times`
+ * the band's median, and `times` the median of the steps within `local_steps` of it (no such test when
+ * local_steps < 0), is steady; with none, or
  * more than `most`, nothing is changed. Each notch is
  * `half_hz` either side, cut in one transform of `size` samples (size >= n). Returns how many steps were
  * notched (0 for none), or -1 on bad arguments. */
-KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double low_hz, double high_hz, double times, int local_steps, int most,
+KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windowed, double low_hz, double high_hz, double times, int local_steps, int most,
                               double half_hz, size_t size, double *out);
+
+/* modem/frame.py _decode_body, the numerical part, in one call: pilot fit, band measurement, noise level,
+ * first SNR and fading reading from the pilots, noise profile, soft bits, de-interleaving, then the
+ * convolutional decoder (is_control) or the LDPC decoder (with `prior` added when nprior == coded), and
+ * the CRC-16 body check. The body has `total` tones of `samples` samples from body_start; pilots at
+ * pilot_pos with tones pilot_tones; data tones at data_pos; `coded` soft bits are kept. The LDPC wiring is
+ * as for kes_ldpc_decode. Writes the data bits, the `coded` soft bits (after any combining), the band's
+ * energies (total x (hi - lo + 1), if band_out is not NULL) and six figures to stats_out: offset (Hz),
+ * drift (Hz/s), SNR (dB, from the pilots), fading index, 1.0 if the body check passed, the noise per tone.
+ * Returns the number of data bits, or -1 on bad arguments. */
+KES_API long kes_decode_body(const double *x, size_t n, double body_start, double offset_hz, size_t samples, size_t lo, size_t hi, int step,
+                             size_t total, const long *pilot_pos, const int *pilot_tones, size_t npilots, const long *data_pos, size_t ndata,
+                             size_t coded, int is_control, long info, const long *edge_bits, const long *edge_checks, long nedges,
+                             const long *starts, double scale, int iterations, const double *prior, size_t nprior, int pad, int fine_span,
+                             int noise_span, int tracking, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out);
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

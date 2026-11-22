@@ -424,6 +424,30 @@ def _read_header_how(x, header_start, offset, spec, since=None):  # read the hea
     return None, ""  # no header here
 
 
+def _decode_body_python(x, body_start, offset, spec, layout, is_control, prior_llrs, result):  # the numerical part of _decode_body, in Python
+    """Return (data bits, soft bits, band energies, noise) for the body at `body_start`, filling in the offset, drift, SNR and fading of `result`.
+
+    This is the reference that cpp/ kes_decode_body must match.
+    """
+    extra, drift = pilot_frequency_fit(x, body_start, layout["pilot_pos"], layout["pilot_tones"], spec, offset)  # fine frequency and drift from the pilots
+    result.offset_hz = offset + extra  # best estimate of the offset at the start of the body
+    result.drift_hz_s = drift  # best estimate of the drift
+    band = band_energies(x, body_start, layout["total"], spec, result.offset_hz, drift)  # measure every bin of the tone band, for every body tone
+    tone_e = tone_energies(band, spec)  # the 32 tone positions
+    noise = noise_level(tone_e)  # average noise energy per tone position
+    _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
+    level = noise_profile(tone_e)  # the noise level tone by tone through the frame (it is not always steady)
+    llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]] / level[layout["data_pos"], None], 1.0))[:layout["coded"]]  # soft bits back in original order, padding dropped, each tone judged against the noise around it
+    if is_control:  # short frames: the convolutional code
+        data = viterbi_decode(llrs)  # correct errors in the body
+    else:  # message frames: the LDPC code, with retries combined
+        if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
+            llrs = llrs + prior_llrs  # combine the two copies
+        data, _ = ldpc.decode(llrs, layout["info"])  # correct errors in the body
+    result.body_llrs = llrs  # the soft bits, kept for a retry (message frames) or a later copy (control frames, since 0.31R1)
+    return data, llrs, band, noise  # what the rest of _decode_body needs
+
+
 def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the rest of a frame once its header is known
     """Return the receiver's report for the frame that `header` describes."""
     result = RxResult(start=found["start"], sync_quality=found["quality"], level=spec.number)  # start the report with what the preamble and header told us
@@ -442,28 +466,17 @@ def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the re
     if body_start + layout["total"] * spec.samples > len(x) + spec.samples // 4:  # the body is not inside the recording, give or take a quarter of a tone (the frame is still arriving, or this is noise near the end)
         result.reason = "frame incomplete"  # say why we stopped
         return result  # the caller may look again when more audio has arrived
-    extra, drift = pilot_frequency_fit(x, body_start, layout["pilot_pos"], layout["pilot_tones"], spec, offset)  # fine frequency and drift from the pilots
-    result.offset_hz = offset + extra  # best estimate of the offset at the start of the body
-    result.drift_hz_s = drift  # best estimate of the drift
-    band = band_energies(x, body_start, layout["total"], spec, result.offset_hz, drift)  # measure every bin of the tone band, for every body tone
-    tone_e = tone_energies(band, spec)  # the 32 tone positions
-    noise = noise_level(tone_e)  # average noise energy per tone position
-    _measure(result, band[layout["pilot_pos"]], layout["pilot_tones"], noise, spec)  # first reading of SNR and fading, from the pilots alone
-    level = noise_profile(tone_e)  # the noise level tone by tone through the frame (it is not always steady)
-    llrs = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]] / level[layout["data_pos"], None], 1.0))[:layout["coded"]]  # soft bits back in original order, padding dropped, each tone judged against the noise around it
-    if is_control:  # short frames: the convolutional code
-        data = viterbi_decode(llrs)  # correct errors in the body
-        result.body_llrs = llrs  # kept, so a later copy of the same frame can be added to it (since 0.31R1)
-        if hints is not None and not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # it failed alone, and help is offered
-            sample = hints.base + int(found["start"]) if hints.base >= 0 else -1  # where it began in the stream
-            rescued, result.assisted = _rescue_control(llrs, result.frame_type, result.offset_hz, sample, hints)  # earlier copies, expected callsigns
-            if rescued is not None:  # it read with help
-                data = rescued  # use that
-    else:  # message frames: the LDPC code, with retries combined
-        if prior_llrs is not None and len(prior_llrs) == len(llrs):  # an earlier copy of this frame is available
-            llrs = llrs + prior_llrs  # combine the two copies
-        result.body_llrs = llrs  # keep the soft bits in case another retry follows
-        data, _ = ldpc.decode(llrs, layout["info"])  # correct errors in the body
+    done = native.decode_body(x, body_start, offset, spec, layout, is_control, prior_llrs if not is_control else None)  # the compiled decoder, when the library is in use (since interface 6)
+    if done is not None:  # it was: the same steps as the Python below, in one call
+        data, llrs, band, (result.offset_hz, result.drift_hz_s, result.snr_db, result.fade_index, _passed, noise) = done  # its results
+        result.body_llrs = llrs  # the soft bits (after any combining), kept for a retry or a later copy
+    else:  # pure Python
+        data, llrs, band, noise = _decode_body_python(x, body_start, offset, spec, layout, is_control, prior_llrs, result)  # the reference
+    if is_control and hints is not None and not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # a control frame that failed alone, and help is offered
+        sample = hints.base + int(found["start"]) if hints.base >= 0 else -1  # where it began in the stream
+        rescued, result.assisted = _rescue_control(llrs, result.frame_type, result.offset_hz, sample, hints)  # earlier copies, expected callsigns
+        if rescued is not None:  # it read with help
+            data = rescued  # use that
     if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the body check must match
         result.reason = "body check failed"  # say why we stopped
         return result  # the caller may retry and combine

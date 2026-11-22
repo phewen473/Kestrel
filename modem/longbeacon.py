@@ -33,6 +33,7 @@ from .fec import TAIL, conv_encode, viterbi_decode  # the convolutional code
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import Level  # one level's numbers
 from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, symbols_to_audio, tone_energies  # the tone waveform
+from . import native  # the compiled library, used when present
 from .params import BODY_CRC_BITS, CALL_BITS, CENTRE_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
 from .preamble import detect_preamble, make_preamble  # its twelve-tone pattern
 
@@ -103,6 +104,10 @@ def clean(x):  # take steady carriers out of the long beacon's band
     blocks = len(x) // n  # whole tone lengths in the audio
     if blocks < 8:  # too little audio to tell steady from brief
         return x  # leave it
+    done = native.remove_steady(x, n, CENTRE_HZ - CLEAN_HALF_HZ, CENTRE_HZ + CLEAN_HALF_HZ, CARRIER_TIMES, -1, CARRIER_MOST, NOTCH_HALF_HZ,
+                                next_fast_len(len(x), real=True), windowed=False)  # the compiled version, when the library is in use (no window, no neighbour test: as below)
+    if done is not None:  # it was
+        return done if not np.array_equal(done, x) else x  # the same audio, to rounding (x itself when nothing was notched, as below)
     low, high = int((CENTRE_HZ - CLEAN_HALF_HZ) / LONG.bin_hz), int((CENTRE_HZ + CLEAN_HALF_HZ) / LONG.bin_hz)  # the bins from 100 Hz below the centre to 100 Hz above
     power = np.abs(np.fft.rfft(x[:blocks * n].reshape(blocks, n), axis=1)[:, low:high]) ** 2  # the energy in each bin, tone length by tone length
     typical = np.percentile(power, 10, axis=0)  # each bin's energy in its quietest tenth of the time: high only if something is there nearly all the time

@@ -215,5 +215,59 @@ def test_viterbi_with_known_bits_matches_python(python_only):  # the decoder wit
         assert np.array_equal(viterbi_decode(llrs, known), python_only(viterbi_decode, llrs, known))  # the same decision for every bit
 
 
+def test_whole_body_decoder_matches_python(python_only):  # pilots to checked body in one call (interface 6)
+    import math  # not-a-number tests
+    from modem import build_answer, build_beacon, build_frame  # frames to decode
+    from modem.control import ChannelReport  # an answer's report
+    from modem.frame import receive  # the receiver
+    rng = np.random.default_rng(17)  # repeatable
+    for level in range(5):  # every level
+        for kind in range(3):  # a message, a beacon, an answer
+            audio = (build_frame("Body decoder check", level=level) if kind == 0 else build_beacon("Q2BB", "EM94", level=level) if kind == 1
+                     else build_answer("Q1AAAA", "Q2BB", ChannelReport(-3, 0.2, 1, 2), level=level))  # the frame
+            for snr in (-22.0, -10.0, 5.0):  # failing, near the limit, strong
+                x = rng.normal(size=len(audio) + 3 * FS)  # noise around it
+                x[FS:FS + len(audio)] += audio * np.sqrt(10 ** (snr / 10) * (2500 / 6000) / np.mean(np.square(audio)))  # at its SNR
+                mine, ref = receive(x, long_beacons=False), python_only(receive, x, long_beacons=False)  # compiled and Python
+                assert (mine.ok, mine.reason, mine.text, mine.origin, mine.dest) == (ref.ok, ref.reason, ref.text, ref.origin, ref.dest)  # the same outcome
+                for name in ("offset_hz", "drift_hz_s", "snr_db", "fade_index"):  # the measurements
+                    a, b = getattr(mine, name), getattr(ref, name)  # each way
+                    assert (math.isnan(a) and math.isnan(b)) or abs(a - b) < 1e-6  # equal to rounding
+                assert (mine.body_llrs is None) == (ref.body_llrs is None)  # soft bits kept alike
+                if ref.body_llrs is not None:  # kept
+                    assert np.max(np.abs(mine.body_llrs - ref.body_llrs)) < 1e-6  # the same soft bits
+
+
+def test_body_decoder_combines_retries_like_python(python_only):  # HARQ through the compiled body decoder
+    from modem import build_frame  # a message frame
+    from modem.frame import receive  # the receiver
+    rng = np.random.default_rng(18)  # repeatable
+    audio = build_frame("Two weak copies make one good one", level=2)  # an L2 message
+    for _ in range(6):  # a few pairs
+        copies = []  # two weak copies
+        for _copy in range(2):  # each
+            x = rng.normal(size=len(audio) + 3 * FS)  # noise
+            x[FS:FS + len(audio)] += audio * np.sqrt(10 ** (-16.0 / 10) * (2500 / 6000) / np.mean(np.square(audio)))  # below L2's limit
+            copies.append(x)  # kept
+        first = python_only(receive, copies[0], long_beacons=False)  # the first copy, in Python
+        if first.body_llrs is None:  # no header read: nothing to combine
+            continue  # next pair
+        mine = receive(copies[1], prior_llrs=first.body_llrs, long_beacons=False)  # the second, combined, compiled
+        ref = python_only(receive, copies[1], prior_llrs=first.body_llrs, long_beacons=False)  # and in Python
+        assert (mine.ok, mine.reason, mine.text) == (ref.ok, ref.reason, ref.text)  # the same outcome
+
+
+def test_long_beacon_carrier_notch_matches_python(python_only):  # longbeacon.clean through the compiled notch (interface 6)
+    from modem import longbeacon  # the routine under test
+    rng = np.random.default_rng(19)  # repeatable
+    t = np.arange(30 * FS) / FS  # 30 seconds
+    for carriers in ((), (1490.2, ), (1462.0, 1531.7)):  # none, one, two near the long beacon's tones
+        x = rng.normal(size=len(t))  # band noise
+        for frequency in carriers:  # each carrier
+            x += 0.3 * np.cos(2 * np.pi * frequency * t)  # added
+        mine, ref = longbeacon.clean(x), python_only(longbeacon.clean, x)  # compiled and Python
+        assert (mine is x) == (ref is x) and np.max(np.abs(mine - ref)) < 1e-9  # the same audio, and left alone in the same cases
+
+
 def test_describe_says_what_is_in_use():  # the About box line
     assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so

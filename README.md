@@ -135,6 +135,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-22 (0.31R1, no behaviour change): compiled library interface 6: the whole body decoder in one C++ call (pilots to checked body, identical outcomes and soft bits) and the long beacon's carrier notch; about 95% of the receiver's time is now in C++.
 - 2026-11-22: **0.31R1** (signal unchanged at 0.30): the receiver hears weaker signals: steady signals notched out of the band, failed control frames added to later copies, expected callsigns tried (own, called, partner, contacts, heard in 48 h), LDPC scale 0.9 / 200 passes; the signal log setting takes effect at once; compiled library interface 5. In a replay of the 22 Nov near misses (an answer at L0 under a steady signal, 3 copies) the old receiver read none of 20, 0.31R1 all 20 down to -23 dB.
 - 2026-11-22 (spec unchanged at 0.31): library interface 4: the LDPC body decoder, noise tracking and pilot tracking in C++ (bit for bit, or to rounding, against Python).
 - 2026-11-22 (spec unchanged at 0.31): more of the receiver compiled (library interface 3): pattern search, fine timing and the whole header reader in C++, heavy loops shared among up to 8 threads (same answers on any count), the five levels searched side by side. Simulated 6-minute stream: 52.6 s pure Python, 15-18 s now (sandbox, 2 cores), same frames decoded. Installer build script unpacks with tar.

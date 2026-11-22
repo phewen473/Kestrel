@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 5  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 6  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -97,9 +97,15 @@ def _load():  # find, open and check the library
         lib.kes_pilot_fit.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, _LONG_P, _INT_P, ctypes.c_size_t, ctypes.c_size_t,
                                       _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
         lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
-        lib.kes_remove_steady.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int,
-                                          ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, low, high, times, neighbourhood, most, half width, size, out
+        lib.kes_remove_steady.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, windowed, low, high, times, neighbourhood, most, half width, size, out
         lib.kes_remove_steady.restype = ctypes.c_int  # steps notched, or -1
+        lib.kes_decode_body.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int,  # x, n, body start, offset, samples, lo, hi, step
+                                        ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t,  # tones, pilot places, pilot tones, pilots, data places, data tones
+                                        ctypes.c_size_t, ctypes.c_int, ctypes.c_long, _LONG_P, _LONG_P, ctypes.c_long,  # coded bits, control?, LDPC data bits, edge bits, edge checks, edges
+                                        _LONG_P, ctypes.c_double, ctypes.c_int, _DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,  # check starts, scale, rounds, prior, prior length, pad, fine span
+                                        ctypes.c_int, ctypes.c_int, _BYTE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P]  # noise span, tracking, data out, soft bits out, band out, figures out
+        lib.kes_decode_body.restype = ctypes.c_long  # data bits written, or -1
         why = ""  # in use: no reason to give
         return lib  # ready
     if not why:  # nothing was found at all
@@ -296,12 +302,52 @@ def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, of
     return extra.value, drift.value  # the fit
 
 
-def remove_steady(x, block, low_hz, high_hz, times, local_steps, most, half_hz, size):  # modem/notch.py remove_steady, compiled
+def remove_steady(x, block, low_hz, high_hz, times, local_steps, most, half_hz, size, windowed=True):  # modem/notch.py remove_steady (and longbeacon.clean), compiled
     """Return `x` with steady signals notched out, or None when the library is not in use."""
     if _lib is None:  # no library
         return None  # the caller uses Python
     x = _doubles(x)  # plain doubles
     out = np.empty_like(x)  # room for the result
-    if _lib.kes_remove_steady(_ptr(x), len(x), int(block), float(low_hz), float(high_hz), float(times), int(local_steps), int(most), float(half_hz), int(size), _ptr(out)) < 0:  # the library refused
+    if _lib.kes_remove_steady(_ptr(x), len(x), int(block), int(bool(windowed)), float(low_hz), float(high_hz), float(times), int(local_steps), int(most), float(half_hz), int(size), _ptr(out)) < 0:  # the library refused
         return None  # the Python code will handle it
     return out  # the audio, notched where needed
+
+
+def decode_body(x, body_start, offset_hz, spec, layout, is_control, prior=None):  # modem/frame.py _decode_body's sums, compiled
+    """Return (data bits, soft bits, band energies, (offset, drift, snr_db, fade, passed, noise)), or None when the library is not in use."""
+    if _lib is None:  # no library
+        return None  # the caller uses Python
+    from . import ldpc, mfsk  # the decoder's settings and the noise-tracking settings (imported here: they import this module)
+    x = _doubles(x)  # plain doubles
+    lo, hi = int(spec.tone_bins[0]) - 1, int(spec.tone_bins[-1]) + 1  # the band measured: a bin either side of the tones
+    pilot_pos, pilot_pos_p = _longs(layout["pilot_pos"])  # where the pilots are
+    pilot_tones, pilot_tones_p = _ints(layout["pilot_tones"])  # which tone each sends
+    data_pos, data_pos_p = _longs(layout["data_pos"])  # where the data tones are
+    coded = int(layout["coded"])  # soft bits kept
+    info = 0 if is_control else int(layout["info"])  # LDPC data bits (none for the convolutional code)
+    if is_control:  # no LDPC wiring needed
+        edge_bits_p = edge_checks_p = starts_p = None  # nothing
+        edges = 0  # no edges
+    else:  # the LDPC wiring for this size, converted once
+        if info not in _GRAPHS:  # not converted yet
+            checks, bits, starts = ldpc._graph(info)  # the code's wiring
+            _GRAPHS[info] = (_longs(bits), _longs(checks), _longs(starts), len(bits))  # kept for next time
+        (_bits, edge_bits_p), (_checks, edge_checks_p), (_starts, starts_p), edges = _GRAPHS[info]  # the converted wiring
+    if prior is not None and len(prior) == coded:  # an earlier copy to add
+        prior_arr = _doubles(prior)  # plain doubles
+        prior_p, nprior = _ptr(prior_arr), coded  # its address and length
+    else:  # none
+        prior_p, nprior = None, 0  # nothing
+    data = np.zeros(max(coded // 2, info), dtype=np.uint8)  # room for the data bits
+    llrs = np.zeros(coded)  # room for the soft bits
+    band = np.zeros((int(layout["total"]), hi - lo + 1))  # room for the band
+    stats = np.zeros(6)  # room for the figures
+    count = _lib.kes_decode_body(_ptr(x), len(x), float(body_start), float(offset_hz), int(spec.samples), lo, hi, int(spec.step),
+                                 int(layout["total"]), pilot_pos_p, pilot_tones_p, len(pilot_pos), data_pos_p, len(data_pos),
+                                 coded, int(bool(is_control)), info, edge_bits_p, edge_checks_p, edges,
+                                 starts_p, float(ldpc.SCALE), int(ldpc.MAX_ITERATIONS), prior_p, nprior, int(mfsk.PAD), int(mfsk.FINE_SPAN),
+                                 int(mfsk.NOISE_SPAN), int(bool(mfsk.NOISE_TRACKING)), data.ctypes.data_as(_BYTE_P), _ptr(llrs), _ptr(band), _ptr(stats))  # decode
+    if count < 0:  # the library refused the arguments
+        return None  # the Python code will handle them
+    offset, drift, snr_db, fade, passed, noise = (float(value) for value in stats)  # the figures
+    return data[:count], llrs, band, (offset, drift, snr_db, fade, bool(passed), noise)  # everything _decode_body needs

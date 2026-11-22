@@ -18,6 +18,7 @@
 #include <cstdint>  /* fixed-size integers */
 #include <cstring>  /* memcpy */
 #include <limits>  /* infinity */
+#include <numeric>  /* gcd */
 #include <thread>  /* worker threads */
 #include <vector>  /* growable arrays */
 
@@ -814,8 +815,8 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
     return 0;  /* done */
 }  /* end of kes_pilot_fit */
 
-KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double low_hz, double high_hz, double times, int local_steps, int most,
-                              double half_hz, size_t size, double *out) {  /* modem/notch.py remove_steady */
+KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windowed, double low_hz, double high_hz, double times, int local_steps, int most,
+                              double half_hz, size_t size, double *out) {  /* modem/notch.py remove_steady and modem/longbeacon.py clean */
     std::memcpy(out, x, n * sizeof(double));  /* start from an unchanged copy */
     if (block == 0 || size < n) {  /* nonsense */
         return -1;  /* refuse */
@@ -834,7 +835,7 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double lo
     std::vector<double> power(blocks * width);  /* the band's energy, block by block */
     std::vector<double> window(block);  /* a smooth window (NumPy's hanning), so a strong carrier does not spill far */
     for (size_t m = 0; m < block; ++m) {  /* each point */
-        window[m] = 0.5 - 0.5 * std::cos(2.0 * kPi * static_cast<double>(m) / static_cast<double>(block - 1));  /* its weight */
+        window[m] = windowed ? 0.5 - 0.5 * std::cos(2.0 * kPi * static_cast<double>(m) / static_cast<double>(block - 1)) : 1.0;  /* its weight (1 throughout when no window is wanted) */
     }  /* end of the window */
     parallel_for(blocks, 16, [&](size_t from, size_t to) {  /* the blocks, shared among threads */
         std::vector<std::complex<double>> spectrum(half);  /* one block's spectrum */
@@ -880,11 +881,14 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double lo
     std::vector<size_t> busy;  /* the steady steps */
     std::vector<double> near;  /* one step's neighbourhood */
     for (size_t c = 0; c < width; ++c) {  /* each step */
-        size_t from = c >= static_cast<size_t>(local_steps) ? c - static_cast<size_t>(local_steps) : 0;  /* the neighbourhood's start */
-        size_t to = std::min(width, c + static_cast<size_t>(local_steps) + 1);  /* and end */
-        near.assign(typical.begin() + static_cast<long>(from), typical.begin() + static_cast<long>(to));  /* copied out */
-        double local = median_inplace(near.data(), near.size());  /* its quiet level */
-        if (typical[c] > times * level && typical[c] > times * local) {  /* far above the band, and above its own neighbours, even at its quietest */
+        double local = 0.0;  /* its neighbourhood's quiet level (not needed when the neighbour test is off) */
+        if (local_steps >= 0) {  /* the neighbour test is on */
+            size_t from = c >= static_cast<size_t>(local_steps) ? c - static_cast<size_t>(local_steps) : 0;  /* the neighbourhood's start */
+            size_t to = std::min(width, c + static_cast<size_t>(local_steps) + 1);  /* and end */
+            near.assign(typical.begin() + static_cast<long>(from), typical.begin() + static_cast<long>(to));  /* copied out */
+            local = median_inplace(near.data(), near.size());  /* its quiet level */
+        }  /* end of the neighbourhood */
+        if (typical[c] > times * level && (local_steps < 0 || typical[c] > times * local)) {  /* far above the band, and (unless the neighbour test is off) above its own neighbours, even at its quietest */
             busy.push_back(c);  /* steady and narrow */
         }  /* end of the test */
     }  /* end of the steps */
@@ -911,5 +915,141 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, double lo
     std::memcpy(out, padded.data(), n * sizeof(double));  /* the original length */
     return static_cast<int>(busy.size());  /* how many steps were notched */
 }  /* end of kes_remove_steady */
+
+KES_API long kes_decode_body(const double *x, size_t n, double body_start, double offset_hz, size_t samples, size_t lo, size_t hi, int step,
+                             size_t total, const long *pilot_pos, const int *pilot_tones, size_t npilots, const long *data_pos, size_t ndata,
+                             size_t coded, int is_control, long info, const long *edge_bits, const long *edge_checks, long nedges,
+                             const long *starts, double scale, int iterations, const double *prior, size_t nprior, int pad, int fine_span,
+                             int noise_span, int tracking, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out) {  /* frame.py _decode_body, the sums */
+    size_t padded = ndata * kBitsPerTone;  /* soft bits the data tones carry (the coded bits rounded up to whole tones) */
+    if (samples == 0 || hi < lo || hi >= samples || step < 1 || total == 0 || ndata == 0 || coded > padded || coded < 2) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    int tone_bins[kTones];  /* each tone's FFT bin: the band starts one bin below the lowest tone */
+    for (int m = 0; m < kTones; ++m) {  /* each tone */
+        tone_bins[m] = static_cast<int>(lo) + 1 + m * step;  /* its bin */
+    }  /* end of the tones */
+    double extra = 0.0, drift = 0.0;  /* the fine frequency correction and the drift */
+    if (npilots > 0 && kes_pilot_fit(x, n, body_start, pilot_pos, pilot_tones, npilots, samples, tone_bins, pad, fine_span, offset_hz, &extra, &drift) != 0) {  /* measured from the pilots */
+        return -1;  /* refused */
+    }  /* end of the pilot fit */
+    double offset = offset_hz + extra;  /* the best estimate of the offset at the start of the body */
+    size_t width = hi - lo + 1;  /* bins measured per tone */
+    std::vector<double> band(total * width);  /* every bin of the tone band, every body tone */
+    if (kes_band_energies(x, n, body_start, total, samples, offset, drift, lo, hi, band.data()) != 0) {  /* measured */
+        return -1;  /* refused */
+    }  /* end of the measurement */
+    std::vector<double> tone_e(total * kTones);  /* the 32 tone positions of every body tone */
+    for (size_t r = 0; r < total; ++r) {  /* each tone */
+        for (int m = 0; m < kTones; ++m) {  /* each position */
+            tone_e[r * kTones + static_cast<size_t>(m)] = band[r * width + 1 + static_cast<size_t>(m * step)];  /* column 1 + m * step (mfsk.py tone_energies) */
+        }  /* end of the positions */
+    }  /* end of the tones */
+    double top = *std::max_element(tone_e.begin(), tone_e.end());  /* the strongest energy */
+    std::vector<double> scratch(tone_e);  /* a copy for the median */
+    double noise = std::max(median_inplace(scratch.data(), scratch.size()) / std::log(2.0), 1e-12 * top + 1e-300);  /* the noise per tone position (mfsk.py noise_level) */
+    double snr_db = std::numeric_limits<double>::quiet_NaN(), fade = std::numeric_limits<double>::quiet_NaN();  /* the first reading, from the pilots */
+    if (npilots > 0) {  /* there are pilots */
+        std::vector<double> known(npilots);  /* each pilot's energy: the bin below its tone, the tone, the bin above (mfsk.py known_tone_energies) */
+        for (size_t i = 0; i < npilots; ++i) {  /* each pilot */
+            size_t row = static_cast<size_t>(pilot_pos[i]), first = static_cast<size_t>(pilot_tones[i] * step);  /* its tone and the column just below it */
+            known[i] = band[row * width + first] + band[row * width + first + 1] + band[row * width + first + 2];  /* added in that order */
+        }  /* end of the pilots */
+        double mean = 0.0;  /* their average */
+        for (double e : known) {  /* each */
+            mean += e;  /* added */
+        }  /* end of the sum */
+        mean /= static_cast<double>(npilots);  /* the mean */
+        double var = 0.0;  /* their spread */
+        for (double e : known) {  /* each */
+            var += (e - mean) * (e - mean);  /* squared difference */
+        }  /* end of the sum */
+        var /= static_cast<double>(npilots);  /* the variance (as NumPy's var) */
+        double signal = mean - 3 * noise;  /* three bins of noise come off (mfsk.py signal_report) */
+        double ratio = 0.0;  /* signal over noise */
+        if (signal > 0.05 * noise) {  /* a measurable signal */
+            double spread = 2 * signal * noise + 3 * noise * noise;  /* what noise alone would cause */
+            ratio = signal / noise;  /* the ratio */
+            fade = std::max(var - spread, 0.0) / (signal * signal);  /* the fading index */
+        }  /* end of the measurable case */
+        double seconds = static_cast<double>(samples) / kSampleRate;  /* one tone's length */
+        snr_db = 10.0 * std::log10(std::max(ratio, 1e-12) / (seconds * 2500.0));  /* in 2.5 kHz (frame.py _measure) */
+    }  /* end of the pilot reading */
+    std::vector<double> level(total);  /* the noise level tone by tone through the frame */
+    if (kes_noise_profile(tone_e.data(), total, noise_span, tracking, level.data()) != 0) {  /* followed */
+        return -1;  /* refused */
+    }  /* end of the noise profile */
+    std::vector<double> sent(padded);  /* soft bits in the order they were sent */
+    for (size_t d = 0; d < ndata; ++d) {  /* each data tone */
+        size_t row = static_cast<size_t>(data_pos[d]);  /* its place among the body tones */
+        const double *e = tone_e.data() + row * kTones;  /* its 32 energies */
+        for (int j = 0; j < kBitsPerTone; ++j) {  /* each of its five bits (mfsk.py energies_to_llrs) */
+            double zero = -1.0, one = -1.0;  /* the strongest position whose bit j is 0, and is 1 */
+            for (int m = 0; m < kTones; ++m) {  /* each position */
+                double value = e[m] / level[row];  /* judged against the noise around it */
+                if ((m >> (kBitsPerTone - 1 - j)) & 1) {  /* bit j is 1 */
+                    one = std::max(one, value);  /* the strongest such */
+                } else {  /* bit j is 0 */
+                    zero = std::max(zero, value);  /* likewise */
+                }  /* end of the test */
+            }  /* end of the positions */
+            sent[d * kBitsPerTone + static_cast<size_t>(j)] = (zero - one) / 1.0;  /* the confidence (the noise is already divided out) */
+        }  /* end of the bits */
+    }  /* end of the data tones */
+    long target = static_cast<long>(std::nearbyint(static_cast<double>(padded) * 0.6180339887498949));  /* the interleaver's ideal step (interleave.py _step) */
+    long shuffle = 1;  /* the step found */
+    bool found = false;  /* not yet */
+    for (long delta = 0; delta < static_cast<long>(padded) && !found; ++delta) {  /* outwards from the ideal */
+        for (long cand : {target + delta, target - delta}) {  /* just above, then just below */
+            if (cand > 0 && cand < static_cast<long>(padded) && std::gcd(cand, static_cast<long>(padded)) == 1) {  /* shares no factor with the length */
+                shuffle = cand;  /* the step */
+                found = true;  /* done */
+                break;  /* the first valid one */
+            }  /* end of the test */
+        }  /* end of the two candidates */
+    }  /* end of the search */
+    for (size_t i = 0; i < coded; ++i) {  /* each coded bit, back in its original order (interleave.py deinterleave, padding dropped) */
+        llrs_out[i] = sent[static_cast<size_t>((static_cast<unsigned long long>(shuffle) * i) % padded)];  /* picked out of its sent place */
+    }  /* end of the bits */
+    long count;  /* data bits decoded */
+    if (is_control) {  /* a short frame: the convolutional code */
+        count = kes_viterbi_decode(llrs_out, coded, data_out);  /* corrected */
+    } else {  /* a message frame: the LDPC code, with an earlier copy added if given */
+        if (prior != nullptr && nprior == coded) {  /* an earlier copy of the same frame */
+            for (size_t i = 0; i < coded; ++i) {  /* each soft bit */
+                llrs_out[i] = llrs_out[i] + prior[i];  /* added */
+            }  /* end of the bits */
+        }  /* end of the combining */
+        if (kes_ldpc_decode(llrs_out, info, edge_bits, edge_checks, nedges, starts, scale, iterations, data_out) < 0) {  /* corrected */
+            return -1;  /* refused */
+        }  /* end of the decoding */
+        count = info;  /* the data bits */
+    }  /* end of the decoding */
+    if (count < 16) {  /* too short to carry a check value */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    int reg = 0xFFFF;  /* CRC-16/CCITT-FALSE register, preset (crc.py crc16) */
+    for (long i = 0; i < count - 16; ++i) {  /* every bit before the check value */
+        int topbit = (reg >> 15) & 1;  /* the bit about to fall off the top */
+        reg = (reg << 1) & 0xFFFF;  /* shift */
+        if (topbit ^ data_out[i]) {  /* they differ */
+            reg ^= 0x1021;  /* mix in the polynomial */
+        }  /* end of the test */
+    }  /* end of the bits */
+    int received = 0;  /* the check value that came with it */
+    for (long i = count - 16; i < count; ++i) {  /* its sixteen bits, most significant first */
+        received = (received << 1) | data_out[i];  /* gathered */
+    }  /* end of the bits */
+    if (band_out != nullptr) {  /* the caller wants the band, to measure again once the body is known */
+        std::memcpy(band_out, band.data(), band.size() * sizeof(double));  /* copied out */
+    }  /* end of the band */
+    stats_out[0] = offset;  /* the offset at the start of the body */
+    stats_out[1] = drift;  /* the drift */
+    stats_out[2] = snr_db;  /* the SNR from the pilots */
+    stats_out[3] = fade;  /* the fading index from the pilots */
+    stats_out[4] = (reg == received) ? 1.0 : 0.0;  /* whether the body check passed */
+    stats_out[5] = noise;  /* the noise per tone position, for the final measurement */
+    return count;  /* data bits written */
+}  /* end of kes_decode_body */
 
 }  /* end of the exported functions */
