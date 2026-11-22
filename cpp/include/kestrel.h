@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 9  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store) */
+#define KES_ABI_VERSION 10  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -286,6 +286,22 @@ KES_API KesMail *kes_mail_new(void);  /* a new, empty store with a random first 
 KES_API void kes_mail_free(KesMail *mail);  /* free it */
 KES_API long kes_mail_request(KesMail *mail, const char *request, double now);  /* run one request; returns the reply's length in bytes, or -1 */
 KES_API long kes_mail_reply(KesMail *mail, char *out, size_t cap);  /* copy the last reply into out (no end mark); returns its length, or -1 if cap is too small */
+
+/* ---- One station's link rules (cpp/src/station.cpp, since interface 10) ----
+ * link/station.py Station in C++. Requests are JSON: {"op": a Station method name (or "init", "get",
+ * "set"), "args": [...], "mail_now": the mail store's clock}. "handle" takes the receiver's report as
+ * JSON (modem/frame.py RxResult's fields); "handle" and "poll" answer with a transmission
+ * ({"frame": {"type": "ack", ...}, "kind", "level", "note", "delay", "seconds"}) or null. The reply,
+ * collected with kes_station_reply, is {"ok": ..., "clear_stored": true when the receiver's kept soft
+ * bits must be dropped} or {"error": the Python error's name, "message": ...}. */
+typedef struct KesStation KesStation;  /* the station (its insides are private) */
+typedef int (*KesBusy)(void *ctx, int level);  /* listen before transmitting: nonzero when the frequency is in use where a frame at `level` would go */
+KES_API KesStation *kes_station_new(void);  /* a new station; set it up with the "init" request */
+KES_API void kes_station_free(KesStation *station);  /* free it */
+KES_API void kes_station_set_mail(KesStation *station, KesMail *mail);  /* the mail store it uses (the caller keeps it alive) */
+KES_API void kes_station_set_busy(KesStation *station, KesBusy busy, void *ctx);  /* the listen-before-transmit check (NULL for none) */
+KES_API long kes_station_request(KesStation *station, const char *request);  /* run one request; returns the reply's length, or -1 */
+KES_API long kes_station_reply(KesStation *station, char *out, size_t cap);  /* copy the last reply into out; returns its length, or -1 */
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

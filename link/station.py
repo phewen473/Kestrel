@@ -26,6 +26,8 @@ from dataclasses import dataclass  # simple record type for a transmission
 
 import numpy as np  # numerical arrays
 
+from modem import native  # the compiled library, when it is in use
+
 from modem import (  # the modem: frames, reports, planner
     ACK_HAVE_IT, ACK_LINK, ACK_OK, ACK_RESEND, LEVELS, ChannelReport, build_ack, build_answer, build_beacon, build_frame, build_ident, build_notice, call_hash,  # (continued)
     control_seconds, frame_seconds, join_parts, link_id, plan_at_level, receive,  # (continued)
@@ -38,7 +40,7 @@ from modem.params import (  # frame type numbers and the airtime limit
 from modem.text import pick_size_class  # which frame size a piece of text needs
 
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
-from .mail import Mailroom  # the mail kept between contacts (store and forward)
+from .mail import CompiledMailroom, Mailroom  # the mail kept between contacts (store and forward)
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
@@ -69,7 +71,7 @@ class Transmission:  # one frame the station wants on the air
         return len(self.audio) / FS  # samples divided by the sample rate
 
 
-class Station:  # the link rules for one station
+class PythonStation:  # the link rules for one station, in Python (the reference the compiled station is tested against)
     """A station's state and its rules. Use beacon() or listen() to start, queue() to add messages, then poll(), hear() and handle()."""
 
     def __init__(self, call, grid, levels=None, close_when_done=True):  # set up a station
@@ -1065,3 +1067,169 @@ class Station:  # the link rules for one station
         if waited_for == "ack":  # it was a message frame
             return self._send_part(now)  # send it again
         return self._ack(now, 0, OFFER_TURN, ACK_LINK, "offer", "offer", self._longest_reply())  # it was a turn offer: offer again
+
+
+# ---- The compiled station (library interface 10) ----
+
+_RESULT_SKIP = ("body_llrs",)  # receiver report fields the station never needs (soft bits stay in Python)
+
+
+def _result_json(result):  # a receiver report as plain data for the library
+    """Return the fields of an RxResult as a dict (the control fields' channel report as a dict, level lists as lists)."""
+    data = {}  # the fields
+    for name in result.__dataclass_fields__:  # each field of the report
+        if name in _RESULT_SKIP:  # not needed
+            continue  # skipped
+        value = getattr(result, name)  # its value
+        if name == "fields" and value is not None:  # a control frame's fields
+            value = {key: (vars(item) if isinstance(item, ChannelReport) else list(item) if isinstance(item, tuple) else item) for key, item in value.items()}  # made plain
+        data[name] = value  # kept
+    return data  # the report
+
+
+def _result_back(data):  # plain data -> a receiver report again (for the attributes that hold reports)
+    """Return an RxResult built from the dict _result_json made."""
+    from modem import RxResult  # the report type
+    data = dict(data)  # a copy
+    fields = data.get("fields")  # a control frame's fields
+    if fields is not None:  # there are some
+        fields = dict(fields)  # a copy
+        if isinstance(fields.get("report"), dict):  # a channel report
+            fields["report"] = ChannelReport(**fields["report"])  # as a record
+        if isinstance(fields.get("levels"), list):  # a level list
+            fields["levels"] = tuple(fields["levels"])  # as Python keeps it
+        data["fields"] = fields  # put back
+    return RxResult(**data)  # the report
+
+
+def _build(frame):  # a frame description from the library -> its audio
+    """Return the audio of the frame the compiled station described (built by the compiled transmitter)."""
+    kind = frame["type"]  # which frame
+    if kind == "ack":  # an acknowledgment
+        return build_ack(frame["link"], frame["msg_id"], frame["part"], frame["status"], ChannelReport(**frame["report"]), level=frame["level"])  # built
+    if kind == "ident":  # an identification
+        return build_ident(frame["call"], frame["link"], final=frame["final"], level=frame["level"])  # built
+    if kind == "answer":  # an answer or a directed call
+        return build_answer(frame["dest"], frame["origin"], ChannelReport(**frame["report"]), tuple(frame["levels"]), mail_check=frame["mail_check"], level=frame["level"], directed=frame["directed"])  # built
+    if kind == "beacon":  # a beacon
+        return build_beacon(frame["call"], frame["grid"], tuple(frame["levels"]), listening=frame["listening"], mail_check=frame["mail_check"], holds_mail=frame["holds_mail"], level=frame["level"], wide=frame["wide"])  # built
+    if kind == "notice":  # a mail notice
+        return build_notice(frame["call"], frame["held"], frame["receipts"], frame["heard"], level=frame["level"])  # built
+    if kind == "message":  # a link message frame
+        return build_frame(frame["text"], frame["level"], frame["part"], frame["parts"], link=frame["link"], msg_id=frame["msg_id"], want_level=frame["want_level"])  # built
+    if kind == "addressed":  # a fully addressed frame
+        return build_frame(frame["text"], frame["level"], frame["part"], frame["parts"], msg_id=frame["msg_id"], dest=frame["dest"], origin=frame["origin"], hops=frame["hops"], life_hours=frame["life_hours"])  # built
+    from modem.longbeacon import build_long_beacon  # the long beacon's transmitter
+    return build_long_beacon(frame["call"], frame["grid"], available=frame["available"], holds_mail=frame["holds_mail"])  # built
+
+
+_AS_TUPLES = ("history", "bulletins", "broadcasts")  # attributes whose items Python keeps as tuples
+_AS_SETS = ("worked", "refused", "done_ids", "bulletin_done")  # attributes Python keeps as sets
+_OWN = ("core", "mail", "busy", "stored", "stored_sig", "_busy_error")  # attributes kept here in Python, not in the library
+
+
+class CompiledStation:  # one station, its rules in the compiled library (cpp/src/station.cpp)
+    """The same Station, its state and rules in C++. Methods and attributes behave as PythonStation's; the receiver and the transmitter's audio stay in Python's hands (both compiled underneath)."""
+
+    def __init__(self, call, grid, levels=None, close_when_done=True):  # set up a station
+        object.__setattr__(self, "core", native.compiled_station())  # the station in the library
+        object.__setattr__(self, "busy", None)  # no listen-first check yet
+        object.__setattr__(self, "stored", None)  # soft bits of the last failed message frame
+        object.__setattr__(self, "stored_sig", None)  # which frame that was
+        object.__setattr__(self, "_busy_error", None)  # an error raised inside the check, to pass on
+        self._ask("init", call, grid, None if levels is None else list(levels), close_when_done)  # set up (refuses a bad callsign as Python does)
+        self.mail = Mailroom(clean_call(call))  # the mail kept between contacts
+
+    def _ask(self, op, *args):  # run one method in the library
+        """Return the library's answer to `op`; drop the receiver's kept soft bits when it says so."""
+        mail = self.__dict__.get("mail")  # the mail store
+        answer, clear = self.core.request(op, args, mail.clock() if mail is not None else 0.0)  # asked, at the mail store's time
+        if clear:  # the station forgot a half-received frame
+            object.__setattr__(self, "stored", None)  # so do we
+        error, self.__dict__["_busy_error"] = self.__dict__["_busy_error"], None  # an error inside the listen-first check
+        if error is not None:  # there was one
+            raise error  # passed on, as Python's station would
+        return answer  # the answer
+
+    def _tx(self, data):  # a transmission description -> a Transmission
+        """Return the Transmission (with its audio) the library described, or None."""
+        if data is None:  # nothing to send
+            return None  # nothing
+        audio = _build(data["frame"])  # the audio
+        if len(audio) != round(data["seconds"] * FS):  # the library's idea of its length must match
+            raise RuntimeError(f"frame length mismatch: {len(audio)} samples built, {data['seconds'] * FS:.0f} expected")  # a fault, never ignored
+        return Transmission(audio, data["kind"], data["level"], data["note"], data["delay"])  # the transmission
+
+    def __getattr__(self, name):  # station.<name>, read from the library
+        if name.startswith("__") or name in _OWN:  # Python's own lookups, or an attribute kept here
+            raise AttributeError(name)  # not in the library
+        value = self._ask("get", name)  # the value
+        if name in _AS_TUPLES:  # items kept as tuples
+            return [tuple(item) for item in value]  # as Python has them
+        if name in _AS_SETS:  # a set
+            return set(value)  # as Python has it
+        if name == "levels":  # a tuple
+            return tuple(value)  # as Python has it
+        if name in ("last_result",) and value is not None:  # a receiver report
+            return _result_back(value)  # as a report
+        if name == "candidates":  # receiver reports
+            return [_result_back(item) for item in value]  # as reports
+        if name == "heard_at":  # callsign -> (time, report)
+            return {call: (when, ChannelReport(**report)) for call, (when, report) in value.items()}  # as Python has it
+        if name == "notices":  # callsign -> (time, fields)
+            return {call: (when, fields) for call, (when, fields) in value.items()}  # as tuples
+        return value  # as it is
+
+    def __setattr__(self, name, value):  # station.<name> = value
+        if name == "mail":  # a mail store handed in
+            if not isinstance(value, CompiledMailroom):  # the compiled station needs the compiled store
+                raise TypeError("a compiled station needs a CompiledMailroom")  # refuse
+            object.__setattr__(self, "mail", value)  # kept alive here
+            self.core.set_mail(value.store)  # and used by the library
+            return  # done
+        if name == "busy":  # the listen-first check
+            object.__setattr__(self, "busy", value)  # kept here
+            self.core.set_busy(None if value is None else self._busy_call)  # the library calls it through us
+            return  # done
+        if name in _OWN:  # kept here
+            object.__setattr__(self, name, value)  # stored
+            return  # done
+        self._ask("set", name, value)  # in the library
+
+    def _busy_call(self, _context, level):  # called by the library from inside a request
+        """Return 1 when the frequency is in use at `level`, else 0; keep any error to raise after the request."""
+        try:  # the check is the caller's code
+            return 1 if self.busy(level) else 0  # its answer
+        except Exception as err:  # noqa: BLE001 - passed on after the request, as Python's station would raise it
+            self.__dict__["_busy_error"] = err  # kept
+            return 0  # "clear" for now
+
+    # ---- the methods, as PythonStation's ----
+
+    def beacon(self): self._ask("beacon")  # become the station that calls
+    def listen(self): self._ask("listen")  # become the station that answers
+    def call_station(self, target): self._ask("call_station", target)  # call one station by name
+    def beacon_once(self): self._ask("beacon_once")  # one beacon round, then listen
+    def call_once(self, target): self._ask("call_once", target)  # one call, then listen
+    def long_beacon(self, holds_mail=None): self._ask("long_beacon", holds_mail)  # queue a long beacon
+    def queue(self, text, to=None): self._ask("queue", text, to)  # a message to send
+    def broadcast(self, text, level=BROADCAST_LEVEL): self._ask("broadcast", text, level)  # a broadcast to ALL
+    def unqueue(self, text, to=None): return self._ask("unqueue", text, to)  # take a message back
+    def mail_waiting_at(self, call): return self._ask("mail_waiting_at", call)  # mail waiting there?
+    def end(self): self._ask("end")  # close when done
+    def tuning(self, now): return self._ask("tuning", now)  # where the radio should be
+    def next_wake(self): return self._ask("next_wake")  # when to poll next
+    def new_contact(self): self._ask("new_contact")  # ready for another contact
+    def expects_call_from(self, call, now): return self._ask("expects_call_from", call, now)  # a call asked for?
+    def poll(self, now): return self._tx(self._ask("poll", now))  # anything to send on the clock?
+    def handle(self, result, now): return self._tx(self._ask("handle", _result_json(result), now))  # react to a frame
+    def _ack(self, now, msg_id, part, status, kind, expects=None, reply_s=0.0): return self._tx(self._ask("_ack", now, msg_id, part, status, kind, expects, reply_s))  # an acknowledgment (tests)
+
+    hear = PythonStation.hear  # the receiver, with a failed message frame kept for its retry: the same code as the Python station
+
+
+class Station:  # one station's link rules: the compiled station when the library is in use, otherwise the Python one
+    """Make a CompiledStation when the compiled library is in use, else a PythonStation; both behave the same."""
+
+    def __new__(cls, call, grid, levels=None, close_when_done=True):  # which kind to make
+        return (CompiledStation if native._lib is not None else PythonStation)(call, grid, levels, close_when_done)  # the compiled one when it can be

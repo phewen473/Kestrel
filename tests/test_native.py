@@ -527,3 +527,83 @@ def test_mail_store_matches_python():  # the compiled mail store (interface 9) a
         assert json.loads(json.dumps(py.to_dict())) == reloaded.to_dict()  # the same
         other_station = CompiledMailroom("Q9ZZ", clock=lambda: clock[0])  # another station
         assert other_station._ask("from_dict", py.to_dict()) is False  # does not take Q1AAAA's mail
+
+
+def _station_scenarios(make):  # contacts run with stations made by `make` (PythonStation or CompiledStation); returns everything worth comparing
+    """Run a set of contacts and return their events, logs, results and stores, for comparison between the two kinds of station."""
+    from link import Path, run_group, run_link  # the simulation
+    clock = [1.8e9]  # the mail stores' wall clock
+
+    def station(call, grid, **extra):  # one station on the shared mail clock
+        made = make(call, grid, **extra)  # made
+        made.mail.clock = lambda: clock[0]  # the shared clock
+        made.mail._ask("init", call, 4242) if hasattr(made.mail, "_ask") else setattr(made.mail, "next_id", 4242)  # the same first message number in both runs
+        return made  # ready
+
+    def summary(*stations):  # what each station ended with
+        return json.dumps([(s.call, s.state, s.log, s.delivered, s.inbox, s.bulletins, s.outbox, s.want, s.tx_level, s.history, s.mail.to_dict()) for s in stations], default=str)  # the lot, as text now (the Python station's lists go on changing)
+
+    out = []  # everything to compare
+    a, b = station("Q1AAAA", "EM92"), station("Q2BB", "FN31")  # 1. a plain contact on a fading path, traffic both ways
+    a.queue("First message from A. " * 4)  # a longer message
+    a.queue("Second, short.")  # and a short one
+    b.queue("Reply from B, with a little news.")  # and one back
+    a.beacon()  # A calls
+    b.listen()  # B answers
+    out.append((run_link(a, b, Path(snr_db=-6.0, condition="moderate"), Path(snr_db=-8.0, condition="moderate"), seed=3), summary(a, b)))  # run
+    a, b = station("Q1AAAA", "EM92"), station("Q2BB", "FN31")  # 2. a path that fades away mid-contact: resends, slower levels, reacquiring
+    a.queue("A message long enough to need several frames at the slow levels, sent while the path fades away. " * 2)  # long
+    a.beacon()  # A calls
+    b.listen()  # B answers
+    out.append((run_link(a, b, Path(snr_db=lambda t: -4.0 if t < 30 else (-15.0 if t < 150 else -32.0), condition="moderate"), Path(snr_db=-5.0), seed=5, limit_s=1800.0), summary(a, b)))  # run
+    a, b = station("Q1AAAA", "EM92", close_when_done=False), station("Q2BB", "FN31", close_when_done=False)  # 3. a move to a working frequency, kept open, then idle
+    a.can_move = b.can_move = True  # both radios can retune
+    a.move_to_hz = 1500  # A proposes +1.5 kHz
+    a.queue("On the working frequency now.")  # traffic
+    a.beacon()  # A calls
+    b.listen()  # B answers
+    out.append((run_link(a, b, Path(snr_db=0.0), Path(snr_db=0.0), seed=7, limit_s=900.0), summary(a, b)))  # run
+    a, b = station("Q1AAAA", "EM92"), station("Q2BB", "FN31")  # 4. a directed call, a broadcast, a long beacon
+    a.broadcast("To everyone: net at 2100Z.")  # a broadcast first
+    a.long_beacon()  # and a long beacon
+    a.call_station("Q2BB")  # then a call by name
+    a.queue("Called you by name.")  # traffic
+    b.listen()  # B listens
+    out.append((run_link(a, b, Path(snr_db=-2.0), Path(snr_db=-2.0), seed=9, limit_s=1800.0), summary(a, b)))  # run
+    origin, carrier, dest = station("Q1AAAA", "EM92"), station("Q2BB", "FN31"), station("Q3CCC", "EM73")  # 5. store and forward: A -> B -> C, receipt back to A
+    origin.queue("Hello C, carried by B.", to="Q3CCC")  # mail for C
+    for first, second, seed in ((origin, carrier, 11), (dest, carrier, 12), (carrier, origin, 13)):  # A meets B, C meets B, B meets A
+        clock[0] += 3600.0  # an hour between contacts
+        first.new_contact()  # ready
+        second.new_contact()  # ready
+        first.beacon()  # calls
+        second.listen()  # answers
+        out.append((run_link(first, second, Path(snr_db=0.0), Path(snr_db=0.0), seed=seed), summary(origin, carrier, dest)))  # run
+    caller = station("Q1AAAA", "EM92")  # 6. one caller, three answering stations: wide windows and random reply slots
+    others = [station(call, "FN31") for call in ("Q2BB", "Q3CCC", "Q4DD")]  # the others
+    for other in others:  # each
+        other.listen()  # answers
+        other.queue(f"Traffic from {other.call}.")  # with something to say
+    caller.beacon()  # calls
+    caller.wide = True  # asking for a wide window from the start (as after an unanswered beacon)
+    paths = {other.call: Path(snr_db=-3.0) for other in others}  # easy paths
+    out.append((run_group(caller, others, paths, paths, seed=17), summary(caller, *others)))  # run
+    a, b = station("Q1AAAA", "EM92"), station("Q2BB", "FN31")  # 7. a call to a station whose operator is not available
+    b.available = False  # not taking contacts
+    b.listen()  # but listening
+    a.call_station("Q2BB")  # called by name
+    out.append((run_link(a, b, Path(snr_db=0.0), Path(snr_db=0.0), seed=19, limit_s=600.0), summary(a, b)))  # run
+    return out  # everything
+
+
+def test_station_matches_python():  # the compiled station (interface 10) against link/station.py, contact for contact
+    from link.station import CompiledStation, PythonStation  # the two kinds of station
+    mine = _station_scenarios(CompiledStation)  # compiled
+    ref = _station_scenarios(PythonStation)  # Python
+    assert len(mine) == len(ref)  # the same number of runs
+    for index, ((events, ends), (ref_events, ref_ends)) in enumerate(zip(mine, ref)):  # each run
+        assert len(events) == len(ref_events), (index, len(events), len(ref_events))  # the same number of frames
+        for event, ref_event in zip(events, ref_events):  # each frame
+            assert json.dumps(event, sort_keys=True, default=str) == json.dumps(ref_event, sort_keys=True, default=str), (index, event, ref_event)  # the same frame, at the same time, with the same outcome (states and levels after it included)
+        assert ends == ref_ends, index  # the same logs, results and stores for every station
+    assert sum(len(events) for events, _ in mine) > 60  # the runs did real work

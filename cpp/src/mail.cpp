@@ -19,6 +19,7 @@
 
 #define KESTREL_BUILDING 1  /* this file builds the library, so its functions are exported */
 #include "kestrel.h"  /* the interface being implemented */
+#include "internal.hpp"  /* the station's way in */
 #include "json.hpp"  /* the mail file and the requests */
 
 #include <algorithm>  /* stable_sort, find */
@@ -768,6 +769,7 @@ struct KesMail {  /* one station's mail */
         if (op == "tidy") { return tidy(); }  /* tidied */
         if (op == "take_news") { return take_news(); }  /* the news */
         if (op == "to_dict") { return to_dict(); }  /* the store */
+        if (op == "bag_count") { return Json(static_cast<long long>(bag.size())); }  /* how many held (bool(self.bag) without copying them) */
         if (op == "from_dict") { return Json(from_dict(a.at(0))); }  /* loaded */
         throw PyError{"AttributeError", "no such mail operation: " + op};  /* unknown */
     }  /* end of serve */
@@ -783,11 +785,11 @@ KES_API void kes_mail_free(KesMail *m) {  /* done with it */
     delete m;  /* freed */
 }  /* end of kes_mail_free */
 
-KES_API long kes_mail_request(KesMail *m, const char *request, double now) {  /* run one request at time `now` */
-    if (m == nullptr || request == nullptr) {  /* nonsense */
-        return -1;  /* refuse */
-    }  /* end of the check */
-    std::lock_guard<std::recursive_mutex> guard(m->lock);  /* one change at a time */
+}  /* end of the mail store's C interface (first part) */
+
+namespace {  /* the request runner, shared by both ways in */
+
+std::string run_request(KesMail *m, const char *request, double now) {  /* one request, its reply as text (the caller holds the lock) */
     Json reply = Json::object();  /* the answer */
     try {  /* any step may fail */
         Json req = Json::parse(request);  /* the request */
@@ -805,7 +807,24 @@ KES_API long kes_mail_request(KesMail *m, const char *request, double now) {  /*
         reply["error"] = "TypeError";  /* as Python would call a wrong argument */
         reply["message"] = e.what();  /* the reason */
     }  /* end of the request */
-    m->reply = reply.dump();  /* kept for collection */
+    return reply.dump();  /* the reply */
+}  /* end of run_request */
+
+}  /* end of the request runner */
+
+std::string kes::mail_call(KesMail *m, const std::string &request, double now) {  /* the station's way in: request and reply in one locked step */
+    std::lock_guard<std::recursive_mutex> guard(m->lock);  /* one change at a time */
+    return run_request(m, request.c_str(), now);  /* the reply */
+}  /* end of kes::mail_call */
+
+extern "C" {  /* the mail store's C interface, continued */
+
+KES_API long kes_mail_request(KesMail *m, const char *request, double now) {  /* run one request at time `now` */
+    if (m == nullptr || request == nullptr) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    std::lock_guard<std::recursive_mutex> guard(m->lock);  /* one change at a time */
+    m->reply = run_request(m, request, now);  /* run, and kept for collection */
     return static_cast<long>(m->reply.size());  /* its length */
 }  /* end of kes_mail_request */
 

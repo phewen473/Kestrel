@@ -135,6 +135,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-22 (0.31R1, no behaviour change): compiled library interface 10: the station's link rules (link/station.py, with the adaptation and planning rules) in C++ (`cpp/src/station.cpp`); `Station(...)` gives the compiled station when the library is present. Every link, mail, live and end-to-end test passes on it, and nine simulated contacts give the same transmissions, log lines and results as the Python station.
 - 2026-11-22 (0.31R1, no behaviour change): compiled library interface 9: the mail store (store and forward, link/mail.py's Mailroom) in C++ (`cpp/src/mail.cpp`), used when the library is present; same mail file, same answers call for call (tested side by side).
 - 2026-11-22 (0.31R1, no behaviour change): compiled library interface 8: packing and unpacking every bit a frame carries (text, compression, addresses, grid locators, channel reports, header, address block, control fields, check values) in `cpp/src/packing.cpp`, used by the Python modem when present and tested against it on good, damaged and nonsense input.
 - 2026-11-22 (0.31R1, no behaviour change): compiled library interface 7: the continuous receiver's store and candidate list as a compiled object (the same frames, near misses and tries as the Python listener, which stays as the reference: Listener(compiled=False)), and the transmitter's coding and audio (identical audio).

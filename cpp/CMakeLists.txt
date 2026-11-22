@@ -17,7 +17,7 @@ if(NOT CMAKE_BUILD_TYPE)  # no build type chosen
   set(CMAKE_BUILD_TYPE Release)  # build optimized
 endif()  # end of the default
 
-add_library(kestrel SHARED src/kestrel.cpp src/packing.cpp src/mail.cpp)  # the library itself (signal work in kestrel.cpp, the packing of the bits in packing.cpp, the mail store in mail.cpp) (kestrel.dll on Windows, libkestrel.so on Linux)
+add_library(kestrel SHARED src/kestrel.cpp src/packing.cpp src/mail.cpp src/station.cpp)  # the library itself (signal work in kestrel.cpp, the packing of the bits in packing.cpp, the mail store in mail.cpp, the link rules in station.cpp) (kestrel.dll on Windows, libkestrel.so on Linux)
 target_include_directories(kestrel PRIVATE include third_party/pocketfft)  # its own header, and the FFT
 find_package(Threads REQUIRED)  # the platform's thread library (the heavy loops share work among threads)
 target_link_libraries(kestrel PRIVATE Threads::Threads)  # linked in

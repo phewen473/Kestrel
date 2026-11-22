@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 9)
+## What is in it so far (interface version 10)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -33,6 +33,7 @@ quietly runs in pure Python, as it always has.
 | `kes_encode_frame` | `modem/frame.py` `build_frame`, `build_control` (after the bits are packed): header and body coding, interleaving, pilots, tones, audio | identical audio | (the transmitter) |
 | `kes_crc16`, `kes_crc8`, `kes_call_to_bits`, `kes_bits_to_call`, `kes_call_hash`, `kes_message_hash`, `kes_link_id`, `kes_choose_packing`, `kes_text_to_bits`, `kes_bits_to_text`, `kes_header_bits`, `kes_address_block`, `kes_read_address_block`, `kes_pack_control`, `kes_unpack_control` (in `src/packing.cpp`) | `modem/crc.py`, `address.py`, `compress.py`, `text.py`, `control.py`, and `frame.py` `_header_bits`, `_address_block`, `_read_address_block` | the same bits, text and fields, and a refusal wherever Python raises an error | CRC-16 of a message body: 145 us -> 8 us |
 | `kes_mail_new`, `kes_mail_request`, `kes_mail_reply`, `kes_mail_free` (in `src/mail.cpp`) | `link/mail.py` `Mailroom`: store and forward, every method, by a JSON request naming the method | the same answers, news and stored mail, call for call; the same mail file | (the first of the link rules) |
+| `kes_station_new`, `kes_station_request`, `kes_station_reply`, `kes_station_set_mail`, `kes_station_set_busy`, `kes_station_free` (in `src/station.cpp`) | `link/station.py` `Station` with `link/adapt.py` and the planning rules of `modem/plan.py`: every link rule, by a JSON request naming the method | the same transmissions at the same moments, the same log lines word for word, the same results and stored mail, contact for contact (nine simulated contacts compared) | the reply slot is chosen with NumPy's own random generator, rebuilt in `src/rng.hpp` |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is
@@ -45,10 +46,10 @@ pure Python 52.6 s; interface 1 (three routines) 39.7 s; interface 3 15-18 s (sa
 
 The whole modem now has a compiled version: every heavy computation of the receiver and the
 transmitter, the continuous receiver's store and candidate list, and the packing and unpacking of
-every bit a frame carries. The link layer has begun: the mail store (store and forward) is in C++.
-Still in Python: the glue that calls the modem routines in order (frame.py), the long beacon's
-soft-energy combining, the help for weak control frames (it calls the compiled Viterbi decoder),
-the station's link rules (link/station.py, link/adapt.py), and the panel. Next: the link rules.
+every bit a frame carries. The link layer is in C++ too: the station's link rules and the mail
+store. Still in Python: the glue that calls the modem routines in order (frame.py: receive() and
+the build_* functions), the long beacon's soft-energy combining, the help for weak control frames
+(it calls the compiled Viterbi decoder), the live runner (sound card, radio), and the panel.
 
 The packing functions refuse (return -1) wherever the Python reference raises an error, and for
 any text outside 7-bit ASCII. The Python bridge then runs the Python code, which raises its own
@@ -61,6 +62,11 @@ worded error, so the program behaves the same either way.
 - `src/packing.cpp` — packing and unpacking the bits: text (plain and compressed), addresses,
   grid locators, channel reports, the header, the address block, control-frame fields, check values.
 - `src/mail.cpp` — the mail store (store and forward), `link/mail.py`'s Mailroom in C++.
+- `src/station.cpp` — one station's link rules, `link/station.py`'s Station in C++ (with the
+  speed-adaptation and message-planning rules).
+- `src/rng.hpp` — NumPy's default random generator (SeedSequence and PCG64), so the C++ station
+  picks the same reply slot as the Python one.
+- `src/internal.hpp` — calls between the parts of the library.
 - `src/json.hpp` — a small JSON reader and writer (the mail file, and the mail store's requests).
 - `third_party/pocketfft/` — the FFT (the same algorithm NumPy uses), header-only, BSD licence;
   its licence (`LICENSE.md`) travels with the library.
@@ -93,9 +99,12 @@ match the Python reference.
 
 ## Where things were left
 
-Interface version 9: the receiver (front end, body decoder, the continuous receiver's store and
-candidates), the transmitter's coding and audio, the packing and unpacking of every field, and the
-mail store run compiled, tested against Python. Next: the station's link rules (link/adapt.py,
-then link/station.py), so that Python is left only in the operator panel.
+Interface version 10: the receiver (front end, body decoder, the continuous receiver's store and
+candidates), the transmitter's coding and audio, the packing and unpacking of every field, the mail
+store and the station's link rules run compiled, tested against Python. The request and reply of
+`kes_mail_*` and `kes_station_*` are two calls: a caller using one handle from several threads must
+not let them interleave (the Python bridge holds a lock per handle; the station reaches its mail
+store in one locked step). Next: the frame glue (receive and build) as single compiled calls, then
+a C++ program around the library (the panel, after asking the operator about Qt).
 
 Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).

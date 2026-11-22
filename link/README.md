@@ -80,7 +80,7 @@ Two faults in the first design were found this way and fixed:
 
 | File | Contents |
 |---|---|
-| `station.py` | One station's rules: `Station`, with `poll`, `hear` and `handle` |
+| `station.py` | One station's rules: `Station`, with `poll`, `hear` and `handle`. Since library interface 10 `Station(...)` gives a `CompiledStation` (the rules in C++, `cpp/src/station.cpp`; the same methods and attributes; audio still built and heard by the modem in `modem/`) when the compiled library is in use, and a `PythonStation` otherwise. The two give the same transmissions and log lines, contact for contact |
 | `adapt.py` | How a receiver chooses the level to ask for |
 | `simulate.py` | Stations joined by the channel simulator: `run_link` (two stations), `run_group` (one caller, several answering stations), `Path`, `describe` |
 | `params.py` | The starting values above |

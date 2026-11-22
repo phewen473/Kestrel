@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 9  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 10  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -39,6 +39,7 @@ class _Fields(ctypes.Structure):  # KesFields in kestrel.h: the named fields of 
 
 
 _FIELDS_P = ctypes.POINTER(_Fields)  # a pointer to the fields
+_BUSY = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_int)  # KesBusy: the station's listen-before-transmit check
 
 
 def _file_name():  # what the library file is called on this platform
@@ -160,6 +161,18 @@ def _load():  # find, open and check the library
         lib.kes_mail_request.restype = ctypes.c_long  # the reply's length, or -1
         lib.kes_mail_reply.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]  # store, room, its size
         lib.kes_mail_reply.restype = ctypes.c_long  # the reply's length, or -1
+        lib.kes_station_new.argtypes = []  # nothing
+        lib.kes_station_new.restype = ctypes.c_void_p  # the station
+        lib.kes_station_free.argtypes = [ctypes.c_void_p]  # the station
+        lib.kes_station_free.restype = None  # returns nothing
+        lib.kes_station_set_mail.argtypes = [ctypes.c_void_p, ctypes.c_void_p]  # station, mail store
+        lib.kes_station_set_mail.restype = None  # returns nothing
+        lib.kes_station_set_busy.argtypes = [ctypes.c_void_p, _BUSY, ctypes.c_void_p]  # station, check, context
+        lib.kes_station_set_busy.restype = None  # returns nothing
+        lib.kes_station_request.argtypes = [ctypes.c_void_p, ctypes.c_char_p]  # station, request
+        lib.kes_station_request.restype = ctypes.c_long  # the reply's length, or -1
+        lib.kes_station_reply.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]  # station, room, its size
+        lib.kes_station_reply.restype = ctypes.c_long  # the reply's length, or -1
         lib.kes_encode_frame.argtypes = [_BYTE_P, _BYTE_P, ctypes.c_size_t, ctypes.c_int, _LONG_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t,
                                          ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, audio
         lib.kes_encode_frame.restype = ctypes.c_long  # samples written, or -1
@@ -781,6 +794,7 @@ class CompiledMail:  # the library's mail store (link/mail.py builds its Mailroo
     def __init__(self):  # a new, empty store
         self._handle = _lib.kes_mail_new()  # made in the library
         self._lib = _lib  # kept, so the store can be freed even if the library is later switched off (as the tests do)
+        self._lock = __import__("threading").Lock()  # one request-and-reply at a time from Python (the panel saves the mail from its own thread)
 
     def __del__(self):  # freed with this object
         if getattr(self, "_handle", None):  # made
@@ -791,11 +805,12 @@ class CompiledMail:  # the library's mail store (link/mail.py builds its Mailroo
         """Return what the store's method `op` returns for `args` at time `now`, or raise the error Python's Mailroom would."""
         import json  # requests and replies are JSON
         text = json.dumps({"op": op, "args": list(args), "now": now}, default=lambda v: v.item() if hasattr(v, "item") else list(v))  # the request (NumPy numbers and tuples made plain)
-        length = self._lib.kes_mail_request(self._handle, text.encode("utf-8"), float(now))  # run
-        if length < 0:  # refused outright
-            raise RuntimeError("the mail store refused the request")  # should not happen
-        room = ctypes.create_string_buffer(length + 1)  # space for the reply
-        self._lib.kes_mail_reply(self._handle, room, length + 1)  # collected
+        with self._lock:  # the request and its reply together
+            length = self._lib.kes_mail_request(self._handle, text.encode("utf-8"), float(now))  # run
+            if length < 0:  # refused outright
+                raise RuntimeError("the mail store refused the request")  # should not happen
+            room = ctypes.create_string_buffer(length + 1)  # space for the reply
+            self._lib.kes_mail_reply(self._handle, room, length + 1)  # collected
         reply = json.loads(room.raw[:length].decode("utf-8"))  # read
         if "error" in reply:  # the method raised
             raise _ERRORS.get(reply["error"], RuntimeError)(reply.get("message", ""))  # the same kind of error
@@ -805,3 +820,61 @@ class CompiledMail:  # the library's mail store (link/mail.py builds its Mailroo
 def compiled_mail():  # a store, when the library is in use
     """Return a new CompiledMail, or None when the library is not in use."""
     return CompiledMail() if _lib is not None else None  # one store
+
+
+# ---- One station's link rules (interface 10) ----
+
+
+class CompiledStationCore:  # the library's station (link/station.py builds its CompiledStation on this)
+    """A handle on one station inside the library; request() runs one of its methods there."""
+
+    def __init__(self):  # a new station
+        self._handle = _lib.kes_station_new()  # made in the library
+        self._lib = _lib  # kept for freeing
+        self._busy = None  # the ctypes callback in use (kept alive while the library holds it)
+        self._lock = __import__("threading").RLock()  # one request-and-reply at a time from Python (the panel reads the station from its own thread; re-entrant for the listen-first check)
+
+    def __del__(self):  # freed with this object
+        if getattr(self, "_handle", None):  # made
+            self._lib.kes_station_free(self._handle)  # freed
+            self._handle = None  # once
+
+    def set_mail(self, store):  # the mail store the station uses
+        self._lib.kes_station_set_mail(self._handle, store._handle)  # handed over (the caller keeps it alive)
+
+    def set_busy(self, check):  # the listen-before-transmit check (a Python callable taking a level), or None
+        self._busy = _BUSY(check) if check is not None else _BUSY()  # wrapped for C (a null pointer for none)
+        self._lib.kes_station_set_busy(self._handle, self._busy, None)  # handed over
+
+    def request(self, op, args=(), mail_now=0.0):  # run one method
+        """Return (answer, clear_stored) for the station's method `op`, or raise the error Python's Station would."""
+        import json  # requests and replies are JSON
+        text = json.dumps({"op": op, "args": list(args), "mail_now": mail_now}, default=_plain)  # the request
+        with self._lock:  # the request and its reply together
+            length = self._lib.kes_station_request(self._handle, text.encode("utf-8"))  # run
+            if length < 0:  # refused outright
+                raise RuntimeError("the station refused the request")  # should not happen
+            room = ctypes.create_string_buffer(length + 1)  # space for the reply
+            self._lib.kes_station_reply(self._handle, room, length + 1)  # collected
+        reply = json.loads(room.raw[:length].decode("utf-8"))  # read
+        if "error" in reply:  # the method raised
+            raise _ERRORS.get(reply["error"], RuntimeError)(reply.get("message", ""))  # the same kind of error
+        return reply["ok"], reply.get("clear_stored", False)  # the answer, and whether the receiver's kept soft bits go
+
+
+def _plain(value):  # JSON for values json.dumps does not know
+    """Return NumPy numbers as Python numbers, NumPy arrays and tuples and sets as lists, records as dicts."""
+    if hasattr(value, "item") and getattr(value, "ndim", 1) == 0:  # a NumPy number
+        return value.item()  # as a Python number
+    if hasattr(value, "tolist"):  # a NumPy array
+        return value.tolist()  # as a list
+    if isinstance(value, (set, frozenset, tuple)):  # a set or tuple
+        return list(value)  # as a list
+    if hasattr(value, "__dataclass_fields__"):  # a record (a ChannelReport)
+        return {name: getattr(value, name) for name in value.__dataclass_fields__}  # as a dict
+    raise TypeError(f"cannot send {type(value).__name__} to the library")  # anything else
+
+
+def compiled_station():  # a station, when the library is in use
+    """Return a new CompiledStationCore, or None when the library is not in use."""
+    return CompiledStationCore() if _lib is not None else None  # one station
