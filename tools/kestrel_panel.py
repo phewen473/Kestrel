@@ -63,7 +63,8 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
-            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},  # (continued: logging, recording and looks)
+            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
+            "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
@@ -191,9 +192,11 @@ FONT_MIN, FONT_MAX = 7, 16  # the smallest and largest font sizes offered
 SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. It keeps the last transmission.\n\n"  # the transmit scope
               "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
               "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labelled.\n\n"  # the scales
+              "Floor and Range (the sliders beside each scope): Floor sets the level at the bottom of the trace and the black of the waterfall; raise it to hide noise, lower it to see weaker signals. Range sets how many dB lie between the bottom and the top; fewer dB gives more contrast. Double-click a slider to reset it.\n\n"  # the sliders
               "Zoom: click a signal or its label, turn the mouse wheel, or pick a width in the View box. Right click, or Full view, shows everything again.\n\n"  # zooming
               "Sizes: drag the dividers between the panels to shrink one and grow another. View > Reset the panel sizes puts them back.")  # the dividers
 
+SCOPE_LIMITS = {"rx": ((-30.0, 30.0), (10.0, 90.0)), "tx": ((-110.0, -20.0), (10.0, 100.0))}  # the Floor and Range sliders' ends, in dB: receive floor relative to the noise, transmit floor below full scale
 VIEW_WIDTHS = {"Full (0-3000 Hz)": 3000.0, "1000 Hz wide": 1000.0, "500 Hz wide": 500.0, "200 Hz wide": 200.0}  # the scope widths offered, by name
 
 
@@ -497,6 +500,10 @@ class Panel:  # the control panel window
         self.last_line = None  # when the last waterfall line was drawn
         self.scale_khz = None  # the radio frequency the top scale was last drawn for
         self.tx_was = False  # whether a transmission was under way at the last look
+        self.scope_db = {}  # each scope's Floor and Range slider settings, as Tk variables: ("rx" or "tx", "floor" or "range") -> DoubleVar
+        for which in ("rx", "tx"):  # the receive and transmit scopes
+            for part in ("floor", "range"):  # the bottom of the picture, and how many dB it covers
+                self.scope_db[which, part] = tk.DoubleVar(value=float(self.settings.get(f"scope_{which}_{part}", DEFAULTS[f"scope_{which}_{part}"])))  # as last left
         self.panes["scopes"] = scopes = ttk.PanedWindow(parent, orient="vertical")  # the two scopes, one above the other, with a divider to drag between them
         parent.add(scopes, weight=3)  # between the log and the meters
         tx_frame = ttk.LabelFrame(scopes, text="Transmit  -  audio sent to the radio")  # the box around the transmit scope
@@ -505,6 +512,7 @@ class Panel:  # the control panel window
         tx_frame.rowconfigure(0, weight=1)  # and the height
         self.tx_canvas = tk.Canvas(tx_frame, width=self.left + self.tx_w + self.right, height=self.tx_top + self.tx_trace_h + self.tx_fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
         self.tx_canvas.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # filling the box
+        self._scope_sliders(tx_frame, "tx").grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=2)  # its Floor and Range sliders, to the right
         self.tx_image = tk.PhotoImage(width=self.tx_w, height=self.tx_fall_h)  # its waterfall as a picture
         self.tx_item = self.tx_canvas.create_image(self.left, self.tx_top + self.tx_trace_h, anchor="nw", image=self.tx_image)  # shown under the trace
         self.tx_line = self.tx_canvas.create_line(0, 0, 0, 0, fill="#ff9f43")  # its trace, placed when the scales are drawn
@@ -515,6 +523,7 @@ class Panel:  # the control panel window
         frame.rowconfigure(0, weight=1)  # and the height
         self.scope = tk.Canvas(frame, width=self.left + self.scope_w + self.right, height=self.above + self.trace_h + self.fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
         self.scope.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))  # filling the box
+        self._scope_sliders(frame, "rx").grid(row=0, column=1, rowspan=2, sticky="ns", padx=(0, 4), pady=2)  # its Floor and Range sliders, to the right
         self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # its waterfall as a picture
         self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
         self.trace = self.scope.create_line(0, 0, 0, 0, fill="#7cfc00")  # its trace, placed when the scales are drawn
@@ -536,6 +545,41 @@ class Panel:  # the control panel window
         self.tx_canvas.bind("<Configure>", self.tx_resized)  # the transmit scope follows the size of its panel
         self.scope.bind("<Configure>", self.scope_resized)  # and so does the receive scope
 
+    def _scope_sliders(self, parent, which):  # the Floor and Range sliders of one scope ("rx" or "tx")
+        """Return a frame holding two vertical sliders: Floor sets the level at the bottom of the trace and the black of the waterfall; Range sets how many dB lie between that and the top."""
+        box = ttk.Frame(parent)  # the two sliders side by side
+        box.rowconfigure(1, weight=1)  # the sliders take the height
+        words = {"floor": ("Floor", "Raise it to hide more noise (blacker waterfall); lower it to see weaker signals.\nDouble-click to reset."),  # what each slider is for
+                 "range": ("Range", "Fewer dB: more contrast, weak signals stand out; more dB: strong signals are not flattened.\nDouble-click to reset.")}  # (continued)
+        for column, part in enumerate(("floor", "range")):  # the two sliders
+            low, high = SCOPE_LIMITS[which][column]  # its ends
+            ttk.Label(box, text=words[part][0], font="KestrelTiny").grid(row=0, column=column)  # its name above it
+            slider = ttk.Scale(box, orient="vertical", from_=high, to=low, length=40, variable=self.scope_db[which, part], command=lambda value: self.scope_db_moved())  # up is a higher floor, or a wider range
+            slider.grid(row=1, column=column, sticky="ns", padx=1)  # stretched to the scope's height
+            slider.bind("<ButtonRelease-1>", lambda event: self.save_settings())  # remember the setting when the mouse lets go
+            slider.bind("<Double-Button-1>", lambda event, which=which, part=part: self.reset_scope_db(which, part))  # a double click puts it back
+            value = ttk.Label(box, text="", font="KestrelTiny", width=4, anchor="center")  # its setting in dB, under it
+            value.grid(row=2, column=column)  # place it
+            setattr(self, f"scope_{which}_{part}_text", value)  # kept so it can be updated
+        self.scope_db_moved(redraw=False)  # show the starting values
+        return box  # for the caller to place
+
+    def scope_db_moved(self, redraw=True):  # a Floor or Range slider has moved
+        for (which, part), var in self.scope_db.items():  # every slider
+            value = round(var.get())  # whole dB
+            self.settings[f"scope_{which}_{part}"] = float(value)  # remembered with the other settings
+            label = getattr(self, f"scope_{which}_{part}_text", None)  # its value label, once made
+            if label is not None:  # made already
+                label.configure(text=f"{value:+d}" if part == "floor" else f"{value}")  # the floor with its sign, the range as a plain number
+        if redraw:  # the sliders exist and the scales need to follow
+            self.draw_scales()  # new dB marks on both scopes
+
+    def reset_scope_db(self, which, part):  # a double click on a slider
+        self.scope_db[which, part].set(DEFAULTS[f"scope_{which}_{part}"])  # back to the usual setting
+        self.scope_db_moved()  # show it
+        self.save_settings()  # and remember it
+        return "break"  # the slider itself does nothing more with the click
+
     def scope_resized(self, event):  # the receive scope's panel has changed size
         width, room = max(120, event.width - self.left - self.right), max(40, event.height - self.above - self.below)  # the points across, and the height for the trace and the waterfall together
         trace = int(min(140, max(30, 0.4 * room)))  # the trace takes two fifths of it, within limits
@@ -555,8 +599,9 @@ class Panel:  # the control panel window
         self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # a fresh waterfall of that size
         self.draw_scales()  # and the scales
 
-    def tx_y(self, db):  # where a level below full scale falls on the transmit trace
-        return self.tx_top + self.tx_trace_h - 2 - (db + 70.0) / 70.0 * (self.tx_trace_h - 4)  # from 70 dB under full scale at the bottom to full scale at the top
+    def tx_y(self, db):  # where a level in dB below full scale falls on the transmit trace
+        floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the Floor and Range sliders
+        return self.tx_top + self.tx_trace_h - 2 - (db - floor) / span * (self.tx_trace_h - 4)  # the floor at the bottom, floor plus range at the top
 
     def draw_scales(self):  # draw the fixed parts of both scopes for their present sizes and the view now shown
         span = self.top_hz - self.low_hz  # the width of the view
@@ -572,13 +617,15 @@ class Panel:  # the control panel window
                 if width >= 46 * len(marks) or index % 2 == 0:  # room for every label, or else every other one
                     canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=grey, font="KestrelTiny", tags="scale")  # its audio frequency underneath
             canvas.create_text(self.left + width + self.right / 2, bottom + self.below / 2, text="Hz", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the frequency scale
-        for db in (0, -30, -60):  # marks up the transmit trace, in dB below full scale
-            if db == 0 or self.tx_trace_h >= 40:  # the lower ones only when there is room
-                self.tx_canvas.create_text(self.left - 4, self.tx_y(db) + (4 if db == 0 else 0), text=str(db), anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
-        for db in (0, 25, 50):  # marks up the receive trace, in dB above the noise
-            if db != 25 or self.trace_h >= 50:  # the middle one only when there is room
-                self.scope.create_line(self.left, self.y_for(db), self.left + self.scope_w, self.y_for(db), fill=faint, dash=(1, 4), tags="scale")  # a faint line across
-                self.scope.create_text(self.left - 4, self.y_for(db), text=f"{db:+d}" if db else "noise", anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
+        for which, canvas, y_of, height, name in (("tx", self.tx_canvas, self.tx_y, self.tx_trace_h, "dB below full scale"), ("rx", self.scope, self.y_for, self.trace_h, "dB above the noise")):  # the dB marks up each trace
+            floor, span = self.scope_db[which, "floor"].get(), self.scope_db[which, "range"].get()  # what the trace covers
+            room = max(1, height // 18)  # how many labels fit up the trace
+            step = next(size for size in (5, 10, 20, 30, 50) if span / size <= room or size == 50)  # the spacing that fits
+            for db in range(int(np.ceil(floor / step)) * step, int(floor + span) + 1, step):  # each mark inside the trace
+                y = y_of(db)  # where it falls
+                if which == "rx":  # the receive scope also gets a faint line across
+                    canvas.create_line(self.left, y, self.left + self.scope_w, y, fill=faint, dash=(1, 4), tags="scale")  # at that level
+                canvas.create_text(self.left - 4, y, text=("noise" if which == "rx" and db == 0 else f"{db:+d}" if which == "rx" else str(db)), anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
         self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the left scale, in the top corner
         self.tx_canvas.coords(self.tx_item, self.left, self.tx_top + self.tx_trace_h)  # the transmit waterfall sits under its trace
         self.tx_canvas.coords(self.tx_line, self.left, self.tx_y(-70), self.left + self.tx_w, self.tx_y(-70))  # and its trace lies flat until something is sent
@@ -600,7 +647,8 @@ class Panel:  # the control panel window
             self.tx_was = True  # note it
             dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
             self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its centre lands on the air
-        bright = np.clip((levels + 70.0) / 70.0, 0.0, 1.0)  # each point on a scale from 70 dB under full scale to full scale
+        floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the transmit scope's Floor and Range sliders
+        bright = np.clip((levels - floor) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
         points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
         self.tx_canvas.coords(self.tx_line, *points)  # move the trace
         self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
@@ -649,8 +697,9 @@ class Panel:  # the control panel window
         at, width, when = max(self.marks.values(), key=lambda mark: mark[2])  # the newest
         self.set_view(at, self.fit_span(width))  # center on it
 
-    def y_for(self, db):  # where a level above the noise falls on the trace
-        return self.above + self.trace_h - 3 - (db + 5.0) / 55.0 * (self.trace_h - 8)  # from 5 dB under the noise at the bottom to 50 dB above it at the top
+    def y_for(self, db):  # where a level in dB above the noise falls on the receive trace
+        floor, span = self.scope_db["rx", "floor"].get(), self.scope_db["rx", "range"].get()  # the Floor and Range sliders
+        return self.above + self.trace_h - 3 - (db - floor) / span * (self.trace_h - 8)  # the floor at the bottom, floor plus range at the top
 
     def dial_hz(self):  # where the radio is tuned now (safe to call from any thread)
         """Return the radio's dial frequency in hertz: the chosen calling frequency, moved to a working frequency if the contact has moved."""
@@ -678,7 +727,8 @@ class Panel:  # the control panel window
                 self.last_line = now  # remember it
                 levels = source.spectrum(self.top_hz, self.scope_w, self.low_hz)  # the spectrum of the newest audio, in decibels
                 floor = float(np.median(levels))  # the noise level, taken as the middle value
-                bright = np.clip((levels - (floor - 5.0)) / 55.0, 0.0, 1.0)  # each point on a scale from 5 dB under the noise to 50 dB above it
+                low, span = floor + self.scope_db["rx", "floor"].get(), self.scope_db["rx", "range"].get()  # the receive scope's Floor and Range sliders, the floor counted from the noise
+                bright = np.clip((levels - low) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
                 points = np.column_stack((self.left + np.arange(self.scope_w), self.above + self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
                 self.scope.coords(self.trace, *points)  # move the trace
                 self.fall = np.roll(self.fall, 1, axis=0)  # push the waterfall down one line
