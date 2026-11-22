@@ -1,5 +1,6 @@
 """Cyclic redundancy checks (CRCs): short check values that reveal damaged data."""
 
+from . import native  # the compiled library, when it is in use
 from .bits import int_to_bits  # helper that turns the check value into bits
 
 
@@ -17,9 +18,15 @@ def crc_bits(bits, poly, width, init):  # general bit-by-bit CRC
 
 def crc16(bits):  # the body check
     """CRC-16/CCITT-FALSE (polynomial 0x1021, start value 0xFFFF)."""
+    done = native.crc(bits, 16)  # the compiled CRC, when the library is in use
+    if done is not None:  # it was
+        return int_to_bits(done, 16)  # the same check value
     return crc_bits(bits, 0x1021, 16, 0xFFFF)  # standard, widely documented CRC
 
 
 def crc8(bits):  # the header check
     """CRC-8 (polynomial 0x07, start value 0x00)."""
+    done = native.crc(bits, 8)  # the compiled CRC, when the library is in use
+    if done is not None:  # it was
+        return int_to_bits(done, 8)  # the same check value
     return crc_bits(bits, 0x07, 8, 0x00)  # standard, widely documented CRC

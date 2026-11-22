@@ -9,6 +9,7 @@ from dataclasses import dataclass  # simple record type for the channel report
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, when it is in use
 from .address import bits_to_call, call_to_bits  # callsign <-> 48 bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .params import (  # frame format numbers
@@ -97,6 +98,9 @@ def bits_to_levels(bits):  # 8 bits -> tuple of speed levels
 
 def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail=False, wide=False):  # beacon fields -> 75 bits
     """Return the body bits of a beacon: who is calling, where from, what it can do and what it wants."""
+    done = native.pack_control(FRAME_TYPE_BEACON, origin=call, grid=grid, levels=levels, listening=listening, mail_check=mail_check, holds_mail=holds_mail, wide=wide)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     flags = [int(listening), int(mail_check), int(holds_mail), int(wide)]  # will take answers / wants its mail / holds mail for others / wide reply window (four slots instead of one)
     return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # callsign, locator, levels, flags
 
@@ -106,12 +110,18 @@ def pack_answer(dest, origin, report, levels, mail_check=False, directed=False):
 
     With `directed` the frame is a directed call (Section 6.11) rather than a reply to a beacon.
     """
+    done = native.pack_control(FRAME_TYPE_ANSWER, dest=dest, origin=origin, report=report, levels=levels, mail_check=mail_check, directed=directed)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     flags = [int(mail_check), int(directed)]  # wants its mail / a directed call
     return np.concatenate([call_to_bits(dest), call_to_bits(origin), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, report, levels, flags
 
 
 def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 48 bits
     """Return the body bits of an acknowledgment for one frame of one message."""
+    done = native.pack_control(FRAME_TYPE_ACK, link=link, msg_id=msg_id, part=part, status=status, report=report)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     if not (0 <= link < (1 << LINK_ID_BITS) and 0 <= msg_id < (1 << MSG_ID_BITS) and 0 <= part < (1 << PART_BITS) and 0 <= status < (1 << ACK_STATUS_BITS)):  # every number must fit its field
         raise ValueError("acknowledgment field out of range")  # refuse nonsense
     return np.concatenate([int_to_bits(link, LINK_ID_BITS), int_to_bits(msg_id, MSG_ID_BITS), int_to_bits(part, PART_BITS), int_to_bits(status, ACK_STATUS_BITS), pack_report(report)])  # link, message, part, status, report
@@ -119,6 +129,9 @@ def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 48
 
 def pack_ident(call, link, final=False):  # identification fields -> 61 bits
     """Return the body bits of a station identification; `final` marks the end of the contact."""
+    done = native.pack_control(FRAME_TYPE_IDENT, origin=call, link=link, final_flag=final)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     if not 0 <= link < (1 << LINK_ID_BITS):  # the link number must fit its field
         raise ValueError("link number out of range")  # refuse nonsense
     flags = [int(final), 0, 0, 0]  # end of contact / three spare bits
@@ -127,6 +140,9 @@ def pack_ident(call, link, final=False):  # identification fields -> 61 bits
 
 def pack_notice(call, held=(), receipts=(), heard=()):  # mail notice fields -> 192 bits
     """Return the body bits of a mail notice: who sends it, then up to three short codes each for the stations it holds mail for, the delivery receipts it reports, and the stations it hears (0 marks an unused entry)."""
+    done = native.pack_control(FRAME_TYPE_NOTICE, origin=call, held=held, receipts=receipts, heard=heard)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     codes = []  # the three lists, each padded to its full length
     for entries in (held, receipts, heard):  # in that order
         entries = [int(code) for code in entries][:NOTICE_SLOTS]  # at most three
@@ -138,6 +154,9 @@ def pack_notice(call, held=(), receipts=(), heard=()):  # mail notice fields -> 
 
 def unpack(frame_type, bits):  # body bits -> named fields
     """Return a dict of the fields carried by a control frame's body bits; raise ValueError when they make no sense."""
+    done = native.unpack_control(frame_type, bits)  # compiled, when the library is in use
+    if done is not None:  # it was: name its fields as below
+        return _named(frame_type, done)  # the same fields
     if len(bits) != CONTROL_BITS[frame_type]:  # every control frame has a fixed length
         raise ValueError("wrong length for this control frame")  # refuse
     if frame_type == FRAME_TYPE_BEACON:  # a beacon
@@ -161,3 +180,20 @@ def unpack(frame_type, bits):  # body bits -> named fields
         lists = [[code for code in codes[n * NOTICE_SLOTS:(n + 1) * NOTICE_SLOTS] if code] for n in range(3)]  # the three lists, empty entries left out
         return {"origin": bits_to_call(bits[:CALL_BITS]), "held": lists[0], "receipts": lists[1], "heard": lists[2]}  # who, and the three lists
     raise ValueError("not a control frame type")  # anything else is not handled here
+
+
+def _named(frame_type, f):  # the library's fields -> the same named fields unpack() returns
+    """Return the dict unpack() gives, built from the fields the compiled library unpacked."""
+    levels = tuple(level for level in range(LEVEL_MASK_BITS) if f.levels & (1 << level))  # the levels, lowest first
+    report = ChannelReport(f.snr_db, f.fade_index, f.offset_hz, f.want_level)  # the channel report
+    if frame_type == FRAME_TYPE_BEACON:  # a beacon
+        return {"origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "levels": levels,  # (continued)
+                "listening": bool(f.listening), "mail_check": bool(f.mail_check), "holds_mail": bool(f.holds_mail), "wide": bool(f.wide)}  # who, where, what it can do, what it wants
+    if frame_type == FRAME_TYPE_ANSWER:  # an answer
+        return {"dest": f.dest.decode("ascii"), "origin": f.origin.decode("ascii"), "report": report, "levels": levels,  # (continued)
+                "mail_check": bool(f.mail_check), "directed": bool(f.directed)}  # who to whom, the report, the levels, the two flags
+    if frame_type == FRAME_TYPE_ACK:  # an acknowledgment
+        return {"link": f.link, "msg_id": f.msg_id, "part": f.part, "status": f.status, "report": report}  # which frame, the verdict, the report
+    if frame_type == FRAME_TYPE_IDENT:  # an identification
+        return {"origin": f.origin.decode("ascii"), "link": f.link, "final": bool(f.final_flag)}  # who, which link, end of contact?
+    return {"origin": f.origin.decode("ascii"), "held": list(f.held[:f.nheld]), "receipts": list(f.receipts[:f.nreceipts]), "heard": list(f.heard[:f.nheard])}  # a mail notice: who, and the three lists

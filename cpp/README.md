@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 7)
+## What is in it so far (interface version 8)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -31,6 +31,7 @@ quietly runs in pure Python, as it always has.
 | `kes_remove_steady` with `windowed=0, local_steps=-1` | `modem/longbeacon.py` `clean` | identical | (the long beacon's carrier notch) |
 | `kes_listener_*` (a listener object) | `live/listener.py` incremental search: the audio store with its stream numbers, blanking and notching each search, the pattern search of all levels side by side, the candidate list, fine timing, header reading, near misses | the same frames, near misses and tries, search by search | (Python keeps only the decoding of frames it is handed) |
 | `kes_encode_frame` | `modem/frame.py` `build_frame`, `build_control` (after the bits are packed): header and body coding, interleaving, pilots, tones, audio | identical audio | (the transmitter) |
+| `kes_crc16`, `kes_crc8`, `kes_call_to_bits`, `kes_bits_to_call`, `kes_call_hash`, `kes_message_hash`, `kes_link_id`, `kes_choose_packing`, `kes_text_to_bits`, `kes_bits_to_text`, `kes_header_bits`, `kes_address_block`, `kes_read_address_block`, `kes_pack_control`, `kes_unpack_control` (in `src/packing.cpp`) | `modem/crc.py`, `address.py`, `compress.py`, `text.py`, `control.py`, and `frame.py` `_header_bits`, `_address_block`, `_read_address_block` | the same bits, text and fields, and a refusal wherever Python raises an error | CRC-16 of a message body: 145 us -> 8 us |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is
@@ -41,17 +42,22 @@ beacon side by side, since the library lets go of Python's lock while it works.
 Whole receiver, a simulated 6-minute stream with 8 frames (the same 8 decoded every way):
 pure Python 52.6 s; interface 1 (three routines) 39.7 s; interface 3 15-18 s (sandbox, 2 cores).
 
-Every heavy computation of the receiver and the transmitter now runs compiled, and the
-continuous receiver's store and candidate list are a compiled object. Still in Python: packing
-and unpacking the bits (text compression, addresses, control-frame fields), the long beacon's
-soft-energy combining, the help for weak control frames (it calls the compiled Viterbi decoder),
-the link rules and store and forward, and the panel. Next: packing and unpacking, which completes
-the modem in C++; then the link rules.
+The whole modem now has a compiled version: every heavy computation of the receiver and the
+transmitter, the continuous receiver's store and candidate list, and the packing and unpacking of
+every bit a frame carries. Still in Python: the glue that calls them in order (frame.py), the long
+beacon's soft-energy combining, the help for weak control frames (it calls the compiled Viterbi
+decoder), the link rules and store and forward, and the panel. Next: the link rules.
+
+The packing functions refuse (return -1) wherever the Python reference raises an error, and for
+any text outside 7-bit ASCII. The Python bridge then runs the Python code, which raises its own
+worded error, so the program behaves the same either way.
 
 ## Files
 
 - `include/kestrel.h` — the C interface: every function, with what it does.
-- `src/kestrel.cpp` — the routines.
+- `src/kestrel.cpp` — the signal routines: blanker, notch, searches, decoders, the listener, the transmitter's audio.
+- `src/packing.cpp` — packing and unpacking the bits: text (plain and compressed), addresses,
+  grid locators, channel reports, the header, the address block, control-frame fields, check values.
 - `third_party/pocketfft/` — the FFT (the same algorithm NumPy uses), header-only, BSD licence;
   its licence (`LICENSE.md`) travels with the library.
 - `CMakeLists.txt` — the build.
@@ -83,9 +89,9 @@ match the Python reference.
 
 ## Where things were left
 
-Interface version 7: the receiver (front end, body decoder, the continuous receiver's store and
-candidates) and the transmitter's coding and audio run compiled, tested against Python. Next: bit
-packing and unpacking, then the link rules and store and forward, so that Python is left only in
-the operator panel.
+Interface version 8: the receiver (front end, body decoder, the continuous receiver's store and
+candidates), the transmitter's coding and audio, and the packing and unpacking of every field run
+compiled, tested against Python (including damaged and nonsense input). Next: the link rules and
+store and forward, so that Python is left only in the operator panel.
 
 Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).

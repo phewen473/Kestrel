@@ -316,3 +316,120 @@ def test_transmitter_matches_python(python_only):  # frames built by the library
 
 def test_describe_says_what_is_in_use():  # the About box line
     assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so
+
+
+def _outcome(work, *args, **kwargs):  # what a call gives: its answer, or the kind of error it raises
+    """Return ("ok", answer) with arrays turned into lists, or ("error", the exception's type)."""
+    try:  # run it
+        got = work(*args, **kwargs)  # the answer
+    except Exception as err:  # noqa: BLE001 - any error is part of the answer being compared
+        return ("error", type(err))  # the kind of error
+    if isinstance(got, np.ndarray):  # an array of bits
+        return ("ok", got.astype(int).tolist())  # as a plain list
+    if isinstance(got, dict):  # unpacked fields
+        return ("ok", {k: (vars(v) if hasattr(v, "__dataclass_fields__") else v) for k, v in got.items()})  # reports as plain dicts
+    return ("ok", got)  # anything else as it is
+
+
+def _same(python_only, work, *args, **kwargs):  # the library and Python agree on one call
+    """Assert that `work` gives the same answer, or the same kind of error, with and without the library."""
+    mine = _outcome(work, *args, **kwargs)  # compiled
+    ref = _outcome(python_only, work, *args, **kwargs)  # Python (python_only passes `work` through)
+    assert mine == ref, (work.__name__, args, kwargs, mine, ref)  # the same
+
+
+def test_packing_matches_python(python_only):  # bit packing and unpacking (interface 8)
+    from modem import native  # the bridge
+    from modem.address import bits_to_call, call_hash, call_to_bits, link_id, message_hash  # addresses
+    from modem.crc import crc8, crc16  # check values
+    from modem.text import bits_to_text, choose_packing, text_to_bits  # text
+    assert native._lib is not None  # the library is in use, so the comparison means something
+    rng = np.random.default_rng(8)  # repeatable
+    for n in (0, 1, 7, 16, 24, 75, 300, 1424):  # check values over many lengths
+        bits = rng.integers(0, 2, n)  # random bits
+        _same(python_only, crc16, bits)  # body check
+        _same(python_only, crc8, bits)  # header check
+    calls = ["Q1AAAA", "q2bb", " Q3CCC/P ", "ALL", "Q1AAAA-10", "Q1AAAAAAA", "Q1AAAAAAAA", "", "   ", "Q1 AA", "Q1@AA", "Q1ÉA", "Q1\0A", "\x1cQ9Z\x1f", 7]  # good, untidy and bad
+    for call in calls:  # each
+        _same(python_only, call_to_bits, call)  # to bits
+        _same(python_only, call_hash, call)  # its short code
+        _same(python_only, message_hash, call, 513)  # a message code
+        _same(python_only, link_id, call, "Q2BB")  # a link number
+    for _ in range(300):  # random address bits: most are not addresses
+        _same(python_only, bits_to_call, rng.integers(0, 2, 48))  # back to text
+    for call in calls[:6]:  # and the bits of the valid ones
+        _same(python_only, bits_to_call, call_to_bits(call))  # round trip
+    texts = ["", "Hi", "Hello from the compiled packer", "x" * 50, "x" * 51, "e" * 200, "Q" * 200, "Z{|}~" * 40, "a" * 201, "café", "tab\there\nnew\0zero",
+             "".join(chr(c) for c in range(128)), "The quick brown fox " * 9]  # short, long, borderline, bad
+    for text in texts:  # each
+        for frame_type in (0, 1, 2):  # link, addressed, and a type with no text
+            _same(python_only, choose_packing, text, frame_type)  # the packing choice
+            for size_class in range(4):  # every size
+                for compressed in (False, True):  # both forms
+                    _same(python_only, text_to_bits, text, size_class, compressed, frame_type)  # packed
+                    try:  # and back again, when it packs
+                        bits = python_only(text_to_bits, text, size_class, compressed, frame_type)  # the reference bits
+                    except (ValueError, KeyError):  # it does not fit, or the type carries no text
+                        continue  # nothing to unpack
+                    _same(python_only, bits_to_text, bits, compressed)  # unpacked
+                    damaged = bits.copy()  # a damaged copy
+                    damaged[rng.integers(0, len(bits), 6)] ^= 1  # six bits flipped
+                    _same(python_only, bits_to_text, damaged, compressed)  # the same text, or the same error
+    for _ in range(200):  # random bodies
+        _same(python_only, bits_to_text, rng.integers(0, 2, int(rng.integers(0, 1408))), bool(rng.integers(0, 2)))  # nonsense, read the same way
+
+
+def test_frame_fields_match_python(python_only):  # header, address block and control frames (interface 8)
+    from modem import control  # control frame fields
+    from modem.control import ChannelReport  # a channel report
+    from modem.frame import RxResult, _address_block, _header_bits, _read_address_block  # the frame's own packing
+    rng = np.random.default_rng(9)  # repeatable
+    for _ in range(200):  # random headers, some out of range
+        args = [int(v) for v in rng.integers(-2, 10, 5)] + [int(rng.integers(0, 3))]  # type, level, size, part, parts, compressed
+        _same(python_only, _header_bits, *args)  # the 24 bits
+    for args in ((0, 5, 2, 513, None, None, 0, 48), (0, 512, 0, 1, None, None, 0, 48), (0, 3, 8, 1, None, None, 0, 48), (0, 3, 1, 70000, None, None, 0, 48),  # link frames
+                 (1, 0, 0, 7, "Q2BB", "Q1AAAA", 2, 47), (1, 0, 0, 7, "Q2BB", "Q1AAAA", 8, 48), (1, 0, 0, 7, "Q2BB", "Q1AAAA", 0, 63), (1, 0, 0, 7, "Q2BB", "Q1AAAA", 0, 62.9),  # addressed
+                 (1, 0, 0, 7, "Q2BB", "Q1AAAA", 0, -1), (1, 0, 0, 7, "Q2BB", "Q1AAAA", 0, -3), (1, 0, 0, 7, "bad call", "Q1AAAA", 0, 48), (1, 0, 0, 7, None, "Q1AAAA", 0, 48)):  # edges
+        _same(python_only, _address_block, *args)  # the block
+    for frame_type, length in ((0, 28), (1, 120)):  # reading blocks back
+        for _ in range(100):  # random ones, most addresses invalid
+            bits = rng.integers(0, 2, length)  # the bits
+
+            def read(bits=bits, frame_type=frame_type):  # what the receiver keeps
+                result = RxResult()  # an empty report
+                result.frame_type = frame_type  # of this kind
+                _read_address_block(result, bits)  # filled in
+                return (result.link, result.want_level, result.msg_id, result.dest, result.origin, result.hops, result.life_hours)  # the fields
+            _same(python_only, read)  # the same
+        good = python_only(_address_block, frame_type, 5, 2, 513, "Q2BB", "Q1AAAA", 3, 47)  # a real block
+
+        def read_good(bits=good, frame_type=frame_type):  # a real block read back
+            result = RxResult()  # an empty report
+            result.frame_type = frame_type  # of this kind
+            _read_address_block(result, bits)  # filled in
+            return (result.link, result.want_level, result.msg_id, result.dest, result.origin, result.hops, result.life_hours)  # the fields
+        _same(python_only, read_good)  # the same
+    reports = [ChannelReport(-3, 0.2, 1, 2), ChannelReport(-30.5, 0.125, 3.0, 0), ChannelReport(2.5, float("nan"), -70, 7), ChannelReport(40, 9, 100, 1),  # ordinary, rounding, missing, clipped
+               ChannelReport(-28.5, 0.375, -5.0, 3), ChannelReport(float("nan"), 0, 0, 0), ChannelReport(0, float("inf"), 0, 0), ChannelReport(0, 0, 0, 8)]  # errors
+    for report in reports:  # each report
+        _same(python_only, control.pack_answer, "Q1AAAA", "Q2BB", report, (0, 1, 2), mail_check=True)  # in an answer
+        _same(python_only, control.pack_ack, 5, 513, 2, 1, report)  # in an acknowledgment
+    for args, extra in ((("Q1AAAA", "EM92", (0, 2, 4)), {}), (("q1aaaa", " fn31 ", ()), {"listening": False, "wide": True}), (("Q1AAAA", "SS99", (0,)), {}), (("Q1AAAA", "EM9", (0,)), {}),  # beacons
+                        (("Q1AAAA", "EM92", (8,)), {}), (("Q1AAAA", "EM92", (0,)), {"holds_mail": 2})):  # bad level, odd flag
+        _same(python_only, control.pack_beacon, *args, **extra)  # packed
+    for args in ((5, 513, 2, 1), (512, 0, 0, 0), (0, 65536, 0, 0), (0, 0, 8, 0), (0, 0, 0, 4), (1.0, 0, 0, 0)):  # acknowledgments, some out of range
+        _same(python_only, control.pack_ack, *args, reports[0])  # packed
+    for args in (("Q1AAAA", 17), ("Q1AAAA", 511, True), ("Q1AAAA", 512), ("Q1 A", 3)):  # identifications
+        _same(python_only, control.pack_ident, *args)  # packed
+    for lists in (((), (), ()), ((1, 2, 3, 4), (65535,), (7,)), ((0,), (), ()), ((65536,), (), ()), (("12",), (), ())):  # mail notices
+        _same(python_only, control.pack_notice, "Q1AAAA", *lists)  # packed
+    for frame_type in (control.FRAME_TYPE_BEACON, control.FRAME_TYPE_ANSWER, control.FRAME_TYPE_ACK, control.FRAME_TYPE_IDENT, control.FRAME_TYPE_NOTICE):  # every control frame
+        length = control.CONTROL_BITS[frame_type]  # its body length
+        for _ in range(150):  # random bodies
+            _same(python_only, control.unpack, frame_type, rng.integers(0, 2, length))  # unpacked, or refused, the same way
+        _same(python_only, control.unpack, frame_type, rng.integers(0, 2, length + 1))  # the wrong length
+    good = [control.pack_beacon("Q1AAAA", "EM92", (0, 2)), control.pack_answer("Q1AAAA", "Q2BB", reports[1], (1,)), control.pack_ack(5, 513, 2, 1, reports[4]),  # real bodies
+            control.pack_ident("Q1AAAA", 17, True), control.pack_notice("Q1AAAA", (9,), (), (4, 5))]  # (continued)
+    for frame_type, bits in zip((control.FRAME_TYPE_BEACON, control.FRAME_TYPE_ANSWER, control.FRAME_TYPE_ACK, control.FRAME_TYPE_IDENT, control.FRAME_TYPE_NOTICE), good):  # each
+        _same(python_only, control.unpack, frame_type, bits)  # unpacked the same
+    _same(python_only, control.unpack, 0, np.zeros(10, dtype=int))  # not a control frame

@@ -19,12 +19,26 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 7  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 8  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
 _INT_P = ctypes.POINTER(ctypes.c_int)  # a pointer to ints
 _LONG_P = ctypes.POINTER(ctypes.c_long)  # a pointer to longs
+
+
+class _Fields(ctypes.Structure):  # KesFields in kestrel.h: the named fields of a control frame or an address block
+    _fields_ = [("origin", ctypes.c_char * 10), ("dest", ctypes.c_char * 10), ("grid", ctypes.c_char * 5),  # addresses and the locator
+                ("levels", ctypes.c_int), ("listening", ctypes.c_int), ("mail_check", ctypes.c_int), ("holds_mail", ctypes.c_int),  # level list and flags
+                ("wide", ctypes.c_int), ("directed", ctypes.c_int), ("final_flag", ctypes.c_int),  # more flags
+                ("link", ctypes.c_long), ("msg_id", ctypes.c_long), ("part", ctypes.c_long), ("status", ctypes.c_long),  # numbers
+                ("hops", ctypes.c_long), ("life_hours", ctypes.c_long),  # an addressed message's counters
+                ("snr_db", ctypes.c_double), ("fade_index", ctypes.c_double), ("offset_hz", ctypes.c_double), ("want_level", ctypes.c_int),  # a channel report
+                ("held", ctypes.c_long * 3), ("receipts", ctypes.c_long * 3), ("heard", ctypes.c_long * 3),  # a mail notice's three lists
+                ("nheld", ctypes.c_int), ("nreceipts", ctypes.c_int), ("nheard", ctypes.c_int)]  # and their lengths
+
+
+_FIELDS_P = ctypes.POINTER(_Fields)  # a pointer to the fields
 
 
 def _file_name():  # what the library file is called on this platform
@@ -106,6 +120,38 @@ def _load():  # find, open and check the library
                                         _LONG_P, ctypes.c_double, ctypes.c_int, _DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,  # check starts, scale, rounds, prior, prior length, pad, fine span
                                         ctypes.c_int, ctypes.c_int, _BYTE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P]  # noise span, tracking, data out, soft bits out, band out, figures out
         lib.kes_decode_body.restype = ctypes.c_long  # data bits written, or -1
+        lib.kes_crc16.argtypes = [_BYTE_P, ctypes.c_size_t]  # bits, count
+        lib.kes_crc16.restype = ctypes.c_int  # the check value
+        lib.kes_crc8.argtypes = [_BYTE_P, ctypes.c_size_t]  # bits, count
+        lib.kes_crc8.restype = ctypes.c_int  # the check value
+        lib.kes_call_to_bits.argtypes = [ctypes.c_char_p, _BYTE_P]  # address, 48 bits
+        lib.kes_call_to_bits.restype = ctypes.c_int  # 0, or -1
+        lib.kes_bits_to_call.argtypes = [_BYTE_P, ctypes.c_char_p]  # 48 bits, address
+        lib.kes_bits_to_call.restype = ctypes.c_int  # 0, or -1
+        lib.kes_call_hash.argtypes = [ctypes.c_char_p]  # address
+        lib.kes_call_hash.restype = ctypes.c_long  # the code, or -1
+        lib.kes_message_hash.argtypes = [ctypes.c_char_p, ctypes.c_long]  # origin, message number
+        lib.kes_message_hash.restype = ctypes.c_long  # the code, or -1
+        lib.kes_link_id.argtypes = [ctypes.c_char_p, ctypes.c_char_p]  # the two addresses
+        lib.kes_link_id.restype = ctypes.c_long  # the link number, or -1
+        lib.kes_choose_packing.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int, _INT_P, _INT_P]  # text, length, frame type, size class, compressed
+        lib.kes_choose_packing.restype = ctypes.c_int  # 0, or -1
+        lib.kes_text_to_bits.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, _BYTE_P]  # text, length, size class, compressed, frame type, bits
+        lib.kes_text_to_bits.restype = ctypes.c_long  # bits written, or -1
+        lib.kes_bits_to_text.argtypes = [_BYTE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]  # bits, count, compressed, text, room
+        lib.kes_bits_to_text.restype = ctypes.c_long  # characters, or -1
+        lib.kes_header_bits.argtypes = [ctypes.c_int] * 6 + [_BYTE_P]  # type, level, size class, part, parts, compressed, 24 bits
+        lib.kes_header_bits.restype = None  # returns nothing
+        lib.kes_address_block.argtypes = [ctypes.c_int, ctypes.c_long, ctypes.c_long, ctypes.c_long, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_long, _BYTE_P]  # type, link, level, message, dest, origin, hops, hours, bits
+        lib.kes_address_block.restype = ctypes.c_long  # bits written, or -1
+        lib.kes_read_address_block.argtypes = [ctypes.c_int, _BYTE_P, _FIELDS_P]  # type, bits, fields
+        lib.kes_read_address_block.restype = ctypes.c_int  # 0, or -1
+        lib.kes_levels_mask.argtypes = [_LONG_P, ctypes.c_size_t]  # levels, count
+        lib.kes_levels_mask.restype = ctypes.c_int  # the mask, or -1
+        lib.kes_pack_control.argtypes = [ctypes.c_int, _FIELDS_P, _BYTE_P]  # type, fields, bits
+        lib.kes_pack_control.restype = ctypes.c_long  # bits written, or -1
+        lib.kes_unpack_control.argtypes = [ctypes.c_int, _BYTE_P, ctypes.c_size_t, _FIELDS_P]  # type, bits, count, fields
+        lib.kes_unpack_control.restype = ctypes.c_int  # 0, or -1
         lib.kes_encode_frame.argtypes = [_BYTE_P, _BYTE_P, ctypes.c_size_t, ctypes.c_int, _LONG_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t,
                                          ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, audio
         lib.kes_encode_frame.restype = ctypes.c_long  # samples written, or -1
@@ -506,3 +552,211 @@ def encode_frame(header_bits, data_bits, is_control, layout, spec, preamble_tone
     if got < 0:  # the library refused
         return None  # the Python code will handle it
     return audio[:got]  # the frame's audio
+
+
+# ---- Packing and unpacking the bits (interface 8) ----
+# Each wrapper returns None when the library is not in use, when an argument is of a kind it does not
+# take, or when the library refuses; the caller then runs its own Python code, which gives the answer
+# or raises its own worded error. So the two paths always agree.
+
+_LIMIT = 1 << 31  # numbers passed must fit a C long on every platform
+
+
+def _whole(*values):  # are these whole numbers the library can take?
+    """Return True when every value is a Python or NumPy whole number (or a bool) within the range of a 32-bit long."""
+    return all(isinstance(v, (int, np.integer)) and -_LIMIT < int(v) < _LIMIT for v in values)  # whole and small enough
+
+
+def _ascii(text, longest=None):  # text as bytes for the library
+    """Return `text` as ASCII bytes, or None when it is not a string, holds a zero byte or anything outside ASCII, or is longer than `longest`."""
+    if not isinstance(text, str) or "\0" in text or not text.isascii() or (longest is not None and len(text) > longest):  # not something the library takes
+        return None  # Python decides
+    return text.encode("ascii")  # the bytes
+
+
+def _bits(bits):  # bits as bytes for the library
+    """Return `bits` as a contiguous array of bytes."""
+    return np.ascontiguousarray(bits, dtype=np.uint8)  # one byte per bit
+
+
+def _byte_p(a):  # a pointer to an array of bytes
+    """Return a ctypes pointer to the bytes of `a`."""
+    return a.ctypes.data_as(_BYTE_P)  # its address
+
+
+def crc(bits, width):  # crc.py crc16 and crc8, as a number
+    """Return the CRC-16 (width 16) or CRC-8 (width 8) of `bits` as a number, or None."""
+    if _lib is None:  # no library
+        return None  # Python
+    b = _bits(bits)  # as bytes
+    return (_lib.kes_crc16 if width == 16 else _lib.kes_crc8)(_byte_p(b), len(b))  # the check value
+
+
+def call_to_bits(call):  # address.py call_to_bits
+    """Return the 48 bits of an address, or None."""
+    text = _ascii(call, 9) if _lib is not None else None  # the address as bytes (Python takes longer, padded text)
+    if text is None:  # nothing to hand over
+        return None  # Python
+    out = np.zeros(48, dtype=np.uint8)  # room
+    return out if _lib.kes_call_to_bits(text, _byte_p(out)) == 0 else None  # the bits, or Python decides
+
+
+def bits_to_call(bits):  # address.py bits_to_call
+    """Return the address spelled by 48 bits, or None."""
+    if _lib is None or len(bits) != 48:  # no library, or not one address
+        return None  # Python
+    out = ctypes.create_string_buffer(10)  # room
+    return out.value.decode("ascii") if _lib.kes_bits_to_call(_byte_p(_bits(bits)), out) == 0 else None  # the address, or Python decides
+
+
+def call_hash(call):  # address.py call_hash
+    """Return the 16-bit code of an address, or None."""
+    text = _ascii(call, 9) if _lib is not None else None  # as bytes
+    got = _lib.kes_call_hash(text) if text is not None else -1  # the code
+    return got if got >= 0 else None  # or Python decides
+
+
+def message_hash(origin, msg_id):  # address.py message_hash
+    """Return the 16-bit code of a message ID, or None."""
+    text = _ascii(origin, 9) if _lib is not None else None  # as bytes
+    got = _lib.kes_message_hash(text, int(msg_id)) if text is not None and _whole(msg_id) else -1  # the code
+    return got if got >= 0 else None  # or Python decides
+
+
+def link_id(first, second):  # address.py link_id
+    """Return the link number of two addresses, or None."""
+    a = _ascii(first, 9) if _lib is not None else None  # the first, as bytes
+    b = _ascii(second, 9) if _lib is not None else None  # the second
+    got = _lib.kes_link_id(a, b) if a is not None and b is not None else -1  # the number
+    return got if got >= 0 else None  # or Python decides
+
+
+def choose_packing(text, frame_type):  # text.py choose_packing
+    """Return (size class, compressed?) for `text`, or None."""
+    data = _ascii(text) if _lib is not None else None  # as bytes
+    if data is None or not _whole(frame_type):  # nothing to hand over
+        return None  # Python
+    size_class = ctypes.c_int()  # room for the answer
+    compressed = ctypes.c_int()  # and the other
+    if _lib.kes_choose_packing(data, len(data), int(frame_type), ctypes.byref(size_class), ctypes.byref(compressed)) != 0:  # refused
+        return None  # Python decides
+    return size_class.value, bool(compressed.value)  # the answer
+
+
+def text_to_bits(text, size_class, compressed, frame_type):  # text.py text_to_bits
+    """Return the character count, text bits and padding, or None."""
+    data = _ascii(text) if _lib is not None else None  # as bytes
+    if data is None or not _whole(size_class, frame_type):  # nothing to hand over
+        return None  # Python
+    out = np.zeros(8 + 7 * 200, dtype=np.uint8)  # room for the largest
+    got = _lib.kes_text_to_bits(data, len(data), int(size_class), int(bool(compressed)), int(frame_type), _byte_p(out))  # packed
+    return out[:got] if got >= 0 else None  # the bits, or Python decides
+
+
+def bits_to_text(bits, compressed):  # text.py bits_to_text
+    """Return the text carried by `bits`, or None."""
+    if _lib is None:  # no library
+        return None  # Python
+    b = _bits(bits)  # as bytes
+    out = ctypes.create_string_buffer(256)  # room for any count
+    got = _lib.kes_bits_to_text(_byte_p(b), len(b), int(bool(compressed)), out, 256)  # unpacked
+    return out.raw[:got].decode("ascii") if got >= 0 else None  # the text, or Python decides
+
+
+def header_bits(frame_type, level, size_class, part, parts, compressed):  # frame.py _header_bits
+    """Return the 24 header bits, or None."""
+    if _lib is None or not _whole(frame_type, level, size_class, part, parts, int(compressed)):  # no library, or not whole numbers
+        return None  # Python
+    out = np.zeros(24, dtype=np.uint8)  # room
+    _lib.kes_header_bits(int(frame_type), int(level), int(size_class), int(part), int(parts), int(compressed), _byte_p(out))  # made
+    return out  # the bits
+
+
+def address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours):  # frame.py _address_block
+    """Return the address block bits, or None."""
+    try:  # the lifetime as Python reads it
+        life = int(life_hours)  # whole hours
+    except (TypeError, ValueError, OverflowError):  # not a number
+        return None  # Python
+    if _lib is None or not _whole(frame_type, link, want_level, msg_id, hops, life):  # no library, or not whole numbers
+        return None  # Python
+    d = _ascii(dest, 9) if dest is not None else b""  # the destination as bytes
+    o = _ascii(origin, 9) if origin is not None else b""  # the origin
+    if d is None or o is None:  # an address the library does not take
+        return None  # Python
+    out = np.zeros(120, dtype=np.uint8)  # room for the longer block
+    got = _lib.kes_address_block(int(frame_type), int(link), int(want_level), int(msg_id), d, o, int(hops), life, _byte_p(out))  # made
+    return out[:got] if got >= 0 else None  # the bits, or Python decides
+
+
+def read_address_block(frame_type, bits):  # frame.py _read_address_block
+    """Return the fields of an address block, or None."""
+    if _lib is None or len(bits) < (28 if frame_type == 0 else 120):  # no library, or too short
+        return None  # Python
+    fields = _Fields()  # room
+    return fields if _lib.kes_read_address_block(int(frame_type), _byte_p(_bits(bits)), ctypes.byref(fields)) == 0 else None  # the fields, or Python decides
+
+
+def levels_mask(levels):  # control.py levels_to_bits, as a number
+    """Return the level list as a number (bit n for level n), or None."""
+    if _lib is None:  # no library
+        return None  # Python
+    levels = list(levels)  # however it was given
+    if not _whole(*levels):  # not whole numbers
+        return None  # Python
+    arr, ptr = _longs(levels)  # as longs
+    got = _lib.kes_levels_mask(ptr, len(arr))  # the mask
+    return got if got >= 0 else None  # or Python decides
+
+
+def pack_control(frame_type, **values):  # control.py pack_beacon, pack_answer, pack_ack, pack_ident, pack_notice
+    """Return a control frame's body bits from its named fields, or None."""
+    if _lib is None:  # no library
+        return None  # Python
+    fields = _Fields()  # all zero
+    for name, value in values.items():  # each field given
+        if name in ("origin", "dest", "grid"):  # text
+            text = _ascii(value, 4 if name == "grid" else 9)  # as bytes
+            if text is None:  # not something the library takes
+                return None  # Python
+            setattr(fields, name, text)  # stored
+        elif name == "report":  # a channel report
+            try:  # its readings must be numbers
+                fields.snr_db, fields.fade_index, fields.offset_hz = float(value.snr_db), float(value.fade_index), float(value.offset_hz)  # stored
+            except (TypeError, ValueError, OverflowError, AttributeError):  # they are not
+                return None  # Python
+            if not _whole(value.want_level):  # the level must be whole
+                return None  # Python
+            fields.want_level = int(value.want_level)  # stored
+        elif name == "levels":  # the level list
+            mask = levels_mask(value)  # as a number
+            if mask is None:  # refused
+                return None  # Python
+            fields.levels = mask  # stored
+        elif name in ("held", "receipts", "heard"):  # a mail notice list
+            codes = [int(code) for code in value][:3]  # at most three (as Python converts them)
+            if not _whole(*codes):  # too large for the library
+                return None  # Python
+            getattr(fields, name)[:len(codes)] = codes  # stored
+            setattr(fields, "n" + name, len(codes))  # and how many
+        elif name in ("listening", "mail_check", "holds_mail", "wide", "directed", "final_flag"):  # a flag
+            flag = int(value)  # as Python converts it
+            if flag not in (0, 1):  # anything else is left to Python
+                return None  # Python
+            setattr(fields, name, flag)  # stored
+        else:  # a number
+            if not _whole(value):  # not a whole number
+                return None  # Python
+            setattr(fields, name, int(value))  # stored
+    out = np.zeros(192, dtype=np.uint8)  # room for the longest
+    got = _lib.kes_pack_control(int(frame_type), ctypes.byref(fields), _byte_p(out))  # packed
+    return out[:got] if got >= 0 else None  # the bits, or Python decides
+
+
+def unpack_control(frame_type, bits):  # control.py unpack
+    """Return the fields of a control frame's body bits, or None."""
+    if _lib is None or not _whole(frame_type):  # no library
+        return None  # Python
+    b = _bits(bits)  # as bytes
+    fields = _Fields()  # room
+    return fields if _lib.kes_unpack_control(int(frame_type), _byte_p(b), len(b), ctypes.byref(fields)) == 0 else None  # the fields, or Python decides

@@ -8,6 +8,7 @@ size class, because that is the only time it shortens the transmission.
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, when it is in use
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .compress import compress, compressed_bits, decompress  # text compression
 from .params import ADDRESS_BITS, CHAR_BITS, FRAME_TYPE_LINK, LENGTH_BITS, MAX_CHARS, SIZE_CLASSES  # message format numbers
@@ -40,6 +41,9 @@ def _check(text):  # refuse text that cannot be sent
 
 def choose_packing(text, frame_type=FRAME_TYPE_LINK):  # decide the size class and whether to compress
     """Return (size class, compressed?) for `text`, or raise ValueError when it does not fit one frame."""
+    done = native.choose_packing(text, frame_type)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same choice
     _check(text)  # make sure the text can be sent at all
     plain = _class_for(CHAR_BITS * len(text), frame_type)  # size class needed without compression (None if too big)
     small = _class_for(compressed_bits(text), frame_type)  # size class needed with compression (None if too big)
@@ -62,6 +66,9 @@ def fits(text, size_class, frame_type=FRAME_TYPE_LINK):  # would this text fit i
 
 def text_to_bits(text, size_class, compressed, frame_type=FRAME_TYPE_LINK):  # text -> body bits (without the address block and check value)
     """Return the character count followed by the text bits, padded to the size class."""
+    done = native.text_to_bits(text, size_class, compressed, frame_type)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     _check(text)  # make sure the text can be sent at all
     payload = compress(text) if compressed else np.concatenate([int_to_bits(ord(ch), CHAR_BITS) for ch in text] + [np.zeros(0, dtype=np.uint8)])  # the text as bits, in the chosen form
     room = capacity_bits(size_class, frame_type)  # how many text bits the frame holds
@@ -72,6 +79,9 @@ def text_to_bits(text, size_class, compressed, frame_type=FRAME_TYPE_LINK):  # t
 
 def bits_to_text(bits, compressed):  # body bits (without the check value) -> text
     """Return the text carried by `bits`, using the character count to drop the padding."""
+    done = native.bits_to_text(bits, compressed)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same text
     count = bits_to_int(bits[:LENGTH_BITS])  # read the true character count
     payload = bits[LENGTH_BITS:]  # the text bits follow the count
     if compressed:  # the text was compressed

@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 7  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter) */
+#define KES_ABI_VERSION 8  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -217,6 +217,62 @@ KES_API void kes_listener_cut(KesListener *h, long start, long end);  /* take a 
 KES_API long kes_listener_searches(KesListener *h);  /* searches so far */
 KES_API size_t kes_listener_pending(KesListener *h);  /* candidates being followed */
 KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out);  /* copy a stretch of the store; returns how many */
+
+
+/* ---- Packing and unpacking the bits a frame carries (cpp/src/packing.cpp, since interface 8) ----
+ * Each function refuses (returns -1) where its Python reference would raise an error, and for any text
+ * outside 7-bit ASCII, so the Python caller can run its own code and raise its own worded error.
+ * Bits are passed one per byte (0 or 1), most significant first; addresses and locators as C strings. */
+
+/* The named fields of a control frame or a message's address block. Text fields end with a zero byte. */
+typedef struct KesFields {
+    char origin[10];  /* who sent it (beacon, answer, ident, notice) or wrote it (addressed message) */
+    char dest[10];  /* who it is for (answer, addressed message) */
+    char grid[5];  /* four-character grid locator (beacon) */
+    int levels;  /* the speed levels a station can use: bit n set for level n (beacon, answer) */
+    int listening;  /* beacon flag: will take answers */
+    int mail_check;  /* beacon and answer flag: wants its mail */
+    int holds_mail;  /* beacon flag: holds mail for others */
+    int wide;  /* beacon flag: wide reply window */
+    int directed;  /* answer flag: a directed call */
+    int final_flag;  /* ident flag: the end of the contact */
+    long link;  /* short link number (ack, ident, link message) */
+    long msg_id;  /* message number (ack, message) */
+    long part;  /* part number (ack) */
+    long status;  /* the acknowledgment's verdict (ack) */
+    long hops;  /* relays so far (addressed message) */
+    long life_hours;  /* lifetime left, in hours (addressed message) */
+    double snr_db;  /* channel report: SNR in 2.5 kHz (answer, ack) */
+    double fade_index;  /* channel report: fading index */
+    double offset_hz;  /* channel report: frequency offset */
+    int want_level;  /* channel report or link message: the level asked for */
+    long held[3];  /* mail notice: codes of the stations mail is held for */
+    long receipts[3];  /* mail notice: codes of the delivery receipts */
+    long heard[3];  /* mail notice: codes of the stations heard */
+    int nheld;  /* entries in held */
+    int nreceipts;  /* entries in receipts */
+    int nheard;  /* entries in heard */
+} KesFields;
+
+KES_API int kes_compress_length(int character);  /* modem/compress.py LENGTHS: the code length of a character 0..127 (-1 outside) */
+KES_API int kes_crc16(const uint8_t *bits, size_t n);  /* modem/crc.py crc16: CRC-16/CCITT-FALSE of n bits, as a number */
+KES_API int kes_crc8(const uint8_t *bits, size_t n);  /* modem/crc.py crc8: CRC-8 of n bits, as a number */
+KES_API int kes_call_to_bits(const char *call, uint8_t *out);  /* modem/address.py call_to_bits: 48 bits into out; 0, or -1 */
+KES_API int kes_bits_to_call(const uint8_t *bits, char *out);  /* modem/address.py bits_to_call: the address from 48 bits into out (10 bytes); 0, or -1 */
+KES_API long kes_call_hash(const char *call);  /* modem/address.py call_hash: 1..65535, or -1 */
+KES_API long kes_message_hash(const char *origin, long msg_id);  /* modem/address.py message_hash: 1..65535, or -1 */
+KES_API long kes_link_id(const char *first, const char *second);  /* modem/address.py link_id: 0..511, or -1 */
+KES_API long kes_compressed_bits(const char *text, size_t len);  /* modem/compress.py compressed_bits, or -1 */
+KES_API int kes_choose_packing(const char *text, size_t len, int frame_type, int *size_class, int *compressed);  /* modem/text.py choose_packing: 0, or -1 */
+KES_API long kes_text_to_bits(const char *text, size_t len, int size_class, int compressed, int frame_type, uint8_t *out);  /* modem/text.py text_to_bits: bits written (at most 1408), or -1 */
+KES_API long kes_bits_to_text(const uint8_t *bits, size_t n, int compressed, char *out, size_t cap);  /* modem/text.py bits_to_text: characters written, or -1 */
+KES_API void kes_header_bits(int frame_type, int level, int size_class, int part, int parts, int compressed, uint8_t *out);  /* modem/frame.py _header_bits: 24 bits */
+KES_API long kes_address_block(int frame_type, long link, long want_level, long msg_id, const char *dest, const char *origin, long hops, long life_hours,
+                               uint8_t *out);  /* modem/frame.py _address_block: 28 or 120 bits written, or -1 */
+KES_API int kes_read_address_block(int frame_type, const uint8_t *bits, KesFields *fields);  /* modem/frame.py _read_address_block: 0, or -1 */
+KES_API int kes_levels_mask(const long *levels, size_t n);  /* modem/control.py levels_to_bits, as a number, or -1 */
+KES_API long kes_pack_control(int frame_type, const KesFields *fields, uint8_t *out);  /* modem/control.py pack_beacon / answer / ack / ident / notice: bits written (at most 192), or -1 */
+KES_API int kes_unpack_control(int frame_type, const uint8_t *bits, size_t n, KesFields *fields);  /* modem/control.py unpack: 0, or -1 */
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

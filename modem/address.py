@@ -7,6 +7,7 @@ address costs 48 bits on the air.
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, when it is in use
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .crc import crc16  # check-value calculator, reused to make the link number
 from .params import CALL_BITS, CALL_CHARS, LINK_ID_BITS  # address format numbers
@@ -27,6 +28,9 @@ def clean_call(call):  # tidy an address the way it will be sent
 
 def call_to_bits(call):  # address -> 48 bits
     """Return the 48 bits that stand for the callsign or group name `call`."""
+    done = native.call_to_bits(call)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     call = clean_call(call).ljust(CALL_CHARS)  # pad on the right with spaces to 9 characters
     value = 0  # running total starts at zero
     for ch in call:  # first character first, so it carries the most weight
@@ -36,6 +40,9 @@ def call_to_bits(call):  # address -> 48 bits
 
 def bits_to_call(bits):  # 48 bits -> address
     """Return the callsign or group name spelled by 48 address bits, or raise ValueError when they are not a valid address."""
+    done = native.bits_to_call(bits)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same address
     value = bits_to_int(bits)  # the bits as one number
     symbols = []  # the symbol values, last character first
     for _ in range(CALL_CHARS):  # peel off nine symbols
@@ -53,11 +60,17 @@ def is_group(call):  # callsign or group name?
 
 def call_hash(call):  # the short code that stands for a callsign in a mail notice
     """Return a 16-bit code (1 to 65535) for `call`: the CRC-16 of its 48 address bits, with 0 kept to mean "empty"."""
+    done = native.call_hash(call)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same code
     return bits_to_int(crc16(call_to_bits(call))) or 1  # never 0, which marks an unused entry
 
 
 def message_hash(origin, msg_id):  # the short code that stands for a message ID in a mail notice
     """Return a 16-bit code (1 to 65535) for the message numbered `msg_id` by `origin`: the CRC-16 of the origin's 48 address bits followed by the 16-bit number."""
+    done = native.message_hash(origin, msg_id)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same code
     from .bits import int_to_bits  # number -> bits
     return bits_to_int(crc16(np.concatenate([call_to_bits(origin), int_to_bits(msg_id, 16)]))) or 1  # never 0, which marks an unused entry
 
@@ -69,5 +82,8 @@ def link_id(first, second):  # the short number two locked stations put in every
     The same pair always gets the same number, so nothing extra has to be
     agreed when the link is set up.
     """
+    done = native.link_id(first, second)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same number
     check = crc16(np.concatenate([call_to_bits(first), call_to_bits(second)]))  # 16 check bits over both addresses
     return bits_to_int(check) & ((1 << LINK_ID_BITS) - 1)  # keep the lowest 9 bits

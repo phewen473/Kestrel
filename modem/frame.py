@@ -95,6 +95,9 @@ def frame_seconds(size_class, level=0):  # how long a frame lasts on the air
 
 def _header_bits(frame_type, level, size_class, part, parts, compressed):  # the self-describing header
     """Return the 24 header bits: the six fields and their check value."""
+    done = native.header_bits(frame_type, level, size_class, part, parts, compressed)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     fields = np.concatenate([  # the fields, in order
         int_to_bits(frame_type, 3),  # frame type
         int_to_bits(level, 3),  # speed level
@@ -123,6 +126,9 @@ def _body_symbols(data_bits, layout, is_control=False):  # body bits -> the tone
 
 def _address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours):  # the addressing at the start of the body
     """Return the address block bits: 28 for a link frame, 120 for a fully addressed frame."""
+    done = native.address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours)  # compiled, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits
     if not 0 <= msg_id < (1 << MSG_ID_BITS):  # the message number must fit its field
         raise ValueError("message number out of range")  # refuse nonsense
     if frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
@@ -508,6 +514,14 @@ def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the re
 
 def _read_address_block(result, bits):  # unpack the addressing at the start of the body
     """Put the address fields carried by `bits` into `result`; raise ValueError when an address is not valid."""
+    done = native.read_address_block(result.frame_type, bits)  # compiled, when the library is in use
+    if done is not None:  # it was
+        if result.frame_type == FRAME_TYPE_LINK:  # a link frame
+            result.link, result.want_level, result.msg_id = done.link, done.want_level, done.msg_id  # its three numbers
+        else:  # a fully addressed frame
+            result.dest, result.origin = done.dest.decode("ascii"), done.origin.decode("ascii")  # the two addresses
+            result.msg_id, result.hops, result.life_hours = done.msg_id, done.hops, done.life_hours  # and the counters
+        return  # done
     if result.frame_type == FRAME_TYPE_LINK:  # a message between two locked stations
         result.link = bits_to_int(bits[:LINK_ID_BITS])  # the short link number
         result.want_level = bits_to_int(bits[LINK_ID_BITS:LINK_ID_BITS + LEVEL_BITS])  # the level the sender asks its partner to use
