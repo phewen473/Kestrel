@@ -269,5 +269,50 @@ def test_long_beacon_carrier_notch_matches_python(python_only):  # longbeacon.cl
         assert (mine is x) == (ref is x) and np.max(np.abs(mine - ref)) < 1e-9  # the same audio, and left alone in the same cases
 
 
+def test_compiled_listener_hears_what_the_python_listener_hears():  # the continuous receiver, bookkeeping in the library (interface 7)
+    from live.listener import Listener  # the receiver under test
+    from modem import build_beacon, build_frame, longbeacon  # frames to hide in the noise
+    rng = np.random.default_rng(20)  # repeatable
+    x = rng.normal(0.0, 1.0, 170 * FS)  # nearly three minutes of band noise
+    t = np.arange(len(x)) / FS  # the time of each sample
+    x += 0.2 * np.cos(2 * np.pi * 1731.4 * t)  # a steady carrier in the band
+    place = 3 * FS  # where the first frame goes
+    from modem.levels import LEVELS  # the speed levels
+    from modem.preamble import make_preamble  # a signature pattern with nothing after it (a near miss)
+    for audio, snr in ((make_preamble(LEVELS[0]), -5.0), (build_beacon("Q1AAAA", "EM92", level=2), -10.0), (build_beacon("Q2BB", "EM94", level=0), -23.5),  # a pattern alone (a near miss); a clear beacon; a weak one (it fails)
+                       (longbeacon.build_long_beacon("Q3CCC", "EM93"), -20.0), (build_frame("Compiled listener check", level=3), -6.0)):  # a long beacon; a message
+        x[place:place + len(audio)] += audio * np.sqrt(10 ** (snr / 10) * (2500 / 6000) / np.mean(np.square(audio)))  # at its SNR
+        place += len(audio) + 4 * FS  # a gap, then the next
+
+    def hear(compiled):  # run one listener over the stream
+        listener = Listener(compiled=compiled)  # the compiled or the Python bookkeeping
+        frames, nears, searches = [], [], []  # what it reports
+        listener.on_near = lambda result: nears.append((result.seen_level, listener.near_audio_sample, round(result.sync_quality, 9)))  # near misses
+        listener.on_search = lambda result, trace: searches.append([(step["level"], step["sample"], step["header"], step.get("ok")) for step in trace])  # every try, for a signal log
+        for begin in range(0, len(x), FS):  # a second at a time
+            frames += [(h.result.frame_type, h.result.ok, h.result.sample, h.result.text, h.audio_sample, len(h.audio)) for h in listener.feed(x[begin:begin + FS])]  # each frame handed over
+        return frames, nears, searches  # everything
+
+    mine, ref = hear(True), hear(False)  # compiled and Python
+    assert mine[0] == ref[0] and len(mine[0]) >= 3  # the same frames, at the same places, with the same audio
+    assert mine[1] == ref[1] and len(mine[1]) >= 1  # the same near misses (the lone pattern at least)
+    assert mine[2] == ref[2]  # the same tries, search by search
+
+
+def test_transmitter_matches_python(python_only):  # frames built by the library (interface 7)
+    from modem import build_ack, build_answer, build_beacon, build_frame, build_ident, build_notice  # every frame there is
+    from modem.address import call_hash  # short codes for a mail notice
+    from modem.control import ChannelReport  # a channel report
+    report = ChannelReport(-3, 0.2, 1, 2)  # any report
+    for level in range(5):  # every level
+        for build, args, extra in ((build_frame, ("Hello from the compiled transmitter", ), {}), (build_frame, ("x" * 180, ), {}),  # short and long messages
+                                   (build_frame, ("Addressed one", ), {"dest": "Q2BB", "origin": "Q1AAAA", "msg_id": 7}),  # an addressed message
+                                   (build_beacon, ("Q1AAAA", "EM92"), {}), (build_answer, ("Q1AAAA", "Q2BB", report), {}), (build_ack, (5, 7, 0, 0, report), {}),  # control frames
+                                   (build_ident, ("Q1AAAA", 17), {}), (build_notice, ("Q1AAAA", (call_hash("Q2BB"), ), (), (call_hash("Q3CCC"), )), {})):  # and the rest
+            mine = build(*args, level=level, **extra)  # compiled
+            ref = python_only(build, *args, level=level, **extra)  # Python
+            assert len(mine) == len(ref) and np.max(np.abs(mine - ref)) < 1e-12  # the same audio
+
+
 def test_describe_says_what_is_in_use():  # the About box line
     assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so

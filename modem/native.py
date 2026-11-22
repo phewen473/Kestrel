@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 6  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 7  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -106,6 +106,38 @@ def _load():  # find, open and check the library
                                         _LONG_P, ctypes.c_double, ctypes.c_int, _DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,  # check starts, scale, rounds, prior, prior length, pad, fine span
                                         ctypes.c_int, ctypes.c_int, _BYTE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P]  # noise span, tracking, data out, soft bits out, band out, figures out
         lib.kes_decode_body.restype = ctypes.c_long  # data bits written, or -1
+        lib.kes_encode_frame.argtypes = [_BYTE_P, _BYTE_P, ctypes.c_size_t, ctypes.c_int, _LONG_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t,
+                                         ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, audio
+        lib.kes_encode_frame.restype = ctypes.c_long  # samples written, or -1
+        lib.kes_listener_new.argtypes = [_DOUBLE_P, ctypes.c_size_t]  # settings, how many
+        lib.kes_listener_new.restype = ctypes.c_void_p  # the listener (a handle)
+        lib.kes_listener_free.argtypes = [ctypes.c_void_p]  # the listener
+        lib.kes_listener_free.restype = None  # returns nothing
+        lib.kes_listener_set_pattern.argtypes = [ctypes.c_void_p, ctypes.c_int, _DOUBLE_P, _INT_P, ctypes.c_size_t]  # listener, slot, values, bins, how many
+        lib.kes_listener_set_pattern.restype = ctypes.c_int  # 0, or -1
+        lib.kes_listener_set_tables.argtypes = [ctypes.c_void_p, _INT_P, _INT_P, ctypes.c_size_t]  # listener, totals by type, body totals, how many
+        lib.kes_listener_set_tables.restype = ctypes.c_int  # 0, or -1
+        lib.kes_listener_clear.argtypes = [ctypes.c_void_p]  # the listener
+        lib.kes_listener_clear.restype = None  # returns nothing
+        lib.kes_listener_feed.argtypes = [ctypes.c_void_p, _DOUBLE_P, ctypes.c_size_t, ctypes.c_longlong, ctypes.c_int]  # listener, samples, how many, first number, numbered?
+        lib.kes_listener_feed.restype = ctypes.c_int  # 1 when a search is due
+        lib.kes_listener_begin.argtypes = [ctypes.c_void_p, ctypes.c_int]  # listener, near misses wanted
+        lib.kes_listener_begin.restype = ctypes.c_int  # 1 when there is something to search
+        lib.kes_listener_next.argtypes = [ctypes.c_void_p, _DOUBLE_P]  # listener, event
+        lib.kes_listener_next.restype = ctypes.c_int  # the event's kind (0 when done)
+        for name, kind in (("kes_listener_size", ctypes.c_size_t), ("kes_listener_x_size", ctypes.c_size_t), ("kes_listener_near_size", ctypes.c_size_t),
+                           ("kes_listener_searches", ctypes.c_long), ("kes_listener_pending", ctypes.c_size_t)):  # the simple questions
+            getattr(lib, name).argtypes = [ctypes.c_void_p]  # the listener
+            getattr(lib, name).restype = kind  # the answer
+        for name in ("kes_listener_x", "kes_listener_near_audio"):  # the arrays it shows
+            getattr(lib, name).argtypes = [ctypes.c_void_p]  # the listener
+            getattr(lib, name).restype = _DOUBLE_P  # the first value's address
+        lib.kes_listener_number.argtypes = [ctypes.c_void_p, ctypes.c_long]  # listener, store position
+        lib.kes_listener_number.restype = ctypes.c_longlong  # the stream number
+        lib.kes_listener_cut.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_long]  # listener, start, end
+        lib.kes_listener_cut.restype = None  # returns nothing
+        lib.kes_listener_copy.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_long, _DOUBLE_P]  # listener, from, to, out
+        lib.kes_listener_copy.restype = ctypes.c_size_t  # how many copied
         why = ""  # in use: no reason to give
         return lib  # ready
     if not why:  # nothing was found at all
@@ -351,3 +383,126 @@ def decode_body(x, body_start, offset_hz, spec, layout, is_control, prior=None):
         return None  # the Python code will handle them
     offset, drift, snr_db, fade, passed, noise = (float(value) for value in stats)  # the figures
     return data[:count], llrs, band, (offset, drift, snr_db, fade, bool(passed), noise)  # everything _decode_body needs
+
+
+CFG_COUNT = 28  # how many settings the compiled listener takes (KES_CFG_COUNT in kestrel.h)
+
+
+class CompiledListener:  # the compiled continuous receiver (interface 7)
+    """The audio store and candidate bookkeeping of live/listener.py, kept in the library.
+
+    live.listener.Listener drives it: it feeds audio, starts each search,
+    and handles the events (frames to decode, long beacons to read, tries
+    and near misses) with the same Python code as before.
+    """
+
+    def __init__(self, cfg, patterns, totals_by_type, body_totals):  # make one
+        self._settings = _doubles(cfg)  # the settings, in KES_CFG_ order
+        self.handle = _lib.kes_listener_new(_ptr(self._settings), len(self._settings))  # the library's listener
+        if not self.handle:  # refused
+            raise RuntimeError("the compiled listener did not accept its settings")  # say so
+        for slot, (values, bins) in patterns.items():  # each pattern
+            numbers = _doubles(values)  # its figures
+            tones, tones_p = _ints(bins)  # its tones
+            _lib.kes_listener_set_pattern(self.handle, int(slot), _ptr(numbers), tones_p, len(tones))  # described
+        by_type, by_type_p = _ints(totals_by_type)  # body length by frame type and size class
+        bodies, bodies_p = _ints(body_totals)  # every body length
+        _lib.kes_listener_set_tables(self.handle, by_type_p, bodies_p, len(bodies))  # given
+        self.event = np.zeros(8)  # room for one event
+
+    def __del__(self):  # the Python object goes
+        if getattr(self, "handle", None) and _lib is not None:  # it was made
+            _lib.kes_listener_free(self.handle)  # so is the library's
+            self.handle = None  # once only
+
+    def feed(self, samples, at):  # add audio
+        """Add `samples` (numbered from `at`, or counted on when at is None); return True when a search is due."""
+        samples = _doubles(samples)  # plain doubles
+        return bool(_lib.kes_listener_feed(self.handle, _ptr(samples), len(samples), 0 if at is None else int(at), 0 if at is None else 1))  # stored
+
+    def begin(self, near_on):  # start a search
+        """Blank, notch and search the newest audio; return False when there is too little audio."""
+        return bool(_lib.kes_listener_begin(self.handle, int(bool(near_on))))  # done in the library
+
+    def next(self):  # the search's next event
+        """Return (kind, event array): 1 a frame to decode, 2 a long beacon to read, 3 a try with no header (and maybe a near miss); kind 0 when the search is done."""
+        kind = _lib.kes_listener_next(self.handle, _ptr(self.event))  # the next
+        return kind, self.event  # its kind and figures
+
+    def x(self):  # the processed store
+        """Return the blanked and notched store of the latest search, as an array that shares the library's memory (valid until the next search)."""
+        size = _lib.kes_listener_x_size(self.handle)  # its length
+        if size == 0:  # nothing
+            return np.zeros(0)  # empty
+        return np.ctypeslib.as_array(_lib.kes_listener_x(self.handle), shape=(size, ))  # a view, not a copy
+
+    def near_audio(self):  # the latest near miss's audio
+        """Return a copy of the audio of the latest near miss."""
+        size = _lib.kes_listener_near_size(self.handle)  # its length
+        return np.ctypeslib.as_array(_lib.kes_listener_near_audio(self.handle), shape=(size, )).copy() if size else np.zeros(0)  # a copy
+
+    def size(self):  # samples kept
+        """Return the number of samples in the store."""
+        return int(_lib.kes_listener_size(self.handle))  # from the library
+
+    def number(self, position):  # a store position as a stream number
+        """Return the stream's number for store position `position`."""
+        return int(_lib.kes_listener_number(self.handle, int(round(position))))  # from the library
+
+    def copy(self, start, end):  # a stretch of the store
+        """Return a copy of store positions start to end."""
+        out = np.zeros(max(0, int(end) - max(int(start), 0)))  # room
+        got = _lib.kes_listener_copy(self.handle, int(start), int(end), _ptr(out)) if len(out) else 0  # copied
+        return out[:got]  # what there was
+
+    def cut(self, start, end):  # take a stretch out
+        """Remove store positions start to end."""
+        _lib.kes_listener_cut(self.handle, int(start), int(end))  # in the library
+
+    def clear(self):  # forget everything
+        """Empty the store and the candidate list."""
+        _lib.kes_listener_clear(self.handle)  # in the library
+
+    def searches(self):  # searches so far
+        """Return how many searches have been made."""
+        return int(_lib.kes_listener_searches(self.handle))  # from the library
+
+    def pending(self):  # candidates being followed
+        """Return how many candidates are being followed."""
+        return int(_lib.kes_listener_pending(self.handle))  # from the library
+
+
+def compiled_listener(cfg, patterns, totals_by_type, body_totals):  # make one, if the library is in use
+    """Return a CompiledListener, or None when the library is not in use."""
+    if _lib is None:  # no library
+        return None  # the caller uses Python
+    return CompiledListener(cfg, patterns, totals_by_type, body_totals)  # made
+
+
+_ROWS = {}  # the LDPC encoder's three shuffles for each code size, converted once
+
+
+def encode_frame(header_bits, data_bits, is_control, layout, spec, preamble_tones):  # frame.py's transmitter, compiled
+    """Return the audio of a frame (preamble, header, body, header) from its packed bits, or None when the library is not in use."""
+    if _lib is None:  # no library
+        return None  # the caller uses Python
+    header = np.ascontiguousarray(header_bits, dtype=np.uint8)  # the 24 header bits
+    data = np.ascontiguousarray(data_bits, dtype=np.uint8)  # the body bits, with the check value
+    rows_p = None  # the LDPC shuffles (not needed for a control frame)
+    if not is_control:  # a message frame
+        if len(data) not in _ROWS:  # this size not converted yet
+            from . import ldpc  # the code (imported here: it imports this module)
+            _ROWS[len(data)] = _longs(np.asarray(ldpc.info_checks(len(data))).reshape(-1))  # the three shuffles, one after another
+        rows_p = _ROWS[len(data)][1]  # their address
+    data_pos, data_pos_p = _longs(layout["data_pos"])  # where the data tones go
+    pilot_pos, pilot_pos_p = _longs(layout["pilot_pos"])  # where the pilots go
+    pilot_tones, pilot_tones_p = _ints(layout["pilot_tones"])  # which tone each sends
+    pattern, pattern_p = _ints(preamble_tones)  # the preamble's tones
+    bins, bins_p = _ints(spec.tone_bins)  # every tone's FFT bin
+    audio = np.zeros((len(pattern) + 24 + int(layout["total"])) * spec.samples)  # room for the whole frame
+    got = _lib.kes_encode_frame(header.ctypes.data_as(_BYTE_P), data.ctypes.data_as(_BYTE_P), len(data), int(bool(is_control)), rows_p,
+                                int(layout["total"]), data_pos_p, len(data_pos), pilot_pos_p, pilot_tones_p, len(pilot_pos),
+                                int(layout["coded"]), pattern_p, len(pattern), int(spec.samples), bins_p, _ptr(audio))  # made
+    if got < 0:  # the library refused
+        return None  # the Python code will handle it
+    return audio[:got]  # the frame's audio

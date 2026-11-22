@@ -19,6 +19,7 @@
 #include <cstring>  /* memcpy */
 #include <limits>  /* infinity */
 #include <numeric>  /* gcd */
+#include <memory>  /* owned objects */
 #include <thread>  /* worker threads */
 #include <vector>  /* growable arrays */
 
@@ -1051,5 +1052,537 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
     stats_out[5] = noise;  /* the noise per tone position, for the final measurement */
     return count;  /* data bits written */
 }  /* end of kes_decode_body */
+
+}  /* end of the exported functions (second part) */
+
+namespace {  /* the continuous receiver's private parts (live/listener.py, incremental search) */
+
+/* The smallest length at or above n whose only factors are 2, 3 and 5 (what SciPy's next_fast_len(n, real=True)
+ * gives), so the compiled notch uses the same transform length as the Python reference. */
+size_t good_size(size_t n) {  /* a quick transform length */
+    for (size_t m = std::max<size_t>(n, 1);; ++m) {  /* from n upwards */
+        size_t k = m;  /* what is left after taking out 2s, 3s and 5s */
+        for (size_t p : {2u, 3u, 5u}) {  /* each small factor */
+            while (k % p == 0) {  /* as often as it divides */
+                k /= p;  /* taken out */
+            }  /* end of this factor */
+        }  /* end of the factors */
+        if (k == 1) {  /* nothing else left */
+            return m;  /* found */
+        }  /* end of the test */
+    }  /* end of the search */
+}  /* end of good_size */
+
+struct Pattern {  /* what the listener knows about one signature pattern (a speed level, or the long beacon) */
+    int number = 0;  /* the level's number (7 for the long beacon) */
+    size_t samples = 0;  /* tone length, in samples */
+    int reach = 0;  /* fine steps of frequency error searched either side */
+    int whiten = 0;  /* level the band out first (the long beacon) */
+    double gate = 0.0;  /* candidates scoring below this are not followed up (none for the long beacon) */
+    size_t preamble = 0;  /* the pattern's length, in samples */
+    size_t lo = 0, hi = 0;  /* the FFT bins measured for a tone (one either side of the 32 tones) */
+    int step = 1;  /* bins between neighbouring tones */
+    std::vector<int> bins;  /* the pattern's tones, in fine steps */
+    bool set = false;  /* configured */
+};  /* end of Pattern */
+
+struct Pending {  /* one candidate being followed (a dict in the Python reference) */
+    long id = 0;  /* a number of its own, so it can be found after the list changes */
+    int slot = 0;  /* which pattern (0-4 the levels, 5 the long beacon) */
+    long long stream = 0;  /* the stream sample where its pattern starts */
+    double offset = 0.0, quality = 0.0;  /* its frequency error and how far it stands out */
+    bool coarse = true;  /* not yet finely timed */
+    bool has_since = false;  /* whether a header try has been made with the first copy all there */
+    long long since = 0;  /* the newest stream sample at that try */
+    double start_fine = 0.0;  /* the part of a sample the fine timing found */
+    bool has_header = false;  /* the header has been read */
+    uint8_t header[24] = {0};  /* and its bits */
+    int how = 0;  /* which copy gave it (1 first, 2 both, 3 second) */
+};  /* end of Pending */
+
+}  /* end of the listener's private parts */
+
+/* The continuous receiver. It owns the audio store and the candidate list; the caller (live/listener.py)
+ * decodes the frames it says are ready, and tells it what to cut out. */
+struct KesListener {  /* one continuous receiver */
+    double cfg[KES_CFG_COUNT] = {0};  /* its settings, by the KES_CFG_ numbers */
+    Pattern patterns[6];  /* the five levels and the long beacon */
+    std::vector<int> totals_by_type, body_totals;  /* body lengths, for the header reader */
+    std::vector<double> store;  /* the audio kept (up to the window) */
+    std::vector<long long> index;  /* the stream's number for each stored sample (cutting frames out leaves gaps) */
+    std::vector<double> x;  /* the store with static crashes blanked and steady signals notched, made at each search */
+    long long total = 0;  /* the number the next sample fed will get, when the caller does not say */
+    size_t fresh = 0, unsearched = 0, unsearched_long = 0;  /* samples since the last search, and not yet searched for the patterns */
+    long searches = 0;  /* searches so far */
+    std::vector<Pending> pending;  /* candidates being followed */
+    long next_id = 1;  /* the number the next candidate gets */
+    std::vector<long> order;  /* this search's candidates, strongest first */
+    size_t cursor = 0;  /* the next of them to look at */
+    bool near_on = false;  /* whether the caller wants near misses */
+    std::vector<double> near_audio;  /* the latest near miss's audio */
+
+    size_t window() const { return static_cast<size_t>(cfg[KES_CFG_WINDOW]); }  /* most samples kept */
+    size_t step() const { return static_cast<size_t>(cfg[KES_CFG_STEP]); }  /* new samples needed before a search */
+
+    long long number(long position) const {  /* listener.py _number: a store position as a stream number */
+        if (index.empty()) {  /* nothing stored */
+            return total + position;  /* count on from the newest */
+        }  /* end of the empty case */
+        if (position < 0) {  /* before the first stored sample */
+            return index.front() + position;  /* count back from it */
+        }  /* end of the early case */
+        if (static_cast<size_t>(position) >= index.size()) {  /* after the last */
+            return index.back() + 1 + (position - static_cast<long>(index.size()));  /* count on from it */
+        }  /* end of the late case */
+        return index[static_cast<size_t>(position)];  /* the number kept for it */
+    }  /* end of number */
+
+    long position(long long stream) const {  /* listener.py _position: where a stream sample is now, or -1 */
+        auto at = std::lower_bound(index.begin(), index.end(), stream);  /* where it would be */
+        if (at != index.end() && *at == stream) {  /* there */
+            return static_cast<long>(at - index.begin());  /* its place */
+        }  /* end of the test */
+        return -1;  /* slid out, or cut out with a frame */
+    }  /* end of position */
+
+    void cut(long start, long end) {  /* listener.py _cut: take a stretch out of the store */
+        size_t from = static_cast<size_t>(std::max(start, 0L));  /* not before the beginning */
+        size_t to = std::min(static_cast<size_t>(std::max(end, 0L)), store.size());  /* nor past the end */
+        if (from >= to) {  /* nothing to cut */
+            return;  /* done */
+        }  /* end of the test */
+        store.erase(store.begin() + static_cast<long>(from), store.begin() + static_cast<long>(to));  /* the audio */
+        index.erase(index.begin() + static_cast<long>(from), index.begin() + static_cast<long>(to));  /* and its numbers */
+    }  /* end of cut */
+
+    Pending *find(long id) {  /* a candidate by its number */
+        for (auto &item : pending) {  /* each */
+            if (item.id == id) {  /* this one */
+                return &item;  /* found */
+            }  /* end of the test */
+        }  /* end of the list */
+        return nullptr;  /* gone */
+    }  /* end of find */
+
+    void drop(long id) {  /* forget a candidate */
+        pending.erase(std::remove_if(pending.begin(), pending.end(), [id](const Pending &item) { return item.id == id; }), pending.end());  /* removed, keeping the others in order */
+    }  /* end of drop */
+
+    void detect() {  /* listener.py _detect: look for new patterns in the newest audio */
+        long end = static_cast<long>(x.size());  /* the newest sample */
+        long every = static_cast<long>(cfg[KES_CFG_LONG_EVERY]);  /* the long pattern is looked for on every this-many-th search */
+        bool long_now = every > 0 && searches % every == 0;  /* this time? */
+        struct Job { int slot; long begin; std::vector<long> rows; std::vector<int> shifts; std::vector<double> quality; int got = 0; };  /* one pattern's search */
+        std::vector<Job> jobs;  /* every pattern with new audio */
+        for (int slot = 0; slot < (long_now ? 6 : 5); ++slot) {  /* the five levels, and the long beacon this time */
+            const Pattern &pat = patterns[slot];  /* its settings */
+            size_t fresh_here = slot == 5 ? unsearched_long : unsearched;  /* audio not yet searched for it */
+            if (fresh_here == 0 || !pat.set) {  /* none (or not configured) */
+                continue;  /* nothing to do */
+            }  /* end of the test */
+            long span = static_cast<long>(pat.preamble);  /* one whole pattern */
+            long begin = std::max(0L, end - std::min(static_cast<long>(fresh_here), end) - span - 2 * static_cast<long>(pat.samples) - static_cast<long>(cfg[KES_CFG_CONTEXT_S] * kSampleRate));  /* it may have begun this far back, with some background besides */
+            Job job;  /* this pattern's search */
+            job.slot = slot;  /* which */
+            job.begin = begin;  /* where its piece begins */
+            jobs.push_back(job);  /* listed */
+        }  /* end of the patterns */
+        int keep = static_cast<int>(cfg[KES_CFG_KEEP]);  /* candidates kept per pattern */
+        auto look = [&](Job &job) {  /* search one pattern's piece */
+            const Pattern &pat = patterns[job.slot];  /* its settings */
+            const double *piece = x.data() + job.begin;  /* the piece */
+            size_t n = static_cast<size_t>(end - job.begin);  /* its length */
+            std::vector<double> cleaned;  /* the long beacon's piece with carriers removed */
+            if (job.slot == 5) {  /* the long beacon: carriers out first (longbeacon.clean) */
+                cleaned.resize(n);  /* room */
+                if (n / pat.samples >= 8) {  /* enough audio to tell steady from brief */
+                    kes_remove_steady(piece, n, pat.samples, 0, cfg[KES_CFG_LONG_CLEAN_LOW], cfg[KES_CFG_LONG_CLEAN_HIGH], cfg[KES_CFG_LONG_CLEAN_TIMES], -1,
+                                      static_cast<int>(cfg[KES_CFG_LONG_CLEAN_MOST]), cfg[KES_CFG_LONG_CLEAN_HALF], good_size(n), cleaned.data());  /* notched */
+                } else {  /* too little */
+                    std::memcpy(cleaned.data(), piece, n * sizeof(double));  /* left alone */
+                }  /* end of the cleaning */
+                piece = cleaned.data();  /* search that */
+            }  /* end of the long beacon's cleaning */
+            job.rows.assign(static_cast<size_t>(keep), 0);  /* room for the starts */
+            job.shifts.assign(static_cast<size_t>(keep), 0);  /* the frequency errors */
+            job.quality.assign(static_cast<size_t>(keep), 0.0);  /* and the qualities */
+            job.got = kes_detect_preamble(piece, n, pat.samples, pat.bins.data(), pat.bins.size(), static_cast<int>(cfg[KES_CFG_PAD]), static_cast<int>(cfg[KES_CFG_HOPS]),
+                                          pat.reach, pat.whiten, keep, job.rows.data(), job.shifts.data(), job.quality.data());  /* the strongest few, timed coarsely */
+        };  /* end of look */
+        std::vector<std::thread> helpers;  /* the patterns are searched side by side */
+        for (size_t j = 1; j < jobs.size(); ++j) {  /* every job but the first */
+            helpers.emplace_back(look, std::ref(jobs[j]));  /* on a helper thread */
+        }  /* end of the helpers */
+        if (!jobs.empty()) {  /* the first */
+            look(jobs[0]);  /* here */
+        }  /* end of the first */
+        for (auto &helper : helpers) {  /* wait for them all */
+            helper.join();  /* finished */
+        }  /* end of the waiting */
+        for (const Job &job : jobs) {  /* each pattern's candidates, in the usual order */
+            const Pattern &pat = patterns[job.slot];  /* its settings */
+            long hop = static_cast<long>(pat.samples) / static_cast<long>(cfg[KES_CFG_HOPS]);  /* the coarse search's step */
+            for (int c = 0; c < std::max(job.got, 0); ++c) {  /* each candidate */
+                double quality = job.quality[static_cast<size_t>(c)];  /* how far it stands out */
+                if (job.slot != 5 && quality < pat.gate) {  /* no stronger than chance matches in noise */
+                    continue;  /* not worth following up */
+                }  /* end of the gate */
+                double start = static_cast<double>(job.rows[static_cast<size_t>(c)] * hop);  /* where it starts in the piece */
+                double offset = (job.shifts[static_cast<size_t>(c)] * (kSampleRate / static_cast<double>(pat.samples))) / cfg[KES_CFG_PAD];  /* its frequency error (as Python: shift * bin_hz / PAD) */
+                long long stream = number(static_cast<long>(std::nearbyint(static_cast<double>(job.begin) + start)));  /* its place in the stream */
+                Pending *same = nullptr;  /* the same pattern found before (within a tone)? */
+                for (auto &old : pending) {  /* each kept */
+                    if (old.slot == job.slot && std::llabs(old.stream - stream) < static_cast<long long>(pat.samples)) {  /* the same */
+                        same = &old;  /* this one */
+                        break;  /* the first such */
+                    }  /* end of the test */
+                }  /* end of the list */
+                if (same != nullptr) {  /* already on the list */
+                    if (quality > same->quality) {  /* better measured now */
+                        same->stream = stream;  /* keep the better reading */
+                        same->offset = offset;  /* likewise */
+                        same->quality = quality;  /* likewise */
+                    }  /* end of the update */
+                    continue;  /* nothing new */
+                }  /* end of the old one */
+                Pending item;  /* a new candidate, timed coarsely, its header not yet tried */
+                item.id = next_id++;  /* its own number */
+                item.slot = job.slot;  /* its pattern */
+                item.stream = stream;  /* where */
+                item.offset = offset;  /* its frequency error */
+                item.quality = quality;  /* how far it stands out */
+                pending.push_back(item);  /* followed from now on */
+            }  /* end of the candidates */
+        }  /* end of the jobs */
+        unsearched = 0;  /* all searched now */
+        if (long_now) {  /* and for the long pattern */
+            unsearched_long = 0;  /* too */
+        }  /* end of the long pattern */
+    }  /* end of detect */
+};  /* end of KesListener */
+
+extern "C" {  /* the listener's C interface */
+
+KES_API KesListener *kes_listener_new(const double *cfg, size_t count) {  /* make a listener */
+    if (count != KES_CFG_COUNT) {  /* the caller has a different list of settings */
+        return nullptr;  /* refuse */
+    }  /* end of the check */
+    auto *h = new KesListener();  /* a new one */
+    std::memcpy(h->cfg, cfg, sizeof(h->cfg));  /* its settings */
+    return h;  /* handed over */
+}  /* end of kes_listener_new */
+
+KES_API void kes_listener_free(KesListener *h) {  /* end a listener */
+    delete h;  /* gone */
+}  /* end of kes_listener_free */
+
+KES_API int kes_listener_set_pattern(KesListener *h, int slot, const double *values, const int *bins, size_t ntones) {  /* describe one pattern */
+    if (h == nullptr || slot < 0 || slot > 5 || ntones == 0) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    Pattern &pat = h->patterns[slot];  /* the one described */
+    pat.number = static_cast<int>(values[0]);  /* the level's number */
+    pat.samples = static_cast<size_t>(values[1]);  /* tone length */
+    pat.reach = static_cast<int>(values[2]);  /* frequency error searched */
+    pat.whiten = static_cast<int>(values[3]);  /* level the band out first */
+    pat.gate = values[4];  /* the follow-up gate */
+    pat.preamble = static_cast<size_t>(values[5]);  /* the pattern's length */
+    pat.lo = static_cast<size_t>(values[6]);  /* the band's lowest bin */
+    pat.hi = static_cast<size_t>(values[7]);  /* and highest */
+    pat.step = static_cast<int>(values[8]);  /* bins between tones */
+    pat.bins.assign(bins, bins + ntones);  /* the pattern's tones */
+    pat.set = true;  /* configured */
+    return 0;  /* done */
+}  /* end of kes_listener_set_pattern */
+
+KES_API int kes_listener_set_tables(KesListener *h, const int *totals_by_type, const int *body_totals, size_t nbody) {  /* the header reader's tables */
+    if (h == nullptr) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    h->totals_by_type.assign(totals_by_type, totals_by_type + 32);  /* body length by frame type and size class */
+    h->body_totals.assign(body_totals, body_totals + nbody);  /* every body length */
+    return 0;  /* done */
+}  /* end of kes_listener_set_tables */
+
+KES_API void kes_listener_clear(KesListener *h) {  /* listener.py clear: forget everything heard so far */
+    h->store.clear();  /* nothing kept */
+    h->index.clear();  /* and no numbers for it */
+    h->fresh = 0;  /* nothing new */
+    h->pending.clear();  /* no candidates */
+    h->unsearched = h->unsearched_long = 0;  /* and nothing to search */
+    h->order.clear();  /* no search under way */
+    h->cursor = 0;  /* likewise */
+}  /* end of kes_listener_clear */
+
+KES_API int kes_listener_feed(KesListener *h, const double *samples, size_t n, long long at, int counted) {  /* listener.py feed, the storing part */
+    long long first = counted ? at : h->total;  /* the number of the first new sample */
+    h->total = first + static_cast<long long>(n);  /* the number the next one will get */
+    h->store.insert(h->store.end(), samples, samples + n);  /* appended */
+    for (size_t i = 0; i < n; ++i) {  /* each new sample */
+        h->index.push_back(first + static_cast<long long>(i));  /* its number */
+    }  /* end of the numbers */
+    size_t window = h->window();  /* most kept */
+    if (h->store.size() > window) {  /* too much */
+        size_t extra = h->store.size() - window;  /* the oldest to let go */
+        h->store.erase(h->store.begin(), h->store.begin() + static_cast<long>(extra));  /* gone */
+        h->index.erase(h->index.begin(), h->index.begin() + static_cast<long>(extra));  /* with their numbers */
+    }  /* end of the trimming */
+    h->fresh += n;  /* new audio */
+    h->unsearched += n;  /* not yet searched */
+    h->unsearched_long += n;  /* nor for the long pattern */
+    if (h->fresh < h->step()) {  /* not enough to be worth a search */
+        return 0;  /* nothing yet */
+    }  /* end of the test */
+    h->fresh = 0;  /* start counting again */
+    return 1;  /* a search is due */
+}  /* end of kes_listener_feed */
+
+KES_API int kes_listener_begin(KesListener *h, int near_on) {  /* listener.py _search_new, up to the candidate loop */
+    h->order.clear();  /* no candidates yet */
+    h->cursor = 0;  /* from the first */
+    h->near_on = near_on != 0;  /* whether near misses are wanted */
+    if (h->store.size() < static_cast<size_t>(kSampleRate)) {  /* less than a second of audio */
+        return 0;  /* too little to be worth searching */
+    }  /* end of the test */
+    h->searches += 1;  /* count it */
+    size_t n = h->store.size();  /* the audio kept */
+    std::vector<double> blanked(n);  /* with static crashes removed */
+    kes_blank_impulses(h->store.data(), n, h->cfg[KES_CFG_BLANK_THRESHOLD], static_cast<int>(h->cfg[KES_CFG_BLANK_GUARD]), blanked.data());  /* blanked */
+    h->x.resize(n);  /* room */
+    if (n / static_cast<size_t>(h->cfg[KES_CFG_NOTCH_BLOCK]) >= 8) {  /* enough audio to tell steady signals from brief ones */
+        kes_remove_steady(blanked.data(), n, static_cast<size_t>(h->cfg[KES_CFG_NOTCH_BLOCK]), 1, h->cfg[KES_CFG_NOTCH_LOW], h->cfg[KES_CFG_NOTCH_HIGH], h->cfg[KES_CFG_NOTCH_TIMES],
+                          static_cast<int>(h->cfg[KES_CFG_NOTCH_LOCAL]), static_cast<int>(h->cfg[KES_CFG_NOTCH_MOST]), h->cfg[KES_CFG_NOTCH_HALF], good_size(n), h->x.data());  /* notched */
+    } else {  /* too little */
+        h->x = blanked;  /* left alone */
+    }  /* end of the notch */
+    long every = static_cast<long>(h->cfg[KES_CFG_LONG_EVERY]);  /* the long pattern's rhythm */
+    if (h->unsearched > 0 || (h->unsearched_long > 0 && every > 0 && h->searches % every == 0)) {  /* new audio to look at */
+        h->detect();  /* look for patterns in it */
+    }  /* end of the detection */
+    std::vector<size_t> places(h->pending.size());  /* the candidates, to be put strongest first */
+    for (size_t i = 0; i < places.size(); ++i) {  /* each */
+        places[i] = i;  /* its place in the list */
+    }  /* end of the places */
+    std::stable_sort(places.begin(), places.end(), [h](size_t a, size_t b) { return h->pending[a].quality > h->pending[b].quality; });  /* strongest first (ties keep their order, as Python's sort) */
+    for (size_t place : places) {  /* each */
+        h->order.push_back(h->pending[place].id);  /* by number */
+    }  /* end of the order */
+    return 1;  /* the candidates can be looked at */
+}  /* end of kes_listener_begin */
+
+KES_API int kes_listener_next(KesListener *h, double *ev) {  /* listener.py _search_new, the candidate loop, one step at a time */
+    long wait = std::min(static_cast<long>(h->cfg[KES_CFG_LONGEST_FRAME]), static_cast<long>(h->window()) - 2 * static_cast<long>(h->step()));  /* how long a candidate without a header is kept */
+    while (h->cursor < h->order.size()) {  /* each candidate, strongest first */
+        long id = h->order[h->cursor++];  /* the next */
+        Pending *item = h->find(id);  /* still followed? */
+        if (item == nullptr) {  /* gone */
+            continue;  /* next */
+        }  /* end of the test */
+        long start = h->position(item->stream);  /* where it is in the store now */
+        if (start < 0) {  /* slid out, or cut out with a frame */
+            h->drop(id);  /* forget it */
+            continue;  /* next */
+        }  /* end of the test */
+        const Pattern &pat = h->patterns[item->slot];  /* its pattern */
+        long samples = static_cast<long>(pat.samples);  /* tone length */
+        long stored = static_cast<long>(h->store.size());  /* the store's length now */
+        if (item->slot == 5) {  /* a long beacon: no header; the caller reads it once it has all arrived */
+            if (start + static_cast<long>(h->cfg[KES_CFG_LONG_SAMPLES]) + samples > stored) {  /* still arriving (with a tone to spare) */
+                continue;  /* wait */
+            }  /* end of the test */
+            double offset = item->offset, quality = item->quality;  /* its readings */
+            h->drop(id);  /* read once only */
+            ev[0] = 2; ev[1] = pat.number; ev[2] = static_cast<double>(start); ev[3] = static_cast<double>(start); ev[4] = offset; ev[5] = quality; ev[6] = 0;  /* "a long beacon to read" */
+            return 2;  /* the caller reads it */
+        }  /* end of the long beacon */
+        if (item->coarse) {  /* not yet finely timed */
+            if (start + static_cast<long>(pat.preamble) + samples > stored) {  /* its pattern (and a tone to spare) has not all arrived */
+                continue;  /* wait */
+            }  /* end of the test */
+            double refined_start = static_cast<double>(start), refined_steps = 0.0;  /* the fine timing's answers */
+            int status = kes_fine_time(h->x.data(), h->x.size(), pat.samples, pat.bins.data(), pat.bins.size(), static_cast<int>(h->cfg[KES_CFG_PAD]), static_cast<int>(h->cfg[KES_CFG_HOPS]),
+                                       static_cast<int>(std::nearbyint(item->offset / ((kSampleRate / static_cast<double>(pat.samples)) / h->cfg[KES_CFG_PAD]))), static_cast<double>(start), &refined_start, &refined_steps);  /* its start and frequency, finely */
+            double offset = item->offset;  /* kept when there was too little audio to refine */
+            if (status == 0) {  /* refined */
+                offset = (refined_steps * (kSampleRate / static_cast<double>(pat.samples))) / h->cfg[KES_CFG_PAD];  /* in hertz (as Python: steps * bin_hz / PAD) */
+            } else {  /* too little audio (status 1) */
+                refined_start = static_cast<double>(start);  /* the coarse start stands */
+            }  /* end of the outcome */
+            start = static_cast<long>(std::nearbyint(refined_start));  /* the store position, refined */
+            item->stream = h->number(start);  /* kept */
+            item->offset = offset;  /* likewise */
+            item->coarse = false;  /* finely timed now */
+            item->start_fine = refined_start - static_cast<double>(start);  /* the part of a sample */
+        }  /* end of the fine timing */
+        double found_start = static_cast<double>(start) + item->start_fine;  /* the start the receiver takes */
+        if (!item->has_header) {  /* not read yet */
+            double since = -1.0;  /* where the store ended at the last try, if that sample is still there */
+            if (item->has_since) {  /* there was a try */
+                long was = h->position(item->since);  /* where that sample is now */
+                if (was >= 0) {  /* still there */
+                    since = static_cast<double>(was + 1);  /* only places beyond it are new */
+                }  /* end of the test */
+            }  /* end of the earlier try */
+            int got = kes_read_header(h->x.data(), h->x.size(), found_start + static_cast<double>(pat.preamble), item->offset, pat.samples, pat.lo, pat.hi, pat.step, pat.number,
+                                      h->totals_by_type.data(), h->body_totals.data(), h->body_totals.size(), since, item->header);  /* its header, if one can be read yet */
+            if (got > 0) {  /* read: kept */
+                item->has_header = true;  /* so it need not be read again */
+                item->how = got;  /* and which copy gave it */
+            } else if (found_start + static_cast<double>(pat.preamble) + static_cast<double>(static_cast<long>(h->cfg[KES_CFG_HEADER_SYMBOLS]) / 2 * samples) <= static_cast<double>(h->x.size())) {  /* the first copy had all arrived, so it was really tried */
+                item->has_since = true;  /* remember... */
+                item->since = h->index.back();  /* ...how far the store reached */
+            }  /* end of the outcome */
+        }  /* end of the header */
+        if (!item->has_header) {  /* none yet */
+            ev[0] = 3; ev[1] = pat.number; ev[2] = static_cast<double>(start); ev[3] = found_start; ev[4] = item->offset; ev[5] = item->quality; ev[6] = 0;  /* a try, for the signal log */
+            if (start + wait <= stored) {  /* its whole frame has passed and no header was ever read */
+                double offset = item->offset, quality = item->quality;  /* its readings */
+                h->drop(id);  /* let it go */
+                ev[6] = 0;  /* no near miss yet */
+                double low = h->cfg[KES_CFG_NEAR_QUALITY], high = h->cfg[KES_CFG_NEAR_QUALITY_MAX];  /* the range a near miss's strength must be in */
+                if (h->near_on && quality >= low && quality <= high) {  /* wanted, and clear enough (listener.py _near_miss) */
+                    long span = static_cast<long>(h->cfg[KES_CFG_NEAR_SPAN]);  /* the longest a preamble and first header copy can be */
+                    if (start + wait <= static_cast<long>(h->store.size())) {  /* the second header copy has had time to arrive */
+                        long from = std::max(start, 0L), to = std::min(start + span, static_cast<long>(h->store.size()));  /* the signature's stretch */
+                        h->near_audio.assign(h->store.begin() + from, h->store.begin() + std::max(from, to));  /* its audio */
+                        ev[6] = 1;  /* a near miss to report */
+                        ev[7] = static_cast<double>(h->number(from));  /* where it began in the stream */
+                        ev[4] = offset;  /* its frequency error */
+                        ev[5] = quality;  /* and strength */
+                        h->cut(start, start + span);  /* cut out so it is not reported again */
+                    }  /* end of the report */
+                }  /* end of the near miss */
+            }  /* end of the timeout */
+            return 3;  /* the caller notes the try (and the near miss, if ev[6] is 1) */
+        }  /* end of no header */
+        int frame_type = (item->header[0] << 2) | (item->header[1] << 1) | item->header[2];  /* the frame type it names */
+        int size_class = (item->header[6] << 1) | item->header[7];  /* and the size class */
+        int body = h->totals_by_type[static_cast<size_t>(frame_type * 4 + size_class)];  /* its body length */
+        if (body < 0) {  /* a frame type that does not exist: a chance header from noise */
+            h->drop(id);  /* let it go */
+            continue;  /* next candidate */
+        }  /* end of the test */
+        long end = start + (static_cast<long>(h->cfg[KES_CFG_PREAMBLE_TONES]) + static_cast<long>(h->cfg[KES_CFG_HEADER_SYMBOLS]) + body) * samples;  /* where its frame ends */
+        if (end > stored) {  /* still arriving */
+            continue;  /* wait for the rest */
+        }  /* end of the test */
+        double offset = item->offset, quality = item->quality;  /* its readings */
+        h->drop(id);  /* decoded once only */
+        ev[0] = 1; ev[1] = pat.number; ev[2] = static_cast<double>(start); ev[3] = found_start; ev[4] = offset; ev[5] = quality; ev[6] = static_cast<double>(end);  /* "a frame to decode" */
+        return 1;  /* the caller decodes it */
+    }  /* end of the candidates */
+    return 0;  /* nothing more this search */
+}  /* end of kes_listener_next */
+
+KES_API size_t kes_listener_size(KesListener *h) { return h->store.size(); }  /* how many samples are kept */
+KES_API const double *kes_listener_x(KesListener *h) { return h->x.data(); }  /* the processed store of the latest search (valid until the next) */
+KES_API size_t kes_listener_x_size(KesListener *h) { return h->x.size(); }  /* its length */
+KES_API const double *kes_listener_near_audio(KesListener *h) { return h->near_audio.data(); }  /* the latest near miss's audio */
+KES_API size_t kes_listener_near_size(KesListener *h) { return h->near_audio.size(); }  /* its length */
+KES_API long long kes_listener_number(KesListener *h, long position) { return h->number(position); }  /* a store position as a stream number */
+KES_API void kes_listener_cut(KesListener *h, long start, long end) { h->cut(start, end); }  /* take a stretch out of the store */
+KES_API long kes_listener_searches(KesListener *h) { return h->searches; }  /* searches so far */
+KES_API size_t kes_listener_pending(KesListener *h) { return h->pending.size(); }  /* candidates being followed */
+
+KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out) {  /* copy a stretch of the store */
+    size_t a = static_cast<size_t>(std::max(from, 0L)), b = std::min(static_cast<size_t>(std::max(to, 0L)), h->store.size());  /* inside the store */
+    if (a >= b) {  /* nothing */
+        return 0;  /* none copied */
+    }  /* end of the test */
+    std::memcpy(out, h->store.data() + a, (b - a) * sizeof(double));  /* copied */
+    return b - a;  /* how many */
+}  /* end of kes_listener_copy */
+
+KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bits, size_t ndata_bits, int is_control, const long *rows,
+                              size_t total, const long *data_pos, size_t ndata, const long *pilot_pos, const int *pilot_tones, size_t npilots,
+                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double *audio) {  /* frame.py build_frame / build_control, after the bits are packed */
+    if (samples == 0 || ndata_bits == 0 || total == 0 || ndata * kBitsPerTone < coded) {  /* nonsense */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    auto conv = [](const uint8_t *bits, size_t n, std::vector<uint8_t> &out) {  /* fec.py conv_encode: rate 1/2, K = 7, six zero tail bits */
+        out.assign(2 * (n + kTail), 0);  /* room */
+        int state = 0;  /* the encoder's memory */
+        for (size_t i = 0; i < n + kTail; ++i) {  /* the data, then the tail */
+            int b = i < n ? bits[i] : 0;  /* this bit */
+            int reg = (state << 1) | b;  /* the seven-bit register */
+            out[2 * i] = static_cast<uint8_t>(parity(reg & kG1));  /* first output bit */
+            out[2 * i + 1] = static_cast<uint8_t>(parity(reg & kG2));  /* second */
+            state = reg & (kStates - 1);  /* the newest six bits */
+        }  /* end of the bits */
+    };  /* end of conv */
+    auto to_symbols = [](const std::vector<uint8_t> &bits, std::vector<int> &out) {  /* mfsk.py bits_to_symbols: groups of five, padded with zeros */
+        size_t groups = (bits.size() + kBitsPerTone - 1) / kBitsPerTone;  /* tones needed */
+        out.assign(groups, 0);  /* room */
+        for (size_t g = 0; g < groups; ++g) {  /* each tone */
+            int value = 0;  /* its number */
+            for (int j = 0; j < kBitsPerTone; ++j) {  /* each of its five bits, most significant first */
+                size_t i = g * kBitsPerTone + static_cast<size_t>(j);  /* the bit's place */
+                value = (value << 1) | (i < bits.size() ? bits[i] : 0);  /* added (zeros past the end) */
+            }  /* end of the bits */
+            out[g] = value;  /* kept */
+        }  /* end of the tones */
+    };  /* end of to_symbols */
+    std::vector<uint8_t> coded_header;  /* the header, coded */
+    conv(header_bits, 24, coded_header);  /* 24 bits -> 60 */
+    std::vector<int> header_syms;  /* and as tones */
+    to_symbols(coded_header, header_syms);  /* 12 of them */
+    std::vector<uint8_t> body_coded;  /* the body, coded */
+    if (is_control) {  /* a control frame: the convolutional code */
+        conv(data_bits, ndata_bits, body_coded);  /* coded */
+    } else {  /* a message frame: the LDPC code (ldpc.py encode) */
+        size_t k = ndata_bits;  /* data bits */
+        std::vector<long> sums(k, 0);  /* how many 1 data bits feed each check */
+        for (int t = 0; t < 3; ++t) {  /* each of the three shuffles */
+            for (size_t j = 0; j < k; ++j) {  /* each data bit */
+                sums[static_cast<size_t>(rows[static_cast<size_t>(t) * k + j])] += data_bits[j];  /* into the check it joins */
+            }  /* end of the bits */
+        }  /* end of the shuffles */
+        body_coded.assign(data_bits, data_bits + k);  /* the data first */
+        int running = 0;  /* the parity so far */
+        for (size_t i = 0; i < k; ++i) {  /* each parity bit: the XOR of all checks up to its own */
+            running ^= static_cast<int>(sums[i] & 1);  /* this check */
+            body_coded.push_back(static_cast<uint8_t>(running));  /* appended */
+        }  /* end of the parity */
+    }  /* end of the coding */
+    size_t padded = ndata * kBitsPerTone;  /* coded bits rounded up to whole tones */
+    body_coded.resize(padded, 0);  /* padded with zeros (only `coded` of them carry the code) */
+    long target = static_cast<long>(std::nearbyint(static_cast<double>(padded) * 0.6180339887498949));  /* the interleaver's ideal step (interleave.py _step) */
+    long shuffle = 1;  /* the step found */
+    bool found = false;  /* not yet */
+    for (long delta = 0; delta < static_cast<long>(padded) && !found; ++delta) {  /* outwards from the ideal */
+        for (long cand : {target + delta, target - delta}) {  /* just above, then just below */
+            if (cand > 0 && cand < static_cast<long>(padded) && std::gcd(cand, static_cast<long>(padded)) == 1) {  /* shares no factor with the length */
+                shuffle = cand;  /* the step */
+                found = true;  /* done */
+                break;  /* the first valid one */
+            }  /* end of the test */
+        }  /* end of the two candidates */
+    }  /* end of the search */
+    std::vector<uint8_t> sent(padded);  /* the bits in sending order (interleave.py interleave: bit i goes to step * i mod n) */
+    for (size_t i = 0; i < padded; ++i) {  /* each bit */
+        sent[static_cast<size_t>((static_cast<unsigned long long>(shuffle) * i) % padded)] = body_coded[i];  /* dropped into its place */
+    }  /* end of the shuffle */
+    std::vector<int> data_syms;  /* the data tones */
+    to_symbols(sent, data_syms);  /* five bits each */
+    std::vector<int> body(total, 0);  /* every body tone */
+    for (size_t d = 0; d < ndata && d < data_syms.size(); ++d) {  /* each data tone */
+        body[static_cast<size_t>(data_pos[d])] = data_syms[d];  /* in its place */
+    }  /* end of the data tones */
+    for (size_t p = 0; p < npilots; ++p) {  /* each pilot */
+        body[static_cast<size_t>(pilot_pos[p])] = pilot_tones[p];  /* its known tone */
+    }  /* end of the pilots */
+    std::vector<int> all(preamble_tones, preamble_tones + npreamble);  /* the preamble's tones... */
+    all.insert(all.end(), header_syms.begin(), header_syms.end());  /* ...the header... */
+    all.insert(all.end(), body.begin(), body.end());  /* ...the body... */
+    all.insert(all.end(), header_syms.begin(), header_syms.end());  /* ...and the header again (since 0.26) */
+    double bin_hz = kSampleRate / static_cast<double>(samples);  /* one FFT bin, in hertz */
+    for (size_t s = 0; s < all.size(); ++s) {  /* each tone (mfsk.py symbols_to_audio) */
+        double f = static_cast<double>(tone_bins[all[s]]) * bin_hz;  /* its frequency */
+        for (size_t m = 0; m < samples; ++m) {  /* each sample */
+            audio[s * samples + m] = std::cos(2.0 * kPi * f * static_cast<double>(m) / kSampleRate);  /* a cosine burst, starting afresh each tone */
+        }  /* end of the samples */
+    }  /* end of the tones */
+    return static_cast<long>(all.size() * samples);  /* samples written */
+}  /* end of kes_encode_frame */
 
 }  /* end of the exported functions */

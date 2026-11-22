@@ -79,10 +79,31 @@ def frame_samples(result):  # how long is the frame this report describes?
     return (PREAMBLE_TONES + HEADER_SYMBOLS + body) * LEVELS[result.level].samples  # preamble + header + body
 
 
+def _core_settings(window, step):  # what the compiled listener needs to know
+    """Return (settings, patterns, totals by type, body totals) for native.compiled_listener, from the same constants the Python listener uses."""
+    from math import ceil  # rounding up
+    from modem import blanker, notch  # the blanker's and the notch's settings
+    from modem.frame import _totals_by_type  # body length by frame type and size class
+    from modem.preamble import HOPS, PAD, pattern_tones  # the pattern search's settings and each pattern's tones
+    cfg = [0.0] * native.CFG_COUNT  # in the KES_CFG_ order of kestrel.h
+    cfg[0:10] = [window, step, LONGEST_FRAME, CONTEXT_S, LONG_EVERY, 3, HEADER_SYMBOLS, PREAMBLE_TONES, NEAR_QUALITY, NEAR_QUALITY_MAX]  # the store, the rhythm, the frame shapes, near misses
+    cfg[10:12] = list(blanker.blank_impulses.__defaults__)  # the blanker's threshold and guard, as blank_impulses uses them
+    cfg[12:19] = [notch.BLOCK, notch.BAND_LOW_HZ, notch.BAND_HIGH_HZ, notch.CARRIER_TIMES, notch.LOCAL_STEPS, notch.CARRIER_MOST, notch.NOTCH_HALF_HZ]  # the steady-signal notch
+    cfg[19:25] = [longbeacon.SAMPLES, longbeacon.CENTRE_HZ - longbeacon.CLEAN_HALF_HZ, longbeacon.CENTRE_HZ + longbeacon.CLEAN_HALF_HZ, longbeacon.CARRIER_TIMES, longbeacon.CARRIER_MOST, longbeacon.NOTCH_HALF_HZ]  # the long beacon and its carrier notch
+    cfg[25:28] = [PAD, HOPS, (PREAMBLE_TONES + HEADER_SYMBOLS // 2) * LEVELS[0].samples]  # the search's steps, and what a near miss cuts out
+    patterns = {}  # slot -> (values, bins)
+    for slot, spec in enumerate(list(LEVELS) + [longbeacon.LONG]):  # the five levels, then the long beacon
+        reach = int(ceil(50.0 / (spec.bin_hz / PAD)))  # fine steps of frequency error searched (50 Hz, as detect_preamble's default)
+        gate = GATE[spec.number] if spec.number < len(GATE) else 0.0  # the follow-up gate (none for the long beacon)
+        values = [spec.number, spec.samples, reach, 1 if spec is longbeacon.LONG else 0, gate, preamble_samples(spec), int(spec.tone_bins[0]) - 1, int(spec.tone_bins[-1]) + 1, spec.step]  # its figures
+        patterns[slot] = (values, PAD * spec.tone_bins[pattern_tones(spec.number)])  # and its tones, in fine steps
+    return cfg, patterns, _totals_by_type(), _body_totals()  # everything
+
+
 class Listener:  # the continuous receiver
     """Feed it audio at 12,000 samples per second with feed(); it returns the frames that have completed."""
 
-    def __init__(self, window_s=WINDOW_S, step_s=STEP_S, incremental=True):  # set up an empty store
+    def __init__(self, window_s=WINDOW_S, step_s=STEP_S, incremental=True, compiled=None):  # set up an empty store
         self.window = int(window_s * FS)  # most samples kept
         self.step = int(step_s * FS)  # new samples needed before the next search
         self.store = np.zeros(0)  # the audio kept so far
@@ -102,6 +123,8 @@ class Listener:  # the continuous receiver
         self.unsearched_long = 0  # and for the long beacon's pattern (looked for on every fourth search)
         self.expect = None  # if set, called with no arguments for (this station's callsign, callsigns it expects to hear), to help read weak control frames (since 0.31R1)
         self.priors = []  # control frames whose bodies failed their check, kept so a later copy can be added to them (frame.Prior; since 0.31R1)
+        use_core = incremental and (native.available() if compiled is None else compiled)  # the compiled store and candidate list (library interface 7), unless asked not to
+        self.core = native.compiled_listener(*_core_settings(self.window, self.step)) if use_core else None  # the library's listener, or None for the Python one (the reference)
 
     def clear(self):  # forget everything heard so far
         """Empty the store (used after transmitting, so the station does not decode itself)."""
@@ -109,6 +132,8 @@ class Listener:  # the continuous receiver
         self.index = np.zeros(0, dtype=np.int64)  # and no numbers for it
         self.fresh = 0  # nothing new
         self.pending, self.unsearched, self.unsearched_long = [], 0, 0  # no candidates, and nothing to search
+        if self.core is not None:  # the compiled listener keeps its own
+            self.core.clear()  # emptied too
 
     def feed(self, samples, at=None):  # take in more audio
         """Add `samples` to the store and return a list of Heard frames that are now complete.
@@ -118,6 +143,19 @@ class Listener:  # the continuous receiver
         from 0, which is right as long as every sample read is fed.
         """
         samples = np.asarray(samples, dtype=float)  # make sure it is an array of numbers
+        if self.core is not None:  # the compiled listener stores the audio
+            due = self.core.feed(samples, at)  # stored (and numbered)
+            self.total = (self.total if at is None else int(at)) + len(samples)  # the number the next sample will get
+            if not due:  # not enough new audio to be worth a search
+                return []  # nothing yet
+            found = []  # frames found in this search
+            for _ in range(4):  # a search can turn up more than one frame; four is plenty
+                heard = self._search_compiled()  # look for one whole frame
+                if heard is None:  # none left
+                    break  # done
+                found.append(heard)  # keep it
+            found, self.combined = found + self.combined, []  # and any long beacon that decoded by adding copies together
+            return found  # everything that completed
         at = self.total if at is None else int(at)  # the number of the first new sample
         self.total = at + len(samples)  # the number the next one will get
         self.store = np.concatenate([self.store, samples])[-self.window:]  # append, keep only the last 100 seconds
@@ -248,7 +286,11 @@ class Listener:  # the continuous receiver
                     self.pending.remove(item)  # let it go
                     self._near_miss(RxResult(reason="header check failed", start=float(start), sync_quality=item["quality"], offset_hz=item["offset_hz"], seen_level=item["level"]))  # but report a clear signature that could not be read
                 continue  # next candidate
-            end = start + (PREAMBLE_TONES + HEADER_SYMBOLS + _body_total(header)) * spec.samples  # where its frame ends
+            body = _body_total(header)  # its body length (None for a frame type that does not exist: a chance header from noise)
+            if body is None:  # no such frame
+                self.pending.remove(item)  # let it go
+                continue  # next candidate
+            end = start + (PREAMBLE_TONES + HEADER_SYMBOLS + body) * spec.samples  # where its frame ends
             if end > len(self.store):  # still arriving
                 continue  # wait for the rest
             self.pending.remove(item)  # decoded once only
@@ -269,6 +311,76 @@ class Listener:  # the continuous receiver
             self.on_search(result, trace)  # hand it over
         return heard  # the frame, or None
 
+    # ---- the incremental search with the compiled store and candidate list (library interface 7) ----
+
+    def _search_compiled(self):  # the incremental search, its bookkeeping in the library
+        """Return a Heard for the strongest complete frame among the candidates, as _search_new does; None if there is none."""
+        core = self.core  # the library's listener
+        if not core.begin(self.on_near is not None):  # blank, notch and search the newest audio (False: too little audio yet)
+            return None  # nothing to find
+        self.searches = core.searches()  # kept in step, for anyone who asks
+        trace = [] if self.on_search is not None else None  # the candidates tried, if anyone wants them
+        x = core.x()  # the processed store the frames are read from (the library's memory, valid until the next search)
+        result, heard = RxResult(reason="no frame ready"), None  # what this search found
+        while True:  # the candidates, strongest first, as the library hands them over
+            kind, ev = core.next()  # the next event
+            if kind == 0:  # no more
+                break  # this search is done
+            level, start, found_start, offset, quality = int(ev[1]), int(ev[2]), float(ev[3]), float(ev[4]), float(ev[5])  # the candidate
+            if kind == 3:  # a candidate whose header could not be read (yet)
+                if trace is not None:  # someone wants the details
+                    trace.append({"level": level, "start": start, "offset_hz": offset, "quality": quality, "header": ""})  # this try
+                if ev[6] == 1 and self.on_near is not None:  # also a clear signature that never gave a header: a near miss (already cut out)
+                    self.near_audio, self.near_audio_sample = core.near_audio(), int(ev[7])  # its audio, for a signal log that keeps clips
+                    self.on_near(RxResult(reason="header check failed", start=float(start), sync_quality=quality, offset_hz=offset, seen_level=level))  # report it
+                continue  # next candidate
+            if kind == 2:  # a long beacon, all arrived
+                spec = longbeacon.LONG  # its pattern and tone length
+                first = max(start - FS, 0)  # a second of audio before it, for the carrier check
+                piece = longbeacon.clean(x[first:start + longbeacon.SAMPLES + FS])  # its stretch, with carriers removed
+                refined = fine_time(piece, spec, {"start": float(start - first), "offset_hz": offset, "quality": quality})  # its start and frequency, finely
+                start = first + int(round(refined["start"]))  # in store positions
+                long_failed = []  # its soft values, if it does not decode
+                attempt = longbeacon.decode_at(piece, refined, RxResult(start=refined["start"], sync_quality=quality), failed=long_failed)  # read it
+                attempt.start = float(start)  # in store positions
+                if trace is not None:  # someone wants the details
+                    trace.append({"level": LONG_LEVEL, "start": start, "offset_hz": offset, "quality": quality, "header": "long", "ok": attempt.ok, "reason": attempt.reason, "snr_db": float(attempt.snr_db)})  # this try
+                for candidate, soft in long_failed:  # not readable alone
+                    self._combine(dict(candidate, start=float(start)), soft)  # try it with the copies kept
+                if attempt.ok:  # a long beacon
+                    result = attempt  # this search's result
+                    heard = self._take(attempt, start, start + longbeacon.SAMPLES)  # hand it over
+                    break  # one frame per search
+                continue  # next candidate
+            spec = LEVELS[level]  # a frame at this level, all arrived, its header read
+            end = int(ev[6])  # where it ends
+            found = {"start": found_start, "offset_hz": offset, "quality": quality}  # in the form the receiver takes
+            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(start))  # read the whole frame (already blanked and notched), with help for a weak control frame
+            self._remember_failure(attempt, start)  # a control frame that failed is kept, to add to its next copy
+            if attempt.ok:  # it decoded
+                result, heard = attempt, self._take(attempt, start, end)  # hand it over
+                break  # one frame per search
+            limit = MIN_SNR_DB[attempt.level] if attempt.level >= 0 else 0.0  # the weakest signal its level decodes
+            believable = attempt.reason == "body check failed" and np.isfinite(attempt.snr_db) and attempt.snr_db >= limit - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
+            if believable:  # a real frame that failed its check: hand it over, so the station can combine it with a retry
+                result, heard = attempt, self._take(attempt, start, end)  # as the whole-store search did
+                break  # one frame per search
+        if trace is not None:  # someone keeps a signal log
+            for step in trace:  # every candidate tried
+                step["sample"] = self._number(step["start"])  # its place in the stream
+            result.sample = heard.result.sample if heard is not None else -1  # where the frame began, if one was found
+            self.on_search(result, trace)  # hand it over
+        return heard  # the frame, or None
+
+    def _size(self):  # samples kept
+        """Return how many samples the store holds (the library's, when it keeps it)."""
+        return self.core.size() if self.core is not None else len(self.store)  # either way
+
+    def _slice(self, start, end):  # a copy of a stretch of the store
+        """Return a copy of store positions start (not below 0) to end."""
+        start = max(int(start), 0)  # not before the beginning
+        return self.core.copy(start, end) if self.core is not None else self.store[start:end].copy()  # either way
+
     def _hints(self, start):  # help for reading weak control frames
         """Return the frame.Hints for a candidate at store position `start`: expected callsigns, and earlier failed copies (never the frame itself)."""
         own, calls = ("", ())  # nothing expected unless the station says
@@ -277,7 +389,7 @@ class Listener:  # the continuous receiver
                 own, calls = self.expect()  # its callsign, and those it expects
             except Exception:  # whatever went wrong there, keep receiving
                 own, calls = ("", ())  # carry on without
-        here = self._number(start) if 0 <= start < len(self.index) else -1  # this candidate's place in the stream
+        here = self._number(start) if 0 <= start < self._size() else -1  # this candidate's place in the stream
         priors = [p for p in self.priors if here < 0 or abs(p.sample - here) > FS]  # earlier copies, not this frame itself
         return Hints(own=own or "", calls=tuple(calls or ()), priors=priors, base=-1)  # the hints (positions already handled here)
 
@@ -285,8 +397,8 @@ class Listener:  # the continuous receiver
         """Keep the soft bits of a control frame that failed its check, so a later copy can be added to them."""
         if attempt.frame_type not in CONTROL_BITS or attempt.body_llrs is None or attempt.reason != "body check failed":  # not a control frame that failed its check
             return  # nothing to keep
-        here = self._number(start) if 0 <= start < len(self.index) else -1  # where it began in the stream
-        newest = int(self.index[-1]) if len(self.index) else here  # the latest sample heard
+        here = self._number(start) if 0 <= start < self._size() else -1  # where it began in the stream
+        newest = self._number(self._size() - 1) if self._size() else here  # the latest sample heard
         self.priors = [p for p in self.priors if p.sample < 0 or newest - p.sample <= PRIOR_KEEP_S * FS]  # drop copies too old to be the same transmission round
         if any(p.sample >= 0 and abs(p.sample - here) <= FS for p in self.priors):  # this frame is kept already
             return  # once is enough
@@ -297,7 +409,7 @@ class Listener:  # the continuous receiver
         """Return a Heard for the frame from store position `start` to `end`, and cut it out of the store."""
         result.sample = self._number(start)  # where it began in the stream
         pad = int(PAD_S * FS)  # a little audio either side
-        audio = self.store[max(start - pad, 0):end + pad].copy()  # the frame's own stretch of audio
+        audio = self._slice(start - pad, end + pad)  # the frame's own stretch of audio
         first = self._number(max(start - pad, 0))  # the stream's number for its first sample
         self._cut(start, end)  # cut the frame out so it is not found again
         return Heard(result, audio, first)  # hand it over
@@ -354,11 +466,13 @@ class Listener:  # the continuous receiver
         fields, margin, copies = out  # the beacon, how clearly it stood out, and how many copies it took
         result = RxResult(start=float(start), sync_quality=soft.quality, offset_hz=soft.offset_hz, drift_hz_s=soft.drift_hz_s, level=LONG_LEVEL, frame_type=FRAME_TYPE_LONG, header_copy="none (long beacon)", sample=soft.sample)  # a report for it, placed at the newest copy
         longbeacon._fill(result, fields, margin, copies)  # the fields and the signal reading (per copy)
-        self.combined.append(Heard(result, self.store[max(start, 0):start + longbeacon.SAMPLES].copy(), self._number(max(start, 0))))  # hand it over with the newest copy's audio
+        self.combined.append(Heard(result, self._slice(start, start + longbeacon.SAMPLES), self._number(max(start, 0))))  # hand it over with the newest copy's audio
 
     def _number(self, position):  # a place in the store, as a number in the stream
         """Return the stream's number for store position `position` (worked out past either end of the store)."""
         position = int(round(position))  # whole samples
+        if self.core is not None:  # the library keeps the numbers
+            return self.core.number(position)  # worked out there, the same way
         if len(self.index) == 0:  # nothing stored
             return self.total + position  # count on from the newest sample
         if position < 0:  # before the first stored sample
@@ -370,6 +484,9 @@ class Listener:  # the continuous receiver
     def _cut(self, start, end):  # take a stretch out of the store
         """Remove store positions start to end, and their numbers."""
         start = max(start, 0)  # not before the beginning
+        if self.core is not None:  # the library keeps the store
+            self.core.cut(start, end)  # cut there
+            return  # done
         self.store = np.concatenate([self.store[:start], self.store[end:]])  # the audio
         self.index = np.concatenate([self.index[:start], self.index[end:]])  # and its numbers
 

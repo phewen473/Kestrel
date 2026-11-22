@@ -31,6 +31,38 @@
 #  define KES_API __attribute__((visibility("default")))  /* make them visible outside the library */
 #endif  /* end of the platform choice */
 
+/* The continuous receiver's settings, passed to kes_listener_new as an array of doubles in this order
+ * (live/listener.py sets them from its own constants and modem/ settings). */
+#define KES_CFG_WINDOW 0  /* samples kept */
+#define KES_CFG_STEP 1  /* new samples between searches */
+#define KES_CFG_LONGEST_FRAME 2  /* samples in the longest frame */
+#define KES_CFG_CONTEXT_S 3  /* seconds of background searched before the newest audio */
+#define KES_CFG_LONG_EVERY 4  /* the long pattern is looked for on every this-many-th search */
+#define KES_CFG_KEEP 5  /* candidates kept per pattern and search */
+#define KES_CFG_HEADER_SYMBOLS 6  /* tones in the two header copies together */
+#define KES_CFG_PREAMBLE_TONES 7  /* tones in a pattern */
+#define KES_CFG_NEAR_QUALITY 8  /* weakest pattern reported as a near miss */
+#define KES_CFG_NEAR_QUALITY_MAX 9  /* strongest (above it the measure has broken down) */
+#define KES_CFG_BLANK_THRESHOLD 10  /* the blanker's threshold */
+#define KES_CFG_BLANK_GUARD 11  /* and guard */
+#define KES_CFG_NOTCH_BLOCK 12  /* the steady-signal notch: block length */
+#define KES_CFG_NOTCH_LOW 13  /* lowest frequency */
+#define KES_CFG_NOTCH_HIGH 14  /* highest frequency */
+#define KES_CFG_NOTCH_TIMES 15  /* how far above the band */
+#define KES_CFG_NOTCH_LOCAL 16  /* neighbourhood, in steps */
+#define KES_CFG_NOTCH_MOST 17  /* most steps notched */
+#define KES_CFG_NOTCH_HALF 18  /* half the notch's width, Hz */
+#define KES_CFG_LONG_SAMPLES 19  /* samples in a long beacon (pattern and body) */
+#define KES_CFG_LONG_CLEAN_LOW 20  /* the long beacon's carrier notch: lowest frequency */
+#define KES_CFG_LONG_CLEAN_HIGH 21  /* highest frequency */
+#define KES_CFG_LONG_CLEAN_TIMES 22  /* how far above the band */
+#define KES_CFG_LONG_CLEAN_MOST 23  /* most steps notched */
+#define KES_CFG_LONG_CLEAN_HALF 24  /* half the notch's width, Hz */
+#define KES_CFG_PAD 25  /* fine steps per FFT bin in the pattern search */
+#define KES_CFG_HOPS 26  /* coarse search steps per tone */
+#define KES_CFG_NEAR_SPAN 27  /* samples cut out with a near miss */
+#define KES_CFG_COUNT 28  /* how many settings there are */
+
 #ifdef __cplusplus  /* when included from C++ */
 extern "C" {  /* keep plain C names, so other languages can find them */
 #endif  /* end of the C++ wrapper's start */
@@ -38,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 6  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder) */
+#define KES_ABI_VERSION 7  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -144,6 +176,47 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
                              size_t coded, int is_control, long info, const long *edge_bits, const long *edge_checks, long nedges,
                              const long *starts, double scale, int iterations, const double *prior, size_t nprior, int pad, int fine_span,
                              int noise_span, int tracking, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out);
+
+/* The continuous receiver (live/listener.py, incremental search). The library keeps the audio and the
+ * candidates; the caller decodes the frames it is told are ready and says what to cut out.
+ *   kes_listener_new(cfg, KES_CFG_COUNT); kes_listener_set_pattern for slots 0-4 (levels) and 5 (long
+ *   beacon): values = number, samples, reach, whiten, gate, preamble samples, lo, hi, step; bins = the
+ *   pattern's tones in fine steps; kes_listener_set_tables(totals by type [32], body totals, count).
+ *   kes_listener_feed returns 1 when a search is due; then kes_listener_begin (0: too little audio), and
+ *   kes_listener_next until it returns 0. Its events, in ev[0..7]: 1 a frame to decode (level, start,
+ *   receiver's start, offset, quality, end); 2 a long beacon to read (level, start, start, offset,
+ *   quality); 3 a candidate whose header could not be read yet (ev[6] = 1 when it was also a near miss,
+ *   whose audio is kes_listener_near_audio and whose stream sample is ev[7]; it has been cut out). The
+ *   blanked and notched store the frames are read from is kes_listener_x, valid until the next search. */
+/* The transmitter (modem/frame.py build_frame and build_control, once the bits are packed): code the 24
+ * header bits (K = 7) and the body (with its CRC: the convolutional code if is_control, else the LDPC code,
+ * whose three shuffles `rows` (3 x k) come from ldpc.py info_checks), pad and interleave the body, place
+ * its data tones and pilots, and write the audio of preamble, header, body and header again: cosine
+ * bursts of `samples` samples at tone_bins[tone] FFT bins. `audio` must hold (npreamble + 24 + total) *
+ * samples values. Returns the number of samples written, or -1 on bad arguments. */
+KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bits, size_t ndata_bits, int is_control, const long *rows,
+                              size_t total, const long *data_pos, size_t ndata, const long *pilot_pos, const int *pilot_tones, size_t npilots,
+                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double *audio);
+
+typedef struct KesListener KesListener;  /* a continuous receiver (its insides are the library's own) */
+KES_API KesListener *kes_listener_new(const double *cfg, size_t count);  /* make one (NULL if count is not KES_CFG_COUNT) */
+KES_API void kes_listener_free(KesListener *h);  /* end it */
+KES_API int kes_listener_set_pattern(KesListener *h, int slot, const double *values, const int *bins, size_t ntones);  /* describe a pattern */
+KES_API int kes_listener_set_tables(KesListener *h, const int *totals_by_type, const int *body_totals, size_t nbody);  /* the header reader's tables */
+KES_API void kes_listener_clear(KesListener *h);  /* forget everything heard */
+KES_API int kes_listener_feed(KesListener *h, const double *samples, size_t n, long long at, int counted);  /* add audio (numbered from `at` when counted); 1 when a search is due */
+KES_API int kes_listener_begin(KesListener *h, int near_on);  /* start a search */
+KES_API int kes_listener_next(KesListener *h, double *ev);  /* the next event of the search (0 when done) */
+KES_API size_t kes_listener_size(KesListener *h);  /* samples kept */
+KES_API const double *kes_listener_x(KesListener *h);  /* the processed store */
+KES_API size_t kes_listener_x_size(KesListener *h);  /* its length */
+KES_API const double *kes_listener_near_audio(KesListener *h);  /* the latest near miss's audio */
+KES_API size_t kes_listener_near_size(KesListener *h);  /* its length */
+KES_API long long kes_listener_number(KesListener *h, long position);  /* a store position as a stream number */
+KES_API void kes_listener_cut(KesListener *h, long start, long end);  /* take a stretch out of the store */
+KES_API long kes_listener_searches(KesListener *h);  /* searches so far */
+KES_API size_t kes_listener_pending(KesListener *h);  /* candidates being followed */
+KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out);  /* copy a stretch of the store; returns how many */
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

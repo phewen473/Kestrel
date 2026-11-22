@@ -44,6 +44,9 @@ With the compiled modem library (`cpp/`, loaded by `modem/native.py`) the patter
 
 Since 0.31R1 the listener also helps weak control frames: it notches steady signals out of the store before searching (modem/notch.py), keeps the soft bits of control frames that fail their check for 30 minutes (`priors`), and asks the station, through `expect`, for its own callsign and the callsigns it expects; each failed control frame is then tried added to earlier copies and with those callsigns (modem/frame.py `Hints`). The panel supplies stations heard in the last 48 hours and saved contacts; run_station adds the station being called and the partner.
 
+
+Since library interface 7 the listener's audio store, its stream numbers and its candidate list live in the compiled library (`modem/native.py` CompiledListener): the library blanks and notches the store, searches all levels side by side, times candidates finely, reads headers and reports near misses, and hands the listener each frame that is ready; the listener decodes it with the same Python code as before and tells the library what to cut out. `Listener(compiled=False)` keeps the whole Python version, the reference that tests compare against.
+
 ## Rig control
 
 Kestrel controls the radio through **Hamlib's rigctld**, the same rig-control engine WSJT-X uses. Any radio Hamlib supports can be tuned and keyed, and rigctld can run on another computer on the network. Kestrel does not include Hamlib; it talks to rigctld over a network socket.

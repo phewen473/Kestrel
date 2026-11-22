@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 6)
+## What is in it so far (interface version 7)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -29,6 +29,8 @@ quietly runs in pure Python, as it always has.
 | `kes_remove_steady` | `modem/notch.py` `remove_steady` | to rounding | (steady-signal notch, 0.31R1) |
 | `kes_decode_body` | `modem/frame.py` `_decode_body_python` (pilots to checked body: pilot fit, band, noise, first SNR and fading, noise profile, soft bits, de-interleaving, Viterbi or LDPC with retries added, CRC-16) | outcome, text and soft bits identical; measurements to about 1e-13 | (one call per frame instead of a dozen) |
 | `kes_remove_steady` with `windowed=0, local_steps=-1` | `modem/longbeacon.py` `clean` | identical | (the long beacon's carrier notch) |
+| `kes_listener_*` (a listener object) | `live/listener.py` incremental search: the audio store with its stream numbers, blanking and notching each search, the pattern search of all levels side by side, the candidate list, fine timing, header reading, near misses | the same frames, near misses and tries, search by search | (Python keeps only the decoding of frames it is handed) |
+| `kes_encode_frame` | `modem/frame.py` `build_frame`, `build_control` (after the bits are packed): header and body coding, interleaving, pilots, tones, audio | identical audio | (the transmitter) |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is
@@ -39,12 +41,12 @@ beacon side by side, since the library lets go of Python's lock while it works.
 Whole receiver, a simulated 6-minute stream with 8 frames (the same 8 decoded every way):
 pure Python 52.6 s; interface 1 (three routines) 39.7 s; interface 3 15-18 s (sandbox, 2 cores).
 
-Every heavy computation of the receiver now runs compiled: in a profile of a 6-minute stream,
-about 95% of the receiver's time is inside the library. Still in Python: the listener's
-bookkeeping (which candidates to follow, cutting decoded frames out of the store), the long
-beacon's soft-energy combining, the help for weak control frames (it calls the compiled Viterbi
-decoder), and unpacking the decoded fields. They move next, with the listener as a compiled
-object behind the same C interface.
+Every heavy computation of the receiver and the transmitter now runs compiled, and the
+continuous receiver's store and candidate list are a compiled object. Still in Python: packing
+and unpacking the bits (text compression, addresses, control-frame fields), the long beacon's
+soft-energy combining, the help for weak control frames (it calls the compiled Viterbi decoder),
+the link rules and store and forward, and the panel. Next: packing and unpacking, which completes
+the modem in C++; then the link rules.
 
 ## Files
 
@@ -81,9 +83,9 @@ match the Python reference.
 
 ## Where things were left
 
-Interface version 6: the receiver's front end (blanker, steady-signal notch, pattern search, fine
-timing, header reading) and the whole body decoder run compiled, tested against Python. Next: the
-listener itself as a compiled object, then the transmitter and the link rules, so that Python is
-left only in the operator panel.
+Interface version 7: the receiver (front end, body decoder, the continuous receiver's store and
+candidates) and the transmitter's coding and audio run compiled, tested against Python. Next: bit
+packing and unpacking, then the link rules and store and forward, so that Python is left only in
+the operator panel.
 
 Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).

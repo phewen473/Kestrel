@@ -24,7 +24,7 @@ import numpy as np  # numerical arrays
 from .address import bits_to_call, call_to_bits  # callsign <-> bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .blanker import blank_impulses  # static-crash blanker
-from .preamble import detect_preamble, make_preamble, preamble_samples  # the signature tone pattern that starts every frame
+from .preamble import detect_preamble, make_preamble, pattern_tones, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header and the control frames
 from . import control, ldpc, native  # control-frame fields, error correction for the message body, and the compiled library
@@ -165,6 +165,9 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, size_class, part, parts, compressed)))  # coded header as tones (one copy)
     data_bits = np.concatenate([_address_block(frame_type, link, want_level, msg_id, dest, origin, hops, life_hours), text_to_bits(text, size_class, compressed, frame_type)])  # address block, character count, text bits, padding
     data_bits = np.concatenate([data_bits, crc16(data_bits)])  # add the body check value
+    done = native.encode_frame(_header_bits(frame_type, level, size_class, part, parts, compressed), data_bits, False, layout, spec, pattern_tones(spec.number))  # the compiled transmitter, when the library is in use
+    if done is not None:  # it was
+        return done  # the same audio, to rounding
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
     return np.concatenate([make_preamble(spec), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), spec)])  # the level's preamble, the header, the body, then the header again
 
@@ -176,6 +179,9 @@ def build_control(frame_type, fields, level=0):  # the transmitter for control f
     layout = control_layout(frame_type)  # shape of this frame's body
     header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False)))  # header: type and level; the other fields are zero (one copy)
     data_bits = np.concatenate([fields, crc16(fields)])  # the fields and their check value
+    done = native.encode_frame(_header_bits(frame_type, level, 0, 0, 1, False), data_bits, True, layout, LEVELS[level], pattern_tones(level))  # the compiled transmitter, when the library is in use
+    if done is not None:  # it was
+        return done  # the same audio, to rounding
     body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
     return np.concatenate([make_preamble(LEVELS[level]), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), LEVELS[level])])  # the level's preamble, the header, the body, then the header again
 
