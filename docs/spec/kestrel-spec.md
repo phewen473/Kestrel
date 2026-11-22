@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.29 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. Version 0.29 moves the calling frequencies to an area of Kestrel's own on each band and adds numbered channels (Sections 6.9, 6.10); version 0.28 changed how frames are received (Sections 5.7, 5.9) and added listening before transmitting (6.14). Neither changes the frames sent. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
+**Version 0.30 (draft), 21 November 2026.** In first on-air tests since 18 November 2026. **Signal version 0.30:** store and forward (Section 8): a new frame, the mail notice (Section 5.8, frame type 7), sent just before a beacon by a station that holds mail for others or has delivery receipts to report; mail carried inside a contact as fully addressed frames; a new acknowledgment code, "does not carry mail" (part number 5 with status 3). Stations following 0.29 or earlier cannot hand over, carry or deliver mail, and ignore mail notices; contacts and messages between 0.29 and 0.30 stations otherwise work, except that a 0.30 station refuses as "already have it" any message number it has already received from that station in the last 62 hours. Version 0.29 moved the calling frequencies to an area of Kestrel's own on each band and adds numbered channels (Sections 6.9, 6.10); version 0.28 changed how frames are received (Sections 5.7, 5.9) and added listening before transmitting (6.14). Neither changes the frames sent. **Signal version 0.27:** a new frame, the long beacon (Sections 5.9 and 6.13), heard well below the other levels. Stations following 0.26 do not hear long beacons; everything else is unchanged from 0.26, in which the second copy of the header moved to the end of every frame (Section 5.1), so stations following 0.25 or earlier cannot exchange frames with 0.26 and 0.27 stations. Earlier changes: the call-up in 0.23 (beacon and answer tried first at L2, reply slots sized to the beacon's level, a directed-call flag in the answer frame), 0.24 (a calling station takes a call back as the answer) and 0.25 (availability: presence beacons and the "not available" reply). Values marked **TBD** are placeholders that will be fixed before the first on-air test.
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -164,7 +164,7 @@ The header carries 16 field bits followed by an 8-bit check value:
 
 | Field | Bits | Meaning |
 |---|---|---|
-| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); 2 = beacon; 3 = answer; 4 = acknowledgment; 5 = identification (Section 5.8); 6 and 7 reserved (6 is never sent: receivers use it to report a long beacon, which has no header, Section 5.9) |
+| Frame type | 3 | 0 = message in a link frame; 1 = message in a fully addressed frame (Section 4.2); 2 = beacon; 3 = answer; 4 = acknowledgment; 5 = identification; 7 = mail notice (Section 5.8); 6 reserved (never sent: receivers use it to report a long beacon, which has no header, Section 5.9) |
 | Speed level | 3 | 0 to 4 |
 | Size class | 2 | 0 to 3 (body of 402, 752, 1102 or 1452 bits) |
 | Part number | 3 | 0 for the first part |
@@ -207,7 +207,7 @@ Measurements of Doppler spread (fading speed) and delay spread (multipath) are p
 
 ### 5.8 Control frames
 
-Beacons, answers, acknowledgments and identifications are short frames with the same structure as a message frame: preamble, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
+Beacons, answers, acknowledgments, identifications and mail notices are short frames with the same structure as a message frame: preamble, header, body. They may be sent at any speed level; the receiver finds the level as for any frame (Section 5.1).
 
 **Body.** The fields of the frame (tables below), followed by the 16-bit check value of Section 4 over those fields. The body is encoded with the header's convolutional code (Section 5.4: six zero bits added, rate 1/2, generators 171 and 133), padded with zeros to a whole number of tones, interleaved by the rule of Section 5.3, and sent with pilots as in Section 5.5. Retries of control frames are not combined.
 
@@ -217,6 +217,7 @@ Beacons, answers, acknowledgments and identifications are short frames with the 
 | Answer | 124 | 295 | 63 | 182 |
 | Acknowledgment | 48 | 140 | 30 | 87 |
 | Identification | 61 | 170 | 37 | 107 |
+| Mail notice | 192 | 430 | 92 | 267 |
 
 Airtime of a whole control frame:
 
@@ -226,6 +227,7 @@ Airtime of a whole control frame:
 | Answer | 40 s | 13 s | 8.9 s | 4.5 s | 2.2 s |
 | Acknowledgment | 26 s | 8.9 s | 5.9 s | 3.0 s | 1.5 s |
 | Identification | 29 s | 9.9 s | 6.6 s | 3.3 s | 1.6 s |
+| Mail notice | 51 s | 17 s | 11.5 s | 5.8 s | 2.9 s |
 
 **Beacon (type 2), 75 bits**
 
@@ -256,7 +258,7 @@ Airtime of a whole control frame:
 |---|---|---|
 | Link number | 9 | The lock this frame belongs to (Section 4.2) |
 | Message number | 16 | The message being acknowledged |
-| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10); 4 = "not available": the operator of the station called is away (Section 6.11) |
+| Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10); 4 = "not available": the operator of the station called is away (Section 6.11); 5 = "does not carry mail": the station will not hold the message named in the message number for another station (Section 8) |
 | Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0, except with part number 3, where it carries a frequency offset, Section 6.10) |
 | Channel report | 18 | How the frame being acknowledged was received |
 
@@ -268,6 +270,17 @@ Airtime of a whole control frame:
 | Link number | 9 | The lock this frame belongs to |
 | End of contact | 1 | 1 when this is the station's last transmission of the contact |
 | Spare | 3 | always 0 |
+
+**Mail notice (type 7), 192 bits** (since 0.30)
+
+| Field | Bits | Meaning |
+|---|---|---|
+| Origin | 48 | Callsign of the sending station |
+| Held for | 3 x 16 | Short codes of up to three stations the sender holds mail for, oldest mail first |
+| Receipts | 3 x 16 | Short codes of up to three messages whose delivery the sender reports, newest first |
+| Heard | 3 x 16 | Short codes of up to three stations the sender has decoded in the last 2 hours, most recent first |
+
+**Short codes.** A station's code is the CRC-16 of Section 4 over its 48 address bits (Section 4.2); a message's code is the CRC-16 over the origin's 48 address bits followed by the 16-bit message number. A result of 0 is sent as 1, because 0 marks an unused entry. Codes are short so that a notice stays small; two callsigns may share a code (about one chance in 65,000), which at worst makes a station ask for mail it does not have or drop a copy of mail that was not delivered (the origin keeps its own copy, Section 8).
 
 **Channel report, 18 bits**
 
@@ -326,7 +339,7 @@ In 9,600 stretches of noise alone (173 hours of an empty band) nothing was decod
 
 A station announces itself with a beacon frame (Section 5.8), first at level L2 and then, if that brings no answer, at L0 (see below). The beacon gives the callsign, grid locator and supported speed levels, says whether the station is taking answers and whether it holds mail for others, and carries the **mail-check flag** that asks any station holding mail for it to deliver now. After a beacon the station listens for the reply window (Section 6.2).
 
-A longer beacon that also lists stations heard, the callsigns mail is held for and recent delivery receipts is planned: **TBD**. (This is not the long beacon of Sections 5.9 and 6.13, which is about reach.)
+Since 0.30 every beacon has the mail-check flag set. A station that holds mail for others, or has delivery receipts to report, sends a **mail notice** (Section 5.8) immediately before its beacon, at the beacon's level: with every beacon at the first call-up level, and with an L0 beacon at most once in 30 minutes (a notice lasts 51 s at L0). Presence beacons (Section 6.11) have no notice. See Section 8. (The long beacon of Sections 5.9 and 6.13, which is about reach, carries only the holds-mail flag.)
 
 A station may send a **long beacon** (Section 6.13) instead of this call-up. The beacon of this section is the default and is called the short beacon where the two need telling apart.
 
@@ -453,14 +466,14 @@ For any other calling frequency, the channels offered are 2.5 kHz above and 2.5 
 
 ### 6.11 Directed calls, messages for one station, and broadcasts
 
-- **Directed call.** A station may call one particular station instead of beaconing. It sends an answer frame (Section 5.8) with the directed-call flag set and the called station as destination: first at L2, and at L0 for any repeats. If the calling station has decoded a frame from the called station in the last 10 minutes, the channel report carries that reading and the level it supports, so the called station can start at that level; otherwise it carries no measurement (SNR at the bottom of the scale, fading index at its largest value) and asks for L0. Only the station named replies; every other station stays silent.
+- **Directed call.** A station may call one particular station instead of beaconing. It sends an answer frame (Section 5.8) with the directed-call flag set, the mail-check flag set (since 0.30) and the called station as destination: first at L2, and at L0 for any repeats. If the calling station has decoded a frame from the called station in the last 10 minutes, the channel report carries that reading and the level it supports, so the called station can start at that level; otherwise it carries no measurement (SNR at the bottom of the scale, fading index at its largest value) and asks for L0. Only the station named replies; every other station stays silent.
 - **Who answers by itself.** A listening station may be set to answer directed calls by itself, or (the reference program's default) to just listen. A station that just listens transmits nothing unless its operator starts it, except that it accepts, by itself, a directed call from any station within 5 minutes of its own last beacon, and from a station it has itself called within the last 5 minutes: those calls answer something its operator started. Any other directed call is shown to the operator, who responds, if at all, with a directed call of its own (a call back).
 - **Available or not.** The operator sets the station available or not available for contacts. While it is not available: (1) its beacons are presence beacons, with the listening flag 0 and no reply window, and nobody answers them; (2) a directed call addressed to it gets one short reply, a status-3 acknowledgment with part number 4 ("not available"), sent at the level the call came at, with the link number the caller is using (Section 6.3) and a report of how the call was received; nothing else is sent and no contact is made. A calling station that hears this reply stops calling at once and tells its operator. Operator programs show each station's last known availability. A station left not available with nobody at the controls is under automatic control when it sends that reply (Section 2).
 - **Call back.** A station making a directed call that receives a directed call from the very station it is calling takes it as the answer: it stops calling and completes the lock as a called station would (below).
 - **Being called.** An idle, listening station that receives a directed call addressed to it and takes it (as above) treats it as follows. It completes the lock as a beaconing station would (Section 6.3), except that its confirming acknowledgment has part number 1: it hands the first turn to the caller, who called because it has something to send. That first offer does not mean the called station has nothing to send. For the rest of the contact the called station takes the beaconing station's part: it keeps the turn if both find themselves sending, and its callsign comes first in the link number. It sends an identification frame the first time it holds the turn, since nothing it has sent so far carries its callsign. Until the lock is confirmed the calling station assumes the called station supports the same speed levels as itself.
 - **Called while beaconing.** A station waiting in the reply window of its own beacon that receives a directed call to itself (an answer frame with the directed-call flag set) stops waiting for answers and confirms the call at once, as a listening station would.
 - **No reply.** The call is repeated when its confirmation does not arrive; after 5 calls without a reply the calling station gives up.
-- **Messages for one station.** A message may be marked for one callsign. It is sent only in a contact with that station, as ordinary link frames with their usual acknowledgments, and otherwise waits. A station that has already worked a caller answers that caller's next beacon only if it has a message for that caller or for anyone.
+- **Messages for one station.** A message may be marked for one callsign. It is sent to that station in a contact with it, as ordinary link frames with their usual acknowledgments; until then it waits, and since 0.30 copies of it may be handed to other stations to carry (Section 8). Its message number is fixed when it is queued. A station that has already worked a caller answers that caller's next beacon only if it has a message for that caller or for anyone.
 - **Broadcast.** A message for every station in range is sent as fully addressed message frames (frame type 1, Section 5.7) with the destination ALL, the sender's callsign as origin, a hop count of 0 and the shortest lifetime. It is sent at L0 unless the operator chooses otherwise, split into parts under the airtime limits (Section 6.8), and only while the sending station is in no contact. Nobody acknowledges a broadcast and it is not forwarded.
 - **Receiving.** Any station that decodes every part of a fully addressed message whose destination is ALL or its own callsign shows it to its operator once, with the origin; repeats of the same message number from the same origin are dropped. This applies whether or not the receiving station is in a contact of its own.
 - **Listen first.** A broadcast is sent without knowing who is listening or who is in the middle of an exchange. The operator checks that the frequency is clear before sending one.
@@ -505,33 +518,46 @@ A station does not start a transmission of its own over another signal.
 
 ## 8. Messaging and store-and-forward (disconnected operation)
 
-Kestrel assumes no station is always on the air and no infrastructure exists. Stations come and go, and paths open and close with propagation. Messages move whenever two stations happen to hear each other.
+Kestrel assumes no station is always on the air and no infrastructure exists. Stations come and go, and paths open and close with propagation. Messages move whenever two stations happen to hear each other. Since 0.30 this section describes what stations do; the values marked are first settings, to be tuned on the air.
 
-- **Message ID:** the origin callsign together with the message number (Section 4.2). It is unique, so a message is never delivered twice, however many stations hold a copy.
-- **Sender's outbox:** the sender keeps every message until a delivery receipt returns or the message expires. The sender is always the last-resort copy.
-- **Holding partners:** one or more stations may accept and store a copy of the same message. Each holding partner confirms to the sender that it holds the message, so the sender knows who is carrying it. Holders list the callsigns they hold mail for in their beacons.
-- **Automatic delivery, on request:** delivery needs no operator action, but it is always a reply. When a holder hears a beacon from the destination with the mail-check flag set, it answers in the reply window and delivers. When a holder hears a beacon with the mail-check flag from a station that can reach the destination (shown in that station's heard list), it passes the message on the same way. Holders never call a station unprompted to push mail. This keeps unattended holders replying to a station that asked, which is intended to fit the automatic-control rules (97.221), and saves airtime by sending mail only to stations that are listening.
-- **Accountability trail:** every stored copy records the originating callsign and the callsign of the station it was received from, so the forwarding path can always be traced (97.219).
-- **First to deliver wins:** a holder first offers the message ID. If the destination does not have it, the holder sends the message; if the destination already has it, it answers "already delivered" and the holder drops its copy without sending it again. The first holder to complete delivery wins.
-- **Hop limit:** each relay adds one hop; a hop limit (4 planned, **TBD**) stops messages circulating. The count travels in the address block.
-- **Receipt to every holder:** when a message reaches its destination, the destination issues a delivery receipt carrying the message ID. The receipt travels back toward the sender like a small message, is passed to every known holding partner, and is listed in beacons for a time (recent-receipts list). Every holder that learns of the receipt drops its copy, and the sender marks the message delivered.
-- **Expiry:** every message carries its remaining lifetime in the address block (48 hours at the start planned, **TBD**; the field allows up to 62). When it runs out, holders drop the message and the sender is told it was not delivered.
-- **Nets as temporary post offices:** while a net is running, net control holds the net's mail and copies it to the backup net control. When the net closes, undelivered mail stays with its holders and continues to be carried.
-- **Duplicates:** a message whose ID has already been handled, whose hop limit is reached, or whose lifetime has run out is dropped.
+### 8.1 Messages and their IDs
 
-Each station applies the same checks to every message it receives: deliver it if it is addressed to this station; otherwise drop it if seen before, out of hops or expired; otherwise relay it if the destination is reachable now; otherwise hold it and announce it in beacons until it is delivered, a receipt is heard or it expires. All of this runs automatically.
+- **Message ID:** the origin callsign together with the message number (Section 4.2). A message for a named station gets its number when it is queued and keeps it, through restarts of the program, wherever its copies go. A station never reuses a number while copies of an older message with that number may still be travelling; a station with no record of its last number starts at a random one.
+- **Lifetime:** 62 hours from when the message is queued (the most the lifetime field allows). Every copy carries the time left, rounded up to whole hours and sent in units of 2 hours.
+- **Hops:** the number of times stations other than the origin have sent the message on. The origin sends 0; each carrier that sends it on adds one. No station sends a message on if that would make the count more than 4, and no station takes a message to carry that it could not send on.
+
+### 8.2 Carrying mail
+
+- **Sender's outbox:** the origin keeps every message until it learns of the delivery or the message expires. The origin is always the last-resort copy.
+- **Handing over.** In any contact, after its own traffic for the partner, a station offers the partner each waiting message addressed to a third station, unless that partner already carries it. Each message is handed to at most 3 stations. It is sent inside the contact as fully addressed frames (frame type 1) carrying the destination, the origin, the message number, the hop count and the time left, split under the airtime limits (Section 6.8) and acknowledged frame by frame like any message.
+- **Carrying.** A station whose operator has allowed it ("carry mail for others", on by default in the reference program) keeps the message once every part has arrived (it holds the whole text, and splits it again for its own level when it sends it on), with the callsign of the station that handed it over and the time it arrived (the accountability trail, 97.219). A station that will not carry it, has no room (first settings: 50 messages, 10 from any one origin) or could not send it on within the hop limit answers the first frame with a status-3 acknowledgment, part number 5, "does not carry mail", with the message number; the sender then offers that station no more mail in that run. A station that already holds the message, or has already handled it, answers "already have it" (status 2).
+- **Passing on.** A carrier passes a message to another station only if that station's last mail notice, within 2 hours, listed the destination among the stations it hears, and at most to 2 stations. It never passes a message back to the station it came from or to its origin.
+
+### 8.3 Delivery
+
+- **On request, never pushed.** Every beacon and every directed call carries the mail-check flag (Sections 6.1, 6.11). A station holding mail for the beaconing or calling station answers that beacon or call even if its operator has set it to just listen (Section 6.11), and delivers in the contact that follows. A station also answers the beacon of a station whose last mail notice listed it among the stations mail is held for. Holders never call a station to push mail. This keeps delivery a reply to a station that asked, which is intended to fit the automatic-control rules (97.221), and saves airtime by sending mail only to stations that are listening.
+- **First to deliver wins.** The destination remembers for 62 hours every message ID it has received, whichever station brought it, and answers any later copy with "already have it" (status 2) at its first frame. The holder then drops its copy without sending the rest. Messages from the origin itself in link frames count too: the origin's message number is the message number of the link frames.
+- **Shown once.** The destination shows the message to its operator once, with the origin and, if it came through a carrier, the carrier ("Q1AAAA via Q2BB").
+
+### 8.4 Receipts and the mail notice
+
+- **Receipts.** When a holder delivers a message, or learns that the destination already has it, it drops its copy and lists a receipt for the message in its mail notices for 12 hours. The destination does the same for a message that reached it through a carrier, and the origin does the same for a message it delivered itself while copies were out with carriers.
+- **Hearing a receipt.** A station that hears a mail notice listing a receipt for a message it holds drops its copy and never takes that message again. An origin that hears a receipt for one of its own messages marks it delivered.
+- **The notice.** A station that holds mail or has receipts to list sends a mail notice just before its beacon (Section 6.1): up to three stations it holds mail for, three receipts and three stations it hears (Section 5.8). A station hearing a notice that lists it knows that station holds mail for it.
+- **Expiry.** A message whose time has run out is dropped by its holders, and its origin tells the operator it was not delivered.
+
+### 8.5 Not yet settled
+
+- **Nets as temporary post offices:** while a net is running, net control holds the net's mail and copies it to the backup net control. When the net closes, undelivered mail stays with its holders and continues to be carried (Section 7).
+- Unattended mail holders, with frequencies of their own inside the 97.221(b) segments (Section 6.9).
 
 ## 9. Open items
 
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of Doppler spread and delay spread; level limits confirmed by on-air tests.
-- The longer beacon carrying the heard list, held-mail list and delivery receipts.
+- Store-and-forward settings to be confirmed on the air: hop limit (4), message lifetime (62 hours), how long receipts are listed (12 hours), how many carriers per message (3 by the origin, 2 by a carrier), holder storage (50 messages, 10 per origin).
 - Band starting profiles.
-- Net slot timing rules; heartbeat miss count; hop limit.
-- Message lifetime; how long receipts stay listed.
-- Message splitting: how parts are held and forwarded by holding partners.
-- Beacon size: short hashed message IDs, caps on the held-mail and receipt lists, and which entries go first when a list is full.
-- Storage limits: how much mail a holder will carry in total and per originating station.
+- Net slot timing rules; heartbeat miss count.
 - ARRL review of the 97.221(b) reading in Section 2 for unattended mail holders (asked; awaiting a reply).
 
 ## 10. Roadmap (proposed, 21 November 2026)
@@ -542,10 +568,10 @@ The aim is one open mode that reaches like WSPR, carries messages like JS8Call a
 |---|---|---|
 | 1. Prove the link | Recording and decoding received audio; near-miss reports; fading re-measured and the header moved (0.26); on-air setup checks; on-air tests at 100+ miles | Show that the existing levels hold a contact over real HF paths |
 | 2. A WSPR-like bottom level | **First part in 0.27: the long beacon** (Sections 5.9, 6.13), about a minute, shown to the operator, not answered. Timed slots proved unnecessary. **0.28: receivers add repeated long beacons together** and remove steady carriers. Still open: a reply at this level (a reception report), and short notes | Reach: be heard where nothing else gets through |
-| 3. Nets and mail | Nets with net control, backup and takeover (Section 7); store-and-forward completed (Section 8) | Groups and disconnected operation, at every level |
+| 3. Nets and mail | **First part in 0.30: store and forward** (Section 8): mail handed to carriers, delivered on request, receipts in a mail notice. Still open: nets with net control, backup and takeover (Section 7), and nets as post offices | Groups and disconnected operation, at every level |
 | 4. A VARA-like top level | A multi-carrier PSK or OFDM waveform within 2.8 kHz for strong paths (Section 5.2, L5) | Throughput for relays and longer traffic |
 
-Steps 2 and 4 change the signal and will raise the signal version. Step 3 is mostly link and messaging rules.
+Steps 2 and 4 change the signal and will raise the signal version. Step 3 is mostly link and messaging rules, though its first part (0.30) added the mail notice frame.
 
 ## 11. Document history
 

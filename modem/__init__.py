@@ -1,8 +1,8 @@
 """Kestrel modem prototype (Python reference)."""
 
-from .address import bits_to_call, call_to_bits, is_group, link_id  # callsign coding and the link number
+from .address import bits_to_call, call_hash, call_to_bits, is_group, link_id, message_hash  # callsign coding, the link number, and the short codes of a mail notice
 from .control import ACK_HAVE_IT, ACK_LINK, ACK_OK, ACK_RESEND, ChannelReport  # acknowledgment verdicts and the channel report
 
-from .frame import RxResult, body_layout, build_ack, build_answer, build_beacon, build_control, build_frame, build_ident, control_layout, control_seconds, frame_seconds, receive  # transmitter, receiver and frame facts
+from .frame import RxResult, body_layout, build_ack, build_answer, build_beacon, build_control, build_frame, build_ident, build_notice, control_layout, control_seconds, frame_seconds, receive  # transmitter, receiver and frame facts
 from .levels import FADE_INDEX_LIMIT, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, level_name  # the speed levels, their limits, and how a level is named
 from .plan import build_plan, is_fading, join_parts, pick_level, plan_at_level, plan_message  # level choice, airtime limits and splitting

@@ -30,7 +30,7 @@ COLUMNS = ("utc_date", "utc_time", "station", "direction", "event", "from", "to"
 FIELD_LEVEL = {name: 0 for name in COLUMNS[:9]}  # the columns every level fills
 FIELD_LEVEL.update({name: 1 for name in COLUMNS[9:15]})  # the columns from advanced up
 FIELD_LEVEL.update({name: 2 for name in COLUMNS[15:]})  # the columns only verbose fills
-EVENT_LEVEL = {"message": 0, "broadcast": 0, "contact start": 0, "contact end": 0, "telemetry": 0,  # (continued: basic events)
+EVENT_LEVEL = {"message": 0, "broadcast": 0, "contact start": 0, "contact end": 0, "telemetry": 0, "mail": 0,  # (continued: basic events)
                "beacon": 1, "call": 1, "heard": 1, "run": 1,  # (continued: advanced events)
                "frame": 2, "sent": 2, "meters": 2, "settings": 2}  # verbose events
 BANDS = ((1.8, 2.0, "160m"), (3.5, 4.0, "80m"), (5.06, 5.45, "60m"), (7.0, 7.3, "40m"), (10.1, 10.15, "30m"), (14.0, 14.35, "20m"),  # (continued)

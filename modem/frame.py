@@ -36,7 +36,7 @@ from .mfsk import (  # tone waveform
 )  # end of the import list
 from .params import (  # frame format numbers
     ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
-    FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS,  # (continued)
+    FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FRAME_TYPE_NOTICE, FS,  # (continued)
     HEADER_CRC_BITS, HEADER_FIELD_BITS, HEADER_REPEAT, HOP_BITS, LENGTH_BITS, LEVEL_BITS, LIFE_BITS, LIFE_UNIT_HOURS, LINK_ID_BITS, M_TONES,  # (continued)
     MAX_PARTS, MSG_ID_BITS, PILOT_EVERY, PILOT_START, PILOT_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ, SIZE_CLASSES,  # (continued)
 )  # end of the import list
@@ -192,6 +192,11 @@ def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_ch
 def build_ack(link, msg_id, part, status, report, level=0):  # "got it" / "send it again" / "already have it"
     """Return the audio of an acknowledgment for part `part` of message `msg_id` on link `link`."""
     return build_control(FRAME_TYPE_ACK, control.pack_ack(link, msg_id, part, status, report), level)  # pack the fields and send
+
+
+def build_notice(call, held=(), receipts=(), heard=(), level=0):  # "I hold mail for ..., these were delivered, I hear ..."
+    """Return the audio of a mail notice (frame type 7, since 0.30): short codes for the stations `call` holds mail for, the delivery receipts it reports and the stations it hears."""
+    return build_control(FRAME_TYPE_NOTICE, control.pack_notice(call, held, receipts, heard), level)  # pack the fields and send
 
 
 def build_ident(call, link, final=False, level=0):  # "this is ..."

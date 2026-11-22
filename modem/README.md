@@ -53,13 +53,14 @@ build_frame("QSL 73", level=0, dest="Q2BB", origin="Q1AAAA", msg_id=17)         
 
 ## Control frames (`control.py`)
 
-Four short frames set up and run a link. They look like message frames on the air (preamble, header, body) and can be sent at any speed level.
+Four short frames set up and run a link, and a fifth (since 0.30) announces mail. They look like message frames on the air (preamble, header, body) and can be sent at any speed level.
 
 | Frame | What it says | L0 | L2 | L4 |
 |---|---|---|---|---|
 | Beacon | "Here I am": callsign, grid locator, speed levels, whether it takes answers, mail-check flag, whether it holds mail, and whether answers should spread over four reply slots | 28 s | 8 s | 3.5 s |
 | Answer | "I hear you": both callsigns, a report of how the beacon was received, the answerer's speed levels | 37 s | 10 s | 4 s |
 | Acknowledgment | "Got it", "send it again" or "already have the whole message", with a channel report. With no message named it confirms the lock, offers the turn, or asks "are you still there?" | 24 s | 7 s | 3.2 s |
+| Mail notice | Since 0.30, just before a beacon: the callsign, then short codes (CRC-16) for up to three stations mail is held for, three delivery receipts and three stations heard. `build_notice`, `call_hash`, `message_hash` | 51 s | 11.5 s | 2.9 s |
 | Identification | The station's callsign, sent every 10 minutes in a lock and at the end of a contact | 26 s | 7.5 s | 3.4 s |
 
 Every answer and acknowledgment carries a **channel report** (18 bits): the SNR, the fading index, the frequency offset, and the speed level the receiver wants the sender to use next. That last field is how the speed adapts: the station that hears the signal decides, and the sender follows. Message frames carry the wanted level too, so a station that is only sending can still slow its partner's acknowledgments.

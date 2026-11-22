@@ -27,21 +27,22 @@ from dataclasses import dataclass  # simple record type for a transmission
 import numpy as np  # numerical arrays
 
 from modem import (  # the modem: frames, reports, planner
-    ACK_HAVE_IT, ACK_LINK, ACK_OK, ACK_RESEND, LEVELS, ChannelReport, build_ack, build_answer, build_beacon, build_frame, build_ident,  # (continued)
+    ACK_HAVE_IT, ACK_LINK, ACK_OK, ACK_RESEND, LEVELS, ChannelReport, build_ack, build_answer, build_beacon, build_frame, build_ident, build_notice, call_hash,  # (continued)
     control_seconds, frame_seconds, join_parts, link_id, plan_at_level, receive,  # (continued)
 )  # end of the import list
 from modem.address import clean_call  # tidies a callsign
 from modem.params import (  # frame type numbers and the airtime limit
-    AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FS, MSG_ID_BITS,  # (continued)
+    AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FRAME_TYPE_NOTICE, FS,  # (continued)
     SNR_FLOOR_DB,  # (continued)
 )  # end of the import list
 from modem.text import pick_size_class  # which frame size a piece of text needs
 
 from .adapt import cap_level, common_levels, supported_level, wanted_level  # speed adaptation rules
+from .mail import Mailroom  # the mail kept between contacts (store and forward)
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
-    HOLD_TELL_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
+    HOLD_TELL_S, HOP_LIMIT, MAIL_TIDY_S, NOTICE_L0_EVERY_S, OFFER_NO_MAIL, REACH_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the station has a partner
@@ -110,7 +111,6 @@ class Station:  # the link rules for one station
         self.plan = []  # the frames of the message being sent
         self.plan_text = ""  # the whole text of that message
         self.part_index = 0  # which frame of the plan is next
-        self.next_id = 0  # the number the next new message will get
         self.current_id = 0  # the number of the message being sent
         self.pending = None  # the reply being waited for: answer, confirm, ack, offer, probe or final
         self.deadline = 0.0  # when to stop waiting for it
@@ -155,6 +155,17 @@ class Station:  # the link rules for one station
         self.callup = CALLUP_LEVEL if CALLUP_LEVEL in self.levels else 0  # the level the next beacon or directed call goes at: the middle level first, L0 if that brings no reply
         self.beacon_sent_at = 0  # the level of the beacon now waiting for answers
         self.heard_at = {}  # callsign -> (time, report) of the last frame heard from it that named it, for the report a directed call carries
+        self.mail = Mailroom(self.call)  # the mail kept between contacts; whoever runs the station may hand in one loaded from a file
+        self.outbox_ids = []  # for each outbox message, its message number if it is for a named station (fixed when queued, so every copy is the same message), else None
+        self.carries = True  # this station holds mail for other stations when asked to (the operator's "Carry mail for others" setting)
+        self.job = None  # the mail being sent in this contact, when it is not this station's own message to its partner: a dict (kind, dest, origin, id, text, hops, life)
+        self.refused = set()  # partners that said they do not carry mail, not asked again this run
+        self.mail_parts = {}  # parts of fully addressed messages arriving inside a lock: (origin, number) -> {part: report}
+        self.expired = []  # texts of this station's messages that expired undelivered, for whoever runs the station
+        self.notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
+        self.notice_sent = False  # True when a mail notice has just gone out and the beacon it goes with is next
+        self.last_notice_l0 = -1e9  # when a mail notice last went with an L0 beacon
+        self.tidied = -1e9  # when expired mail was last looked for
 
     # ---- starting up ----
 
@@ -186,20 +197,20 @@ class Station:  # the link rules for one station
         self.call_station(target)  # become the calling station for now (refuses this station's own callsign)
         self.single = True  # and return to answering afterwards
 
-    def long_beacon(self, holds_mail=False):  # announce this station as far as the path allows
+    def long_beacon(self, holds_mail=None):  # announce this station as far as the path allows
         """Queue one long beacon (signal version 0.27): about a minute, heard down to about -26 dB. Nobody answers it; it goes when no contact is under way."""
         from modem.longbeacon import build_long_beacon  # the long beacon's transmitter
-        self.long_waiting = build_long_beacon(self.call, self.grid, available=self.available, holds_mail=holds_mail)  # ready to send
+        self.long_waiting = build_long_beacon(self.call, self.grid, available=self.available, holds_mail=bool(self.mail.bag) if holds_mail is None else holds_mail)  # ready to send (saying whether this station holds mail for others)
 
     def queue(self, text, to=None):  # hand the station a message to send
         """Add a message to the outbox. With `to`, it is sent only when that callsign is the partner."""
         self.outbox.append(text)  # oldest first
         self.outbox_to.append(clean_call(to) if to else None)  # who it is for, if anyone in particular
+        self.outbox_ids.append(self.mail.own_add(text, to, {number for number in self.outbox_ids if number is not None}) if to else None)  # a message to a named station gets its number now, and keeps it wherever its copies go
 
     def broadcast(self, text, level=BROADCAST_LEVEL):  # send a message to everyone listening
         """Queue `text` as a broadcast to ALL: fully addressed frames that nobody acknowledges, sent when no contact is in progress."""
-        number = self.next_id  # the broadcast takes the next message number
-        self.next_id = (self.next_id + 1) % (1 << MSG_ID_BITS)  # and the counter moves on
+        number = self.mail.new_number()  # the broadcast takes the next message number
         for item in plan_at_level(text, level, addressed=True):  # cut into frames that respect the airtime limits
             audio = build_frame(item["text"], level, item["part"], item["parts"], msg_id=number, dest="ALL", origin=self.call, hops=0, life_hours=BROADCAST_LIFE_HOURS)  # a fully addressed frame for everyone
             self.broadcasts.append((audio, level, f"to ALL, msg {number} part {item['part'] + 1}/{item['parts']}"))  # wait for a free moment
@@ -209,7 +220,10 @@ class Station:  # the link rules for one station
         wanted = clean_call(to) if to else None  # the address as the outbox holds it
         for index in range(len(self.outbox) - 1, -1, -1):  # newest first
             if self.outbox[index] == text and self.outbox_to[index] == wanted and not (index == 0 and self.plan):  # the same message, and not the one being sent
-                del self.outbox[index], self.outbox_to[index]  # take it out, with its address
+                number = self.outbox_ids[index]  # its message number, if it has one
+                del self.outbox[index], self.outbox_to[index], self.outbox_ids[index]  # take it out, with its address and number
+                if number is not None:  # a message to a named station
+                    self.mail.own_drop(number)  # it is no longer waiting anywhere
                 return True  # removed
         return False  # nothing matched
 
@@ -221,7 +235,33 @@ class Station:  # the link rules for one station
         return None  # nothing for this partner
 
     def _has_for(self, call):  # is there traffic for a given callsign?
-        return any(to is None or to == call for to in self.outbox_to)  # a message for anyone, or for that station
+        return any(to is None or to == call for to in self.outbox_to) or bool(self.mail.held_for(call))  # a message for anyone, or for that station, or mail held for it
+
+    def _mail_job(self):  # mail to send in this contact other than this station's own message to its partner
+        """Return the next mail job for the present partner, or None: first mail held for the partner itself, then this station's messages for other stations (to hand to the partner to carry), then held mail the partner says it can get closer to its destination."""
+        if not self.partner or self.state not in LOCKED_STATES:  # no contact
+            return None  # nothing
+        for item in self.mail.held_for(self.partner):  # mail held here for the partner
+            return {"kind": "deliver", "dest": item["dest"], "origin": item["origin"], "id": item["id"], "text": item["text"], "hops": item["hops"] + 1, "life": self.mail.life_hours(item["expires"])}  # deliver it (one more hop)
+        if self.partner in self.refused:  # the partner does not carry mail
+            return None  # nothing more to offer it
+        for text, to, number in zip(self.outbox, self.outbox_to, self.outbox_ids):  # this station's waiting messages, oldest first
+            if to and to != self.partner and number is not None and self.mail.can_hand(number, self.partner):  # for another station, and not already with this partner
+                expires = self.mail.own_item(number)["expires"]  # when it runs out
+                return {"kind": "hand", "dest": to, "origin": self.call, "id": number, "text": text, "hops": 0, "life": self.mail.life_hours(expires)}  # hand a copy over to carry
+        item = self.mail.to_pass(self.partner)  # held mail the partner hears the destination of
+        if item is not None:  # there is some
+            return {"kind": "pass", "dest": item["dest"], "origin": item["origin"], "id": item["id"], "text": item["text"], "hops": item["hops"] + 1, "life": self.mail.life_hours(item["expires"])}  # pass a copy on
+        return None  # nothing
+
+    def _has_traffic(self):  # does this station have anything to send in the present contact?
+        return self._sendable() is not None or self._mail_job() is not None  # its own message for the partner, or mail
+
+    def _heard_calls(self, now):  # stations heard lately, most recent first, for a mail notice
+        return [call for call, (when, _) in sorted(self.heard_at.items(), key=lambda pair: -pair[1][0]) if now - when <= REACH_S]  # within the reach time
+
+    def mail_waiting_at(self, call):  # does `call` hold mail for this station, by its last notice?
+        return self.mail.holds_for_me(call)  # as the mail store remembers it
 
     def end(self):  # the operator wants the contact closed
         """Close the contact once any traffic under way is finished (for a lock that was being kept open)."""
@@ -242,12 +282,12 @@ class Station:  # the link rules for one station
         """Return the receiver's report for `audio`. A message frame that fails is kept, and added to its retry."""
         result = receive(audio)  # first try: this copy alone
         if result.ok:  # it decoded
-            if result.frame_type == FRAME_TYPE_LINK:  # a message frame got through
+            if result.frame_type in (FRAME_TYPE_LINK, FRAME_TYPE_ADDRESSED):  # a message frame got through
                 self.stored = None  # so any kept copy is no longer needed
             return result  # done
-        if result.reason != "body check failed" or result.frame_type != FRAME_TYPE_LINK:  # nothing usable, or not a message frame
+        if result.reason != "body check failed" or result.frame_type not in (FRAME_TYPE_LINK, FRAME_TYPE_ADDRESSED):  # nothing usable, or not a message frame
             return result  # nothing to combine
-        signature = (result.size_class, result.part, result.parts)  # which frame this looks like, from its header
+        signature = (result.frame_type, result.size_class, result.part, result.parts)  # which frame this looks like, from its header
         if self.stored is not None and self.stored_sig == signature:  # an earlier failed copy of the same frame is on hand
             combined = receive(audio, prior_llrs=self.stored)  # second try: both copies added together
             if combined.ok:  # together they decode
@@ -320,23 +360,28 @@ class Station:  # the link rules for one station
 
     # ---- sending messages ----
 
-    def _start_message(self, text):  # plan a message at the current level
-        self.plan = plan_at_level(text, self.tx_level)  # cut it into frames that respect the airtime limits
+    def _start_message(self, text, number=None, job=None):  # plan a message at the current level
+        self.job = job  # mail for another station, or None for this station's own message to its partner
+        self.plan = plan_at_level(text, self.tx_level, addressed=job is not None)  # cut it into frames that respect the airtime limits (mail travels in fully addressed frames)
         self.plan_text = text  # keep the whole text in case it must be planned again
         self.part_index = 0  # start with the first frame
-        self.current_id = self.next_id  # give the message its number
-        self.next_id = (self.next_id + 1) % (1 << MSG_ID_BITS)  # the next message gets the next number
+        self.current_id = number if number is not None else self.mail.new_number()  # its number: fixed already for a message to a named station, else the next one
         self.resends = 0  # a new message starts with a clean slate
 
     def _send_part(self, now):  # send the next frame of the current message
         item = self.plan[self.part_index]  # the frame that is due
         if frame_seconds(pick_size_class(item["text"]), self.tx_level) > AIRTIME_POOR_CAP_S:  # the level has dropped and this frame would now run too long
             self._say(now, f"level fell to L{self.tx_level}; splitting the message again")  # explain
-            self.plan = plan_at_level(self.plan_text, self.tx_level)  # plan the whole message again at the new level; it keeps its number
+            self.plan = plan_at_level(self.plan_text, self.tx_level, addressed=self.job is not None)  # plan the whole message again at the new level; it keeps its number
             self.part_index = 0  # start again from its first frame (the far end drops the parts of the old split)
             item = self.plan[0]  # the frame that is now due
-        audio = build_frame(item["text"], self.tx_level, item["part"], item["parts"], link=self.link, msg_id=self.current_id, want_level=self.want)  # the message frame, carrying the level this station wants from its partner
-        note = f"msg {self.current_id} part {item['part'] + 1}/{item['parts']}"  # which frame this is
+        job = self.job  # mail for another station, if that is what is being sent
+        if job is None:  # this station's own message to its partner
+            audio = build_frame(item["text"], self.tx_level, item["part"], item["parts"], link=self.link, msg_id=self.current_id, want_level=self.want)  # the message frame, carrying the level this station wants from its partner
+            note = f"msg {self.current_id} part {item['part'] + 1}/{item['parts']}"  # which frame this is
+        else:  # mail: a fully addressed frame, so the message carries its own origin, destination, hops and lifetime wherever it goes
+            audio = build_frame(item["text"], self.tx_level, item["part"], item["parts"], msg_id=job["id"], dest=job["dest"], origin=job["origin"], hops=job["hops"], life_hours=job["life"])  # the addressed frame
+            note = f"{job['kind']} mail {job['origin']}#{job['id']} for {job['dest']}, part {item['part'] + 1}/{item['parts']}"  # which frame this is
         self.idle_told = False  # traffic is moving, so the lock is not idle
         self.last_traffic, self.idle_warned = now, False  # a message frame is going out: the idle clock starts again
         return self._send(now, audio, "message", self.tx_level, "ack", control_seconds(FRAME_TYPE_ACK, self.want), note)  # wait for its acknowledgment
@@ -352,7 +397,14 @@ class Station:  # the link rules for one station
         if index is not None:  # there is one
             self.outbox.insert(0, self.outbox.pop(index))  # bring it to the front of the outbox...
             self.outbox_to.insert(0, self.outbox_to.pop(index))  # ...with its address
-            self._start_message(self.outbox[0])  # plan it
+            self.outbox_ids.insert(0, self.outbox_ids.pop(index))  # ...and its number
+            self._start_message(self.outbox[0], self.outbox_ids[0])  # plan it
+            return self._send_part(now)  # send its first frame
+        job = self._mail_job()  # mail to deliver, hand over or pass on
+        if job is not None:  # there is some
+            self._say(now, {"deliver": f"delivering mail from {job['origin']} held here for {self.partner}", "hand": f"handing {self.partner} a message for {job['dest']} to carry",  # (continued)
+                            "pass": f"passing {self.partner} mail for {job['dest']}, which it hears"}[job["kind"]])  # explain
+            self._start_message(job["text"], job["id"], job)  # plan it
             return self._send_part(now)  # send its first frame
         if not self.peer_empty:  # nothing to send, and the partner has not said the same
             self.idle_told = True  # this offer also tells the partner that this station is idle
@@ -384,6 +436,7 @@ class Station:  # the link rules for one station
     def new_contact(self):  # get ready for another contact after one has ended
         """Return the station to IDLE, keeping its messages, its log and what it has learned about the reply window."""
         self.state, self.pending, self.partner, self.link = "IDLE", None, "", -1  # no partner
+        self.job, self.mail_parts, self.notice_sent = None, {}, False  # no mail under way or half-received, no notice just sent
         self.history, self.last_result, self.clean_run, self.good_run = [], None, 0, 0  # no measurements
         self.plan, self.part_index, self.misses, self.resends, self.probes, self.finals, self.beacons = [], 0, 0, 0, 0, 0, 0  # nothing under way, no counts
         self.my_turn = self.peer_empty = self.sent_final = False  # no turn, no goodbyes
@@ -414,7 +467,7 @@ class Station:  # the link rules for one station
         if self.state == "RELEASED":  # the contact is over
             return None  # stay silent
         if not result.ok:  # the frame did not decode
-            if result.reason == "body check failed" and result.frame_type == FRAME_TYPE_LINK and self.state in LOCKED_STATES and self.pending is None:  # a message frame arrived damaged
+            if result.reason == "body check failed" and result.frame_type in (FRAME_TYPE_LINK, FRAME_TYPE_ADDRESSED) and self.state in LOCKED_STATES and self.pending is None:  # a message frame (or mail) arrived damaged
                 self._note(result, failed=True)  # take in its measurements and ask for a slower level
                 self._say(now, f"frame failed its check; asking for L{self.want} and a resend")  # explain
                 return self._ack(now, 0, result.part, ACK_RESEND, "ack")  # ask for it again
@@ -426,6 +479,8 @@ class Station:  # the link rules for one station
         kind = result.frame_type  # what sort of frame it is
         if kind == FRAME_TYPE_ADDRESSED:  # a fully addressed message: a broadcast, or one sent without a lock
             return self._on_addressed(result, now)  # show it if it is for this station or for everyone
+        if kind == FRAME_TYPE_NOTICE:  # a mail notice
+            return self._on_notice(result, now)  # take in what it says
         if kind == FRAME_TYPE_BEACON:  # someone is calling
             return self._on_beacon(result, now)  # maybe answer
         if kind == FRAME_TYPE_ANSWER:  # someone answered a beacon
@@ -446,7 +501,8 @@ class Station:  # the link rules for one station
     def _on_beacon(self, result, now):  # a beacon was heard
         if self.role != "answerer" or self.state != "IDLE" or not result.fields["listening"]:  # not answering, already busy, or the caller takes no answers
             return None  # stay silent
-        if not self.answer_beacons:  # the operator answers by hand, with a directed call
+        for_mail = (result.fields["mail_check"] and bool(self.mail.held_for(result.origin))) or self.mail_waiting_at(result.origin)  # mail held here for the beaconing station (it asked for it), or it holds mail for this station
+        if not self.answer_beacons and not (for_mail and self.available):  # the operator answers by hand, with a directed call (mail is answered for regardless)
             return None  # stay silent; the operator has been shown the beacon
         if result.origin in self.worked and not self._has_for(result.origin):  # already worked this station, and nothing new for it
             return None  # leave the reply window to others
@@ -467,6 +523,8 @@ class Station:  # the link rules for one station
         return tx  # the answer, with its waiting time
 
     def _on_addressed(self, result, now):  # a fully addressed message frame was heard
+        if result.dest != "ALL" and self.state in LOCKED_STATES and self.partner:  # inside a contact: mail from the partner (delivered, handed over or passed on)
+            return self._on_mail(result, now)  # hold it, or take it in
         if result.dest not in ("ALL", self.call):  # for some other station
             return None  # not this station's business
         key = (result.origin, result.msg_id)  # which message this is
@@ -481,6 +539,50 @@ class Station:  # the link rules for one station
             del self.bulletin_parts[key]  # the parts are no longer needed
             self._say(now, f"{'broadcast' if result.dest == 'ALL' else 'message'} from {result.origin}: {whole[:40]!r}")  # explain
         return None  # nobody acknowledges these
+
+    def _on_mail(self, result, now):  # a fully addressed message frame from the partner, inside a contact
+        if not self._traffic_from_partner(now):  # this station keeps the turn
+            return None  # carry on with its own exchange
+        self._note(result, failed=False)  # take in the measurements
+        origin, number = result.origin, result.msg_id  # the message ID
+        mine = result.dest == self.call  # for this station, or to be carried for another
+        if not mine and (not self.carries or result.hops + 1 > HOP_LIMIT or (not self.mail.has_room(origin) and not self.mail.holding(origin, number))):  # this station will not keep it
+            self._say(now, f"declined to carry mail for {result.dest}" + ("" if self.carries else " (carrying mail for others is off)"))  # explain
+            return self._ack(now, number, OFFER_NO_MAIL, ACK_LINK, "ack")  # "I do not carry mail"
+        if self.mail.is_handled(origin, number) or (not mine and self.mail.holding(origin, number)):  # an earlier copy was dealt with here, or is held here
+            return self._ack(now, number, result.part, ACK_HAVE_IT, "ack")  # stop sending it
+        parts = self.mail_parts.setdefault((origin, number), {})  # the parts of this message so far
+        if any(held.parts != result.parts for held in parts.values()):  # split differently since
+            parts.clear()  # the old parts are no use
+        parts[result.part] = result  # add this one
+        whole = join_parts(list(parts.values()))  # is the message complete?
+        if whole is not None:  # yes
+            del self.mail_parts[(origin, number)]  # the parts are no longer needed
+            if mine:  # mail for this station
+                self.bulletins.append((origin if origin == self.partner else f"{origin} via {self.partner}", self.call, whole))  # deliver it to the operator, saying who carried it
+                self.mail.mark_handled(origin, number)  # never take it again
+                if origin != self.partner:  # it came through a carrier
+                    self.mail.add_receipt(origin, number, self.call)  # announce the delivery, so other carriers drop their copies and the origin learns of it
+                    self.mail.forget_held_for_me(self.partner)  # that carrier has delivered
+                self._say(now, f"mail from {origin}{'' if origin == self.partner else ' via ' + self.partner}: {whole[:40]!r}")  # explain
+            else:  # mail to carry
+                self.mail.hold(result.dest, origin, number, whole, result.hops, max(1, result.life_hours), self.partner)  # keep it
+                self._say(now, f"holding mail from {origin} for {result.dest} (hop {result.hops})")  # explain
+        return self._ack(now, number, result.part, ACK_OK, "ack")  # acknowledge, with a report and the level wanted next
+
+    def _on_notice(self, result, now):  # a mail notice was heard
+        fields = result.fields  # what it says
+        origin = fields["origin"]  # who sent it
+        self.notices[origin] = (now, fields)  # remember it, for whoever runs the station
+        for number in self.mail.heard_notice(origin, fields["held"], fields["receipts"], fields["heard"]):  # this station's messages it shows delivered
+            if number in self.outbox_ids and not (self.outbox_ids.index(number) == 0 and self.plan and self.job is None):  # still waiting here, and not the message being sent right now
+                index = self.outbox_ids.index(number)  # where it is
+                self.delivered.append(self.outbox.pop(index))  # delivered
+                del self.outbox_to[index], self.outbox_ids[index]  # with its address and number
+                self._say(now, f"{origin} reports message {number} delivered")  # explain
+        if call_hash(self.call) in fields["held"]:  # it holds mail for this station
+            self._say(now, f"{origin} holds mail for this station")  # explain
+        return None  # a notice needs no reply
 
     @staticmethod  # needs nothing from the station itself
     def _is_call(result):  # does an answer frame carry a directed call rather than a reply to a beacon?
@@ -499,7 +601,7 @@ class Station:  # the link rules for one station
             audio = build_ack(self.link, 0, OFFER_UNAVAILABLE, ACK_LINK, self._report_of(result), level=self.tx_level)  # the one short reply
             self.link = -1  # no contact is made
             return self._send(now, audio, "not available", self.tx_level, None, 0.0, f"to {result.origin}")  # sent, and nothing more expected
-        wanted = self.answer_calls or self.expects_call_from(result.origin, now)  # this station takes the call by itself, or it is a reply to something its operator started
+        wanted = self.answer_calls or self.expects_call_from(result.origin, now) or (result.fields["mail_check"] and bool(self.mail.held_for(result.origin)))  # this station takes the call by itself, or it is a reply to something its operator started, or the caller asks for mail held here
         answering_call = self.role == "answerer" and self.pending is None and self._is_call(result) and wanted  # a listening station with nothing under way
         beaconing_call = self.role == "beaconer" and self.pending == "answer" and self._is_call(result)  # or one waiting in its own reply window, called by name instead of answered
         called_back = self.role == "caller" and self._is_call(result) and result.origin == self.target  # or one calling that very station, which calls back instead of confirming (its operator chose to respond)
@@ -543,6 +645,12 @@ class Station:  # the link rules for one station
             self.state = "LOCKED"  # the lock is confirmed
             self._say(now, f"locked with {self.partner}; told to send at L{self.tx_level}")  # explain
         status = fields["status"]  # the verdict
+        if status == ACK_LINK and fields["part"] == OFFER_NO_MAIL and self.job is not None and self.pending == "ack":  # the partner will not carry the mail just offered
+            self.pending, self.misses, self.resends = None, 0, 0  # the wait is over
+            self.refused.add(self.partner)  # do not offer it mail again
+            self._say(now, f"{self.partner} does not carry mail for others")  # explain
+            self.job, self.plan = None, []  # nothing under way
+            return self._next(now)  # carry on with anything else
         if status == ACK_LINK:  # no message is referred to
             return self._on_link_ack(result, fields["part"], now)  # lock business
         self._note(result, failed=False)  # a clean frame from the partner: take in its measurements
@@ -561,11 +669,30 @@ class Station:  # the link rules for one station
         self.resends = 0  # received (or already held): this frame is done
         self.part_index = len(self.plan) if status == ACK_HAVE_IT else self.part_index + 1  # "already have it" covers the whole message; otherwise move to the next frame
         if self.part_index >= len(self.plan):  # that was the last frame of the message
-            self.delivered.append(self.outbox.pop(0))  # the whole message is delivered
-            self.outbox_to.pop(0)  # and its address goes with it
+            if self.job is not None:  # it was mail
+                self._job_done(now, status)  # record where it went
+            else:  # this station's own message to its partner
+                self.delivered.append(self.outbox.pop(0))  # the whole message is delivered
+                self.outbox_to.pop(0)  # and its address goes with it
+                number = self.outbox_ids.pop(0)  # and its number
+                if number is not None:  # a message to a named station
+                    self.mail.own_done(number)  # it no longer waits anywhere (carriers are told by receipt)
+                self._say(now, f"message {self.current_id} delivered")  # explain
             self.plan = []  # nothing under way
-            self._say(now, f"message {self.current_id} delivered")  # explain
         return self._next(now)  # carry on
+
+    def _job_done(self, now, status):  # a piece of mail has been taken in full by the partner
+        job, self.job = self.job, None  # the mail, and nothing under way any more
+        already = status == ACK_HAVE_IT  # the partner had it already
+        if job["kind"] == "deliver":  # held mail reached its destination
+            self.mail.delivered_held(job["origin"], job["id"], self.partner)  # drop the copy, remember it, announce a receipt
+            self._say(now, f"mail from {job['origin']} {'was already with' if already else 'delivered to'} {self.partner}")  # explain
+        elif job["kind"] == "hand":  # this station's message is now carried by the partner as well
+            self.mail.own_carried(job["id"], self.partner)  # note the carrier
+            self._say(now, f"{self.partner} {'already carries' if already else 'is carrying'} the message for {job['dest']}")  # explain
+        else:  # held mail passed on to another carrier
+            self.mail.passed(job["origin"], job["id"], self.partner)  # note it
+            self._say(now, f"{self.partner} {'already had' if already else 'took'} the mail for {job['dest']}")  # explain
 
     def _gives_way(self, now):  # both stations are transmitting as if they held the turn: who backs off?
         """Return True when this station may carry on handling the frame it just heard; False when it should ignore it.
@@ -599,7 +726,7 @@ class Station:  # the link rules for one station
         if code == OFFER_TURN:  # the partner has nothing to send and offers the turn
             self.peer_empty = self.pending != "confirm"  # remember the partner is empty (except when this offer is a called station confirming the lock: it may yet have traffic)
             self.pending = None  # any wait is over
-            if self.plan or self._sendable() is not None:  # this station has traffic for the partner
+            if self.plan or self._has_traffic():  # this station has traffic for the partner
                 self.my_turn = True  # take the turn
                 return self._next(now)  # and use it
             self.my_turn = False  # nothing here either: the partner keeps the turn
@@ -660,23 +787,29 @@ class Station:  # the link rules for one station
         self._say(now, f"partner proposed a working frequency; agreeing and moving {offset_hz / 1000.0:+.1f} kHz")  # explain
         return reply  # the agreement
 
-    def _on_message(self, result, now):  # a message frame was heard
+    def _traffic_from_partner(self, now):  # the partner has sent a message frame (its own, or mail): take the turn bookkeeping
+        """Return False if the frame should be ignored because this station keeps the turn; otherwise update the turn and idle state and return True."""
         if self.state == "IDLE":  # the confirmation was missed, but a frame with this link number proves the lock
             self.state = "LOCKED"  # so lock
         if self.pending in ("confirm", "offer"):  # the partner's message answers a pending confirmation or turn offer
             self.pending = None  # the wait is over
             self.misses = 0  # the partner is answering
         elif not self._gives_way(now):  # a message arrived while this station was sending its own
-            return None  # the beaconing station carries on with its own exchange
+            return False  # the beaconing station carries on with its own exchange
         self.my_turn = False  # the partner has the turn
         self.peer_empty = False  # and has traffic
         self.quiet = False  # the lock is no longer idle
         self.idle_told = False  # and the partner will need telling when it is again
         self.last_traffic, self.idle_warned = now, False  # a message frame has come in: the idle clock starts again
+        return True  # take the frame
+
+    def _on_message(self, result, now):  # a message frame was heard
+        if not self._traffic_from_partner(now):  # this station keeps the turn
+            return None  # the beaconing station carries on with its own exchange
         self.tx_level = cap_level(result.want_level, self.allowed)  # every message frame says which level its sender wants back
         self._note(result, failed=False)  # take in the measurements
         status = ACK_OK  # this frame was received
-        if result.msg_id in self.done_ids:  # the whole message is already here
+        if result.msg_id in self.done_ids or self.mail.is_handled(self.partner, result.msg_id):  # the whole message is already here (in this contact, or an earlier copy of it)
             status = ACK_HAVE_IT  # tell the sender to stop sending it
         else:  # a message still being collected
             parts = self.partial.setdefault(result.msg_id, {})  # the parts of this message so far
@@ -687,6 +820,7 @@ class Station:  # the link rules for one station
             if whole is not None:  # yes
                 self.inbox.append(whole)  # deliver it to the operator
                 self.done_ids.add(result.msg_id)  # remember it is done
+                self.mail.mark_handled(self.partner, result.msg_id)  # and, beyond this contact, so a copy carried by another station is not delivered again
                 del self.partial[result.msg_id]  # the parts are no longer needed
                 self._say(now, f"received message {result.msg_id}: {whole[:40]!r}")  # explain
         return self._ack(now, result.msg_id, result.part, status, "ack")  # acknowledge, with a report and the level wanted next
@@ -707,6 +841,14 @@ class Station:  # the link rules for one station
 
     def poll(self, now):  # is there something to send without having heard anything?
         """Return a Transmission if the station should transmit now (a first frame, or a retry after a timeout), else None."""
+        if now - self.tidied >= MAIL_TIDY_S:  # time to look for expired mail
+            self.tidied = now  # remember when
+            for number in self.mail.tidy():  # this station's messages that ran out undelivered
+                if number in self.outbox_ids and not (self.outbox_ids.index(number) == 0 and self.plan and self.job is None):  # still waiting here, and not being sent right now
+                    index = self.outbox_ids.index(number)  # where it is
+                    self.expired.append(self.outbox.pop(index))  # expired, not delivered
+                    del self.outbox_to[index], self.outbox_ids[index]  # with its address and number
+                    self._say(now, f"message {number} expired undelivered")  # explain
         if self.state == "RELEASED":  # the contact is over
             return None  # nothing to send
         if self._watching_idle():  # this station moved the contact to a working frequency and is keeping it open
@@ -730,7 +872,7 @@ class Station:  # the link rules for one station
             self._release(now, "partner not heard on the working frequency; lock given up")  # go back to the calling frequency
             return None  # nothing to send
         if self.state in LOCKED_STATES and self.quiet and not self.my_turn and now - self.last_activity >= self._quiet_gap():  # the lock is idle, the partner holds the turn and has had time to speak
-            if self._sendable() is not None or self.close_when_done:  # this station now has a message for the partner, or wants the contact closed
+            if self._has_traffic() or self.close_when_done:  # this station now has a message or mail for the partner, or wants the contact closed
                 self.quiet, self.my_turn = False, True  # take the turn (if the partner starts at the same moment, the usual give-way rule settles it)
                 return self._next(now)  # send the message, or the closing identification
             if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since this station sent its callsign
@@ -757,7 +899,7 @@ class Station:  # the link rules for one station
                 return None  # wait for it to clear
             return self._call(now)  # call it
         if self.state in LOCKED_STATES and self.my_turn:  # locked, and it is this station's turn
-            if self.peer_empty and not self.plan and self._sendable() is None and not self.close_when_done:  # both sides idle, lock kept open
+            if self.peer_empty and not self.plan and not self._has_traffic() and not self.close_when_done:  # both sides idle, lock kept open
                 if now - self.last_activity < KEEPALIVE_S:  # not silent for long enough yet
                     return None  # stay quiet
                 self.peer_empty = False  # time to check on the partner: offer the turn again
@@ -787,7 +929,7 @@ class Station:  # the link rules for one station
             return self.deadline  # until the deadline
         if self.settle_until is not None:  # waiting for the radios to retune after a move
             return self.settle_until  # until they have settled
-        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and (self._sendable() is not None or self.close_when_done):  # idle without the turn, but with something to send or a contact to close
+        if self.state in LOCKED_STATES and self.quiet and not self.my_turn and (self._has_traffic() or self.close_when_done):  # idle without the turn, but with something to send or a contact to close
             return self.last_activity + self._quiet_gap()  # until the partner has had its chance to speak
         if self.await_since is not None:  # waiting for the partner on a working frequency
             return self.await_since + MOVE_WAIT_S  # until that wait runs out
@@ -815,10 +957,29 @@ class Station:  # the link rules for one station
             report = heard[1]  # it goes with the call, so the called station can start at the right level
         else:  # never heard, or long ago
             report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0)  # no measurement, asking for L0
-        audio = build_answer(self.partner, self.call, report, self.levels, level=self.tx_level, directed=True)  # an answer frame marked as a directed call
+        audio = build_answer(self.partner, self.call, report, self.levels, mail_check=True, level=self.tx_level, directed=True)  # an answer frame marked as a directed call, asking for any mail the called station holds for this one
         return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
 
+    def _notice(self, now):  # a mail notice to send just before a beacon, or None
+        if self.notice_sent:  # one has just gone: the beacon is next
+            self.notice_sent = False  # and the next beacon may have its own
+            return None  # send the beacon
+        if not self.available or (self.callup == 0 and now - self.last_notice_l0 < NOTICE_L0_EVERY_S):  # not taking contacts, or an L0 beacon soon after the last L0 notice
+            return None  # no notice
+        held, receipts, heard = self.mail.notice_lists(self._heard_calls(now))  # what it would say
+        if not held and not receipts:  # nothing held and nothing delivered lately
+            return None  # no notice
+        if self.callup == 0:  # going with an L0 beacon
+            self.last_notice_l0 = now  # remember when
+        self.notice_sent = True  # the beacon follows
+        self.last_ident = now  # the notice carries the callsign
+        audio = build_notice(self.call, held, receipts, heard, level=self.callup)  # the notice, at the beacon's level
+        return self._send(now, audio, "mail notice", self.callup, None, 0.0, f"holds mail for {len(held)}, {len(receipts)} receipt(s)")  # no reply is expected; the beacon comes next
+
     def _beacon(self, now):  # send a beacon
+        notice = self._notice(now)  # a mail notice first, if there is anything to tell
+        if notice is not None:  # there is
+            return notice  # send it; the beacon goes at the next look
         self.beacons += 1  # count it
         self.last_beacon_t = now  # directed calls from anyone are expected for a while
         self.last_ident = now  # a beacon carries the callsign
@@ -830,7 +991,7 @@ class Station:  # the link rules for one station
             self._release(now, "presence beacon sent; not taking contacts")  # the round is over
             return tx  # send it
         self.beacon_sent_at = self.callup  # the middle level first; L0 after that brings no answer
-        audio = build_beacon(self.call, self.grid, self.levels, listening=True, level=self.beacon_sent_at, wide=self.wide)  # the beacon
+        audio = build_beacon(self.call, self.grid, self.levels, listening=True, mail_check=True, holds_mail=bool(self.mail.bag), level=self.beacon_sent_at, wide=self.wide)  # the beacon: asking for any mail held for this station, and saying whether it holds mail for others
         window = (WIDE_SLOTS if self.wide else 1) * reply_slot(self.beacon_sent_at)  # how long to listen for answers: slots sized for this level
         return self._send(now, audio, "beacon", self.beacon_sent_at, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else "")  # then listen for the whole window (plus any extra margin a live station allows)
 

@@ -1,5 +1,17 @@
 # Kestrel specification changelog
 
+## 0.30 (draft) - 21 November 2026
+
+- **Signal version 0.30.** Store and forward, the first part of roadmap step 3 (Section 8, rewritten). Stations following 0.29 or earlier cannot carry or deliver mail and ignore mail notices.
+- New frame: the **mail notice** (frame type 7, Section 5.8), 192 bits: the sender's callsign, then short codes (CRC-16) for up to three stations it holds mail for, three delivery receipts and three stations it hears. 11.5 s at L2, 51 s at L0. Sent just before a beacon by a station holding mail or with receipts to list; with L0 beacons at most once in 30 minutes.
+- Every beacon and directed call now sets the mail-check flag.
+- Mail travels inside contacts as fully addressed frames (destination, origin, message number, hops, time left). Messages for a named station get their number when queued and keep it, across restarts.
+- A station offers each waiting message for a third station to the partner to carry (at most 3 carriers per message); carriers pass it on only to a station whose notice says it hears the destination (at most 2), deliver it when the destination beacons or calls, and never push it. Lifetime 62 hours; hop limit 4.
+- New acknowledgment code: status 3 with part number 5, "does not carry mail".
+- The destination remembers every message ID for 62 hours and answers later copies with "already have it", including copies of messages it got directly from the origin.
+- Receipts are listed in mail notices for 12 hours; holders hearing one drop their copies, and the origin marks its message delivered.
+- The reference program: a "Carry mail for others" setting (on by default), Stations > Mail held and carried (addresses, IDs and carriers only; the content of other stations' mail is not shown or logged), and mail kept in a file per callsign between runs.
+
 ## 0.29 (draft) - 21 November 2026
 
 - **No frame is changed. The signal version stays 0.27.** But stations must be on the same frequency to meet: 0.29 stations call on new frequencies.

@@ -15,7 +15,7 @@ from modem.params import CONTROL_BITS, FRAME_TYPE_LONG  # which frame types are 
 from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener  # the continuous receiver
 
-KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon"}  # frame type -> plain name
+KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon", 7: "mail notice"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
 
 
@@ -107,7 +107,8 @@ def describe(result):  # one line about a received frame
     if result.frame_type in CONTROL_BITS or result.frame_type == FRAME_TYPE_LONG:  # a control frame, or a long beacon
         return line.replace(", fading nan", "") + f"  {result.fields}"  # show its fields
     who = f"{result.origin} to {result.dest}" if result.frame_type == 1 else f"link {result.link}"  # addresses, or the link number
-    return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {result.text!r}"  # show the text
+    shown = repr(result.text) if result.frame_type == 1 and result.dest == "ALL" else f"({len(result.text or '')} characters)"  # a broadcast's text; the content of a message for a particular station is not repeated here (it appears under Messages received when it is for this station)
+    return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {shown}"  # the addressing, and the text or its length
 
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress

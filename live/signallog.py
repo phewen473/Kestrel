@@ -97,7 +97,10 @@ def _plain(value):  # a value as JSON can hold it
 def result_fields(result):  # a receiver's report as a dictionary
     """Return the fields of an RxResult (modem.frame) as plain values, without the soft bits."""
     names = getattr(result, "__dataclass_fields__", {})  # the report's field names
-    return {name: _plain(getattr(result, name)) for name in names if name not in RESULT_SKIP}  # every field but the soft bits
+    fields = {name: _plain(getattr(result, name)) for name in names if name not in RESULT_SKIP}  # every field but the soft bits
+    if fields.get("text") and not (getattr(result, "frame_type", -1) == 1 and getattr(result, "dest", "") == "ALL"):  # the content of a message for a particular station
+        fields["text"] = f"({len(fields['text'])} characters)"  # is not written to the log; its length is enough for analysis
+    return fields  # ready to write
 
 
 def utc_text(seconds):  # a time as text

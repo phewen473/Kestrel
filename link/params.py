@@ -40,3 +40,15 @@ BROADCAST_LIFE_HOURS = 2  # lifetime written into a broadcast frame (it is not f
 WORKING_IDLE_S = 180.0  # on a working frequency, a contact with no message traffic for this long is closed and both stations return to the calling frequency
 WORKING_WARN_S = 60.0  # the operator of the station that proposed the move is warned this long before that happens
 HOLD_TELL_S = 60.0  # while a transmission is held back because the frequency is in use, the operator is told this often
+
+OFFER_NO_MAIL = 5  # part-number value in a status-3 acknowledgment: "this station does not carry mail for others" (the reply to a held or handed-on message it will not keep; the message number field names the message) (since 0.30)
+MAIL_LIFE_HOURS = 62  # how long a message to a named station is kept and carried before it expires undelivered (the longest the lifetime field allows)
+HOP_LIMIT = 4  # the most times a message may be passed on by stations other than its origin (the hops field counts them)
+RECEIPT_LIST_H = 12  # a delivery receipt is listed in this station's mail notices for this many hours
+HANDED_MOST = 3  # an origin hands each of its messages to at most this many carrying stations
+PASSED_MOST = 2  # a carrying station passes each message it holds on to at most this many other carrying stations
+REACH_S = 7200.0  # a station that listed another as heard in its mail notice is taken to reach it for this many seconds
+BAG_MOST = 50  # the most messages for other stations this station will hold at once
+BAG_PER_ORIGIN = 10  # the most of those from any one origin
+NOTICE_L0_EVERY_S = 1800.0  # a mail notice goes with every beacon at the call-up level, but with an L0 beacon at most this often (it lasts 51 s at L0)
+MAIL_TIDY_S = 60.0  # how often the station looks for expired mail

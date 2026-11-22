@@ -1,4 +1,4 @@
-"""Control frames: what a beacon, an answer, an acknowledgment and an identification carry, as bits.
+"""Control frames: what a beacon, an answer, an acknowledgment, an identification and a mail notice carry, as bits.
 
 These short frames set up and run a link. This file only packs their
 fields into bits and unpacks them again; frame.py turns the bits into
@@ -13,7 +13,7 @@ from .address import bits_to_call, call_to_bits  # callsign <-> 48 bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .params import (  # frame format numbers
     ACK_STATUS_BITS, CALL_BITS, CONTROL_BITS, FADE_BITS, FADE_STEPS_PER_UNIT, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER,  # (continued)
-    FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, GRID_BITS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
+    FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_NOTICE, GRID_BITS, HASH_BITS, NOTICE_SLOTS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
     OFFSET_BITS, OFFSET_STEP_HZ, PART_BITS, REPORT_BITS, SNR_BITS, SNR_FLOOR_DB,  # (continued)
 )  # end of the import list
 
@@ -125,6 +125,17 @@ def pack_ident(call, link, final=False):  # identification fields -> 61 bits
     return np.concatenate([call_to_bits(call), int_to_bits(link, LINK_ID_BITS), np.array(flags, dtype=np.uint8)])  # callsign, link number, flags
 
 
+def pack_notice(call, held=(), receipts=(), heard=()):  # mail notice fields -> 192 bits
+    """Return the body bits of a mail notice: who sends it, then up to three short codes each for the stations it holds mail for, the delivery receipts it reports, and the stations it hears (0 marks an unused entry)."""
+    codes = []  # the three lists, each padded to its full length
+    for entries in (held, receipts, heard):  # in that order
+        entries = [int(code) for code in entries][:NOTICE_SLOTS]  # at most three
+        if any(not 0 < code < (1 << HASH_BITS) for code in entries):  # every code must fit its field, and 0 is kept for "empty"
+            raise ValueError("notice code out of range")  # refuse nonsense
+        codes += entries + [0] * (NOTICE_SLOTS - len(entries))  # pad with empty entries
+    return np.concatenate([call_to_bits(call)] + [int_to_bits(code, HASH_BITS) for code in codes])  # callsign, then the nine codes
+
+
 def unpack(frame_type, bits):  # body bits -> named fields
     """Return a dict of the fields carried by a control frame's body bits; raise ValueError when they make no sense."""
     if len(bits) != CONTROL_BITS[frame_type]:  # every control frame has a fixed length
@@ -145,4 +156,8 @@ def unpack(frame_type, bits):  # body bits -> named fields
                 "status": bits_to_int(rest[PART_BITS:PART_BITS + ACK_STATUS_BITS]), "report": unpack_report(rest[PART_BITS + ACK_STATUS_BITS:])}  # which frame, the verdict, the report
     if frame_type == FRAME_TYPE_IDENT:  # a station identification
         return {"origin": bits_to_call(bits[:CALL_BITS]), "link": bits_to_int(bits[CALL_BITS:CALL_BITS + LINK_ID_BITS]), "final": bool(bits[CALL_BITS + LINK_ID_BITS])}  # who, which link, end of contact?
+    if frame_type == FRAME_TYPE_NOTICE:  # a mail notice
+        codes = [bits_to_int(bits[CALL_BITS + n * HASH_BITS:CALL_BITS + (n + 1) * HASH_BITS]) for n in range(3 * NOTICE_SLOTS)]  # the nine codes
+        lists = [[code for code in codes[n * NOTICE_SLOTS:(n + 1) * NOTICE_SLOTS] if code] for n in range(3)]  # the three lists, empty entries left out
+        return {"origin": bits_to_call(bits[:CALL_BITS]), "held": lists[0], "receipts": lists[1], "heard": lists[2]}  # who, and the three lists
     raise ValueError("not a control frame type")  # anything else is not handled here

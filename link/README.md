@@ -74,7 +74,7 @@ Two faults in the first design were found this way and fixed:
 ## Not covered yet
 
 - Two stations transmitting at the same moment. The simulation takes turns, so a real collision is never produced; the give-way rule is tested by hand.
-- Nets, and store-and-forward.
+- Nets (store-and-forward came in 0.30; see below).
 
 ## Files
 
@@ -84,6 +84,7 @@ Two faults in the first design were found this way and fixed:
 | `adapt.py` | How a receiver chooses the level to ask for |
 | `simulate.py` | Stations joined by the channel simulator: `run_link` (two stations), `run_group` (one caller, several answering stations), `Path`, `describe` |
 | `params.py` | The starting values above |
+| `mail.py` | Store and forward: `Mailroom`, the mail a station keeps between contacts and runs (its numbered messages, mail it carries for others, receipts, other stations' notices), saved to a JSON file |
 
 ## Added with spec v0.16
 
@@ -101,3 +102,14 @@ Two faults in the first design were found this way and fixed:
 ## Added with spec v0.18
 
 - **An idle working frequency is given up.** The station that proposed the move times the gap since the last message frame (`last_traffic`). At two minutes it logs a warning for its operator; at three it closes the contact (the limit was five minutes in v0.18 and is three from v0.19) (`WORKING_IDLE_S`, `WORKING_WARN_S` in `params.py`), and both stations return to the calling frequency as they do at the end of any contact. One new test.
+
+## Added with spec v0.30: store and forward
+
+- **Numbered messages.** `station.queue(text, to="Q3CCC")` gives the message its number at once (`station.outbox_ids`), from `station.mail`, a `Mailroom`. The number stays with the message across restarts when the program keeps the mailroom in a file (`Mailroom.save` / `Mailroom.load`).
+- **Handing over.** In any contact, after the messages for the partner itself, the station offers the partner its messages for other stations as fully addressed frames. A partner with `carries = True` keeps them (`station.mail.bag`); one with `carries = False` answers "does not carry mail" and is not asked again (`station.refused`). The origin keeps its own copy and notes the carriers.
+- **Delivery.** Beacons and directed calls carry the mail-check flag. A station holding mail for the beaconing or calling station answers it even when set to just listen, and delivers in the contact. The destination remembers every message ID for 62 hours and answers later copies with "already have it". Received mail goes into `station.bulletins` as ("Q1AAAA via Q2BB", destination, text).
+- **Passing on.** A carrier passes mail to another station only if that station's mail notice said it hears the destination (within 2 hours), never back to where it came from, at most twice per message, and within the hop limit of 4.
+- **Mail notice and receipts.** A station holding mail or with receipts sends a mail notice just before its beacon. A receipt makes every holder drop its copy and tells the origin its message was delivered (it moves to `station.delivered`). Expired messages (62 hours) move to `station.expired`.
+- **What the panel sees.** `station.mail.take_news()` lists what happened (carried, delivered, held, handed over, passed, dropped, expired). Only the station's own messages carry their text in the news.
+- Seven tests in `tests/test_mail.py`: the notice frame; the whole loop A -> B -> C with the receipt back to A; "already have it" for a second copy; a station that declines; a holder set to just listen still delivering; hops and lifetime; the mail file across a restart and expiry.
+

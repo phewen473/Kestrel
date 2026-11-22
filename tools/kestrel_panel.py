@@ -41,6 +41,9 @@ from live.paths import code_dir, data_dir  # where the program's files and the o
 ROOT = code_dir()  # the program's own files: the repository root, or the installed bundle
 
 from link import Station  # the link rules  # noqa: E402
+from link.mail import Mailroom  # the mail kept between contacts and runs (store and forward)  # noqa: E402
+from link.params import HOP_LIMIT, MAIL_LIFE_HOURS  # how far and how long mail travels  # noqa: E402
+from modem import call_hash  # the short code a mail notice uses for a callsign  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -62,7 +65,7 @@ AUTOSTOP_MIN, AUTOSTOP_MAX = 15, 720  # the beacon's automatic stop, when used, 
 DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "100",  # (continued: the station)
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
-            "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True,  # (continued: operating)
+            "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)  # (continued: logging, recording and looks)
             "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
@@ -79,6 +82,7 @@ BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)", 
                      "long": "Long: about 60 s, heard much further; nobody answers (every 10 min at most)"}  # (continued)
 LONG_EVERY_MIN = 10  # long beacons repeat no more often than this, in minutes (each holds the frequency for a minute)
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
+CARRY_NAMES = {True: "Yes: hold mail for other stations and deliver it when they ask", False: "No: decline mail for other stations"}  # store and forward (since 0.30), as the operator sees it
 RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
 CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
 THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
@@ -251,6 +255,9 @@ class Panel:  # the control panel window
         self.calling = {}  # stations heard beaconing recently, for the Stations calling window: callsign -> {grid, snr, when, fields}
         self.base_khz = 0.0  # the calling frequency chosen, in kHz (kept here so the station thread need not read the window)
         self.level_check = 0.0  # when Windows' receive level was last read back
+        self.mailroom = Mailroom.load(self.mail_file(), self.settings["call"])  # this station's mail: its own messages for named stations, mail it carries for others, receipts
+        self.mail_saved = time.monotonic()  # when the mail was last written to its file
+        self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
         self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
@@ -435,6 +442,7 @@ class Panel:  # the control panel window
         stations.add_command(label="Respond to the selected station (call it)", underline=0, accelerator="Ctrl+Y", command=self.respond)  # answer a beacon by hand
         stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
         stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
+        stations.add_command(label="Mail held and carried...", underline=0, command=self.mail_window)  # store and forward: mail this station carries, and its own messages out with carriers
         stations.add_separator()  # a divider
         stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
         stations.add_command(label="Put the selected callsign in To", underline=0, accelerator="Enter", command=self.pick_station)  # use it
@@ -1230,6 +1238,9 @@ class Panel:  # the control panel window
                 self.beacon_heard(call, grid, snr, fields)  # offer it to the operator
             elif kind == "answer" and fields.get("directed") and fields.get("dest") == self.settings["call"].strip().upper():  # a station calling this one by name
                 self.beacon_heard(call, grid, snr, dict(fields, you=True))  # offer it to the operator too, marked as a call to this station
+            if kind == "mail notice":  # a station says whom it holds mail for
+                if call_hash(self.settings["call"]) in fields.get("held", []):  # it holds mail for this station
+                    self.say(f"{call} holds mail for you; it will be delivered when you work {call} (Listen answers its beacon by itself, or select it and press Respond, Ctrl+Y)")  # tell the operator
             values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
             if call in self.heard_rows:  # already listed
                 self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
@@ -1237,10 +1248,13 @@ class Panel:  # the control panel window
             else:  # a new callsign
                 self.heard_rows[call] = self.stations.insert("", 0, values=values)  # add it at the top
                 self.refresh_to()  # and offer it in the To box
+            if kind == "mail notice":  # its status column says whom it holds mail for
+                self.mail_notices[call] = (time.time(), dict(fields))  # kept for the status column, which is refreshed every few seconds
         station = self.tracked  # the station being followed, running or just finished
         if station is not None and station.unavailable_from:  # a station we called says its operator is away
             self.availability[station.unavailable_from] = (False, time.time())  # note it
             station.unavailable_from = ""  # once
+        self.follow_mail()  # mail handed on, delivered, held or expired
         if station is not None:  # there is one
             self.follow_contact(station)  # the logbook's view of the contact
             while self.marked < len(station.delivered):  # a message has been delivered since the last look
@@ -1583,10 +1597,13 @@ class Panel:  # the control panel window
     def edit_message(self):  # change a message that is still waiting
         """Open a small window to change the address and text of the selected waiting message."""
         rows = self.to_send.selection()  # the rows chosen
-        if len(rows) != 1 or self.to_send.set(rows[0], "state") != "waiting":  # not exactly one message that has yet to go
+        if len(rows) != 1 or not self.to_send.set(rows[0], "state").startswith("waiting"):  # not exactly one message that has yet to go
             messagebox.showinfo("Kestrel", "Select one message that is still waiting in the Messages to send list.\n\nA message that is being sent, or has gone, cannot be changed.", parent=self.root)  # say what can be edited
             return  # nothing to do
         row = rows[0]  # the message to change
+        if "carried by" in self.to_send.set(row, "state"):  # copies are already with other stations
+            messagebox.showinfo("Kestrel", "Copies of this message are already with other stations, which will deliver them as they are.\n\nTo send something different, delete it and write a new message.", parent=self.root)  # say why not
+            return  # leave it alone
         old_text, shown = self.to_send.set(row, "text"), self.to_send.set(row, "to")  # what it says and who it is for, as listed
         old_to = "" if shown == "partner" else shown  # the address as the queue holds it
         top = self.window("edit", "Kestrel - edit message")  # the window
@@ -1605,7 +1622,7 @@ class Panel:  # the control panel window
             if not text or (to and to == self.settings["call"].strip().upper()):  # nothing to send, or addressed to this station itself
                 messagebox.showinfo("Kestrel", "The message needs some text, and To cannot be this station's own callsign.", parent=top)  # say so
                 return  # stay in the window
-            if not self.to_send.exists(row) or self.to_send.set(row, "state") != "waiting":  # the message went, or was deleted, while the window was open
+            if not self.to_send.exists(row) or not self.to_send.set(row, "state").startswith("waiting"):  # the message went, or was deleted, while the window was open
                 messagebox.showinfo("Kestrel", "That message is no longer waiting, so it was not changed.", parent=top)  # say so
                 top.destroy()  # close the window
                 return  # nothing changed
@@ -1636,7 +1653,7 @@ class Panel:  # the control panel window
             if state == "sending":  # it is going out now
                 self.say(f"not removed, it is being sent: {text}")  # leave it alone
                 continue  # next row
-            if state == "waiting":  # not yet started
+            if state.startswith("waiting"):  # not yet started (it may also be with carriers, who will still deliver their copies)
                 address = "" if to == "partner" else to  # the address as the queue holds it
                 if self.station is not None:  # a station is running and holds the queue
                     self.ask_station(lambda station, text=text, address=address: station.unqueue(text, address or None) or True, f"removed from the queue: {text}")  # ask it to take the message back
@@ -1721,7 +1738,7 @@ class Panel:  # the control panel window
         """Return (messages waiting for `call` by name, messages waiting for whoever the partner is)."""
         named = anyone = 0  # the two counts
         for row in self.to_send.get_children():  # every outgoing message
-            if self.to_send.set(row, "state") in ("waiting", "sending"):  # not yet delivered
+            if self.to_send.set(row, "state").startswith(("waiting", "sending")):  # not yet delivered
                 to = self.to_send.set(row, "to")  # who it is for
                 named += to == call  # for this station by name
                 anyone += to == "partner"  # for whoever the partner is
@@ -1736,10 +1753,9 @@ class Panel:  # the control panel window
             notes.append(f"{anyone} for any partner")  # say how many
         if fields.get("you"):  # it called this station by name
             notes.insert(0, "CALLING YOU")  # say so first
-        if fields.get("holds_mail"):  # its beacon says it holds mail for others
+        notice = self.mail_notices.get(call)  # its last mail notice, which says whom it holds mail for
+        if fields.get("holds_mail") and not (notice is not None and time.time() - notice[0] < 7200):  # its beacon says it holds mail, and no recent notice says for whom
             notes.append("it holds mail (may be for you)")  # which may be for this station
-        if fields.get("mail_check"):  # it is asking for its own mail
-            notes.append("it is asking for its mail")  # say so
         return "; ".join(notes) or "none"  # all of them
 
     def beacon_heard(self, call, grid, snr, fields):  # a station beaconed: show it to the operator, who chooses whether to respond
@@ -1772,6 +1788,9 @@ class Panel:  # the control panel window
             said = self.availability.get(call)  # what the station last said about its operator
             if said is not None and time.time() - said[1] < 3600:  # within the last hour
                 note = ("available" if said[0] else "NOT AVAILABLE") + ("; " + note if note else "")  # put it first
+            notice = self.mail_notices.get(call)  # its last mail notice, if any
+            if notice is not None and time.time() - notice[0] < 7200:  # within the last two hours
+                note = (note + "; " if note else "") + self.notice_words(call, notice[1])  # whom it holds mail for
             self.stations.set(row, "mail", note)  # show it
 
     def respond(self):  # Respond: call the station selected in the Stations heard list
@@ -1955,10 +1974,85 @@ class Panel:  # the control panel window
         write_json(CONTACTS_FILE, self.contacts)  # save the list
         self.refresh_to()  # and reorder the To box
 
+    # ---- store and forward ----
+
+    def mail_file(self, call=None):  # where this callsign's mail is kept
+        name = "".join(ch for ch in (call if call is not None else self.settings["call"]).upper() if ch.isalnum()) or "NOCALL"  # the callsign, safe as part of a file name
+        return side_file(f"_mail_{name}.json")  # beside the settings file
+
+    def save_mail(self):  # write the mail to its file
+        try:  # a full disk must not stop the panel
+            self.mailroom.save(self.mail_file())  # the whole store
+            self.mail_saved = time.monotonic()  # remember when
+        except OSError as problem:  # it could not be written
+            self.say(f"could not save the mail: {problem}")  # say so
+
+    def follow_mail(self):  # show what has happened to mail since the last look (called from the window's own thread)
+        for kind, item in self.mailroom.take_news():  # oldest first
+            text, dest = item.get("text", ""), item["dest"]  # the message (only this station's own messages carry their text) and its destination
+            if kind == "carried":  # a station took a copy of one of this station's messages
+                carriers = (self.mailroom.own_item(item["id"]) or {}).get("carriers", [item["carrier"]])  # every station carrying it now
+                self._advance(text, "waiting (carried by " + ", ".join(carriers) + ")")  # show who has it
+                self.say(f"{item['carrier']} is carrying your message for {dest}")  # tell the operator
+            elif kind == "delivered":  # one of this station's messages reached its destination
+                if item.get("via"):  # learned from another station's receipt
+                    self._advance(text, f"delivered (receipt from {item['via']}) " + time.strftime("%H:%M"))  # say how it is known
+                    self.say(f"your message for {dest} has been delivered (receipt heard from {item['via']})")  # tell the operator
+            elif kind == "expired":  # one of this station's messages ran out of time
+                self._advance(text, "expired, not delivered")  # mark its row
+                self.say(f"your message for {dest} expired after {MAIL_LIFE_HOURS} hours without being delivered")  # tell the operator
+            elif kind == "held":  # mail taken in to carry
+                self.say(f"holding mail from {item['origin']} for {dest} (handed over by {item['came_from']})")  # tell the operator
+            elif kind == "handed over":  # held mail reached its destination
+                self.say(f"delivered the mail from {item['origin']} to {dest}")  # tell the operator
+            elif kind == "passed":  # held mail passed to another carrier
+                self.say(f"passed the mail for {dest} to {item['carrier']}, which hears {dest}")  # tell the operator
+            elif kind == "dropped":  # held mail let go
+                self.say(f"dropped the mail from {item['origin']} for {dest}: " + (f"{item['via']} reports it delivered" if item.get("via") else "it expired"))  # tell the operator
+            mine = kind in ("carried", "delivered", "expired")  # news of this station's own message, whose text is the operator's own
+            self.logbook.write("mail", station=self.settings["call"], text=f"{kind}: {item.get('origin', self.settings['call'])} #{item['id']} to {dest}", detail=text if mine else "")  # the logbook keeps a record (the content of other stations' mail is never written)
+        if time.monotonic() - self.mail_saved > 30.0:  # every half minute
+            self.save_mail()  # keep the mail on disk
+
+    def known_calls(self):  # every callsign the panel knows, by the short code a mail notice uses
+        calls = set(self.heard_rows) | set(self.contacts) | {self.settings["call"].strip().upper()}  # heard, saved, and this station
+        calls |= {item["dest"] for item in self.mailroom.bag} | {item["dest"] for item in self.mailroom.own.values()}  # and the stations mail is for
+        return {call_hash(call): call for call in calls if call}  # code -> callsign
+
+    def notice_words(self, call, fields):  # a mail notice, in words, for the Stations heard list
+        names = self.known_calls()  # codes that can be read back as callsigns
+        me = call_hash(self.settings["call"])  # this station's own code
+        held = ["YOU" if code == me else names.get(code, f"#{code:04x}") for code in fields.get("held", [])]  # whom it holds mail for
+        words = "holds mail for " + ", ".join(held) if held else "holds no mail"  # the main point
+        if fields.get("receipts"):  # it reports deliveries
+            words += f"; {len(fields['receipts'])} delivery receipt(s)"  # how many
+        heard = [names.get(code, f"#{code:04x}") for code in fields.get("heard", [])]  # whom it hears
+        return words + ("; hears " + ", ".join(heard) if heard else "")  # all of it
+
+    def mail_window(self):  # Stations > Mail held and carried
+        top = self.window("mail", "Kestrel - mail held and carried")  # the window
+        now = time.time()  # the wall clock, for ages and time left
+
+        def left(expires):  # time left, in words
+            hours = max(0.0, (expires - now) / 3600.0)  # hours to go
+            return f"{hours:.0f} h"  # whole hours
+
+        ttk.Label(top, text="Mail this station holds for other stations (delivered automatically when the station named beacons or calls)", font="KestrelSmallBold").pack(anchor="w", padx=8, pady=(8, 0))  # the first list's title
+        held = self.table(top, (("for", "For", 90), ("id", "Message ID", 130), ("came", "Handed over by", 110), ("got", "Held since (UTC)", 130), ("left", "Time left", 80), ("passed", "Also carried by", 150)), height=5)  # the list: addressing only, never the content of other stations' mail
+        for item in self.mailroom.bag:  # every message held
+            held.insert("", "end", values=(item["dest"], f"{item['origin']} #{item['id']}", item["came_from"], utc(item["got"]), left(item["expires"]), ", ".join(item["carriers"]) or "-"))  # one row
+        ttk.Label(top, text="Your messages for stations not yet reached, and who is carrying copies", font="KestrelSmallBold").pack(anchor="w", padx=8, pady=(8, 0))  # the second list's title
+        own = self.table(top, (("for", "For", 80), ("number", "Number", 60), ("carriers", "Carried by", 160), ("left", "Time left", 70), ("text", "Message", 380)), height=4)  # the list
+        for number, item in self.mailroom.own.items():  # every message still waiting
+            own.insert("", "end", values=(item["dest"], number, ", ".join(item["carriers"]) or "nobody yet (it goes to the next station you work)", left(item["expires"]), item["text"]))  # one row
+        recent = [f"{name.split('#')[0]} message {name.split('#')[1]} to {entry['dest']}" for name, entry in self.mailroom.receipts.items()]  # receipts this station announces
+        ttk.Label(top, text=("Delivery receipts your station announces: " + "; ".join(recent)) if recent else "No delivery receipts to announce.", font="KestrelSmall", wraplength=900, justify="left").pack(anchor="w", padx=8, pady=(4, 2))  # the receipts
+        ttk.Label(top, text=f"Carrying mail for others is {'on' if self.settings.get('carry_mail', True) else 'off'} (Settings > Operating). Mail lives {MAIL_LIFE_HOURS} hours and is passed on at most {HOP_LIMIT} times.", font="KestrelSmall").pack(anchor="w", padx=8, pady=(0, 8))  # the rules
+
     def save_outbox(self):  # remember the messages still waiting, so they survive closing the panel
         waiting = []  # the messages not yet delivered
         for row in self.to_send.get_children():  # every row of the list
-            if self.to_send.set(row, "state") in ("waiting", "sending"):  # not finished (broadcasts are not kept)
+            if self.to_send.set(row, "state").startswith(("waiting", "sending")):  # not finished (broadcasts are not kept)
                 to = self.to_send.set(row, "to")  # who it is for
                 waiting.append({"time": self.to_send.set(row, "time"), "to": "" if to == "partner" else to, "text": self.to_send.set(row, "text")})  # keep it
         write_json(side_file("_outbox.json"), waiting)  # save them beside the settings
@@ -2076,12 +2170,14 @@ class Panel:  # the control panel window
         note(audio, 2, "Set the levels with the two sliders beside the meters on the main window (Ctrl+J).\nThe receive slider changes Windows' recording level for the device; the transmit slider sets the drive to the radio.")  # where the levels are
         operating = page("Operating")  # what the panel does
         field(operating, 0, "start_mode", "When the panel opens", names=START_NAMES, width=30)  # listen, monitor or nothing
-        field(operating, 5, "auto_answer", "When Listen hears a beacon or a call", names=ANSWER_NAMES, width=58)  # just listen, or answer automatically
-        note(operating, 6, "Just listen: nothing is sent unless you start it. A station beaconing, or calling you by name, is highlighted in the Stations\nheard list with any messages either way; select it and press Respond (Ctrl+Y). Replies to your own beacon or call are accepted.")  # how it works
+        field(operating, 6, "auto_answer", "When Listen hears a beacon or a call", names=ANSWER_NAMES, width=58)  # just listen, or answer automatically
+        note(operating, 7, "Just listen: nothing is sent unless you start it. A station beaconing, or calling you by name, is highlighted in the Stations\nheard list with any messages either way; select it and press Respond (Ctrl+Y). Replies to your own beacon or call are accepted.")  # how it works
         field(operating, 1, "beacon_every_min", f"Repeating beacon: minutes between beacons ({BEACON_MIN} to {BEACON_MAX})", width=6)  # the interval
         field(operating, 2, "beacon_autostop_min", f"Stop the repeating beacon after this many minutes with\nno keyboard or mouse use ({AUTOSTOP_MIN} to {AUTOSTOP_MAX}; 0 = never)", width=6)  # the automatic stop
         field(operating, 4, "beacon_type", "Beacon type", names=BEACON_TYPE_NAMES, width=62)  # short or long
         field(operating, 5, "listen_first", "Listen before transmitting", names=LISTEN_FIRST_NAMES, width=62)  # hold back while the frequency is in use
+        field(operating, 8, "carry_mail", "Carry mail for others", names=CARRY_NAMES, width=62)  # store and forward
+        note(operating, 9, "Mail for a station that is not on the air is handed to the stations you work, which deliver it when that station\nbeacons or calls. With this on, your station does the same for others. See Stations > Mail held and carried.")  # what it means
         note(operating, 3, "The repeating beacon starts only when you press its button (F5). Each round is one beacon and its reply window;\nit pauses during a contact and the interval starts again when the contact ends. Press the button again to stop.")  # how it works
         logging = page("Logging")  # the logbook
         field(logging, 0, "log_level", "Level of detail", names=LOG_NAMES, width=56)  # basic, advanced or verbose
@@ -2146,7 +2242,10 @@ class Panel:  # the control panel window
                 messagebox.showerror("Kestrel", f"The font size must be a whole number from {FONT_MIN} to {FONT_MAX}.", parent=dialog)  # say so
                 book.select(6)  # show the Appearance tab
                 return  # leave the window open
-            restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "radio_mode", "ptt", "port", "rigctld", "rig"))  # does the running station need to start again?
+            restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "radio_mode", "ptt", "port", "rigctld", "rig", "carry_mail"))  # does the running station need to start again?
+            if new["call"] != self.settings["call"]:  # a different callsign has different mail
+                self.save_mail()  # keep the old callsign's
+                self.mailroom = Mailroom.load(self.mail_file(new["call"]), new["call"])  # and use the new one's
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
             self.apply_fonts()  # the lettering follows the choice at once
@@ -2345,6 +2444,7 @@ class Panel:  # the control panel window
                 log_near = attach_signal_log(listener, signal_log, lambda: round(self.dial_hz() / 1000.0, 1))  # searches and near misses to the signal log, if on
                 listener.on_near = lambda result: (self.say(near_line(result)), self.note_near(result), log_near(result))  # signals heard but not readable are shown too
                 watcher = Station(job["call"] or "NOCALL", job["grid"])  # a station that never transmits, used to piece broadcasts together
+                watcher.mail, watcher.carries = self.mailroom, False  # it reads mail notices (a receipt for one of this station's messages still counts) but never holds mail
                 self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
                 self.outbox = job["messages"] + self.outbox  # messages wait for the next time Listen runs
                 self.say("monitoring: receive only, nothing will be transmitted")  # opening line
@@ -2368,6 +2468,8 @@ class Panel:  # the control panel window
             station.listen()  # answers directed calls...
             station.answer_beacons = station.answer_calls = bool(job["auto_answer"])  # ...but only if the operator chose that; otherwise it just listens, and answers only what the operator started
             station.available = bool(job["available"])  # and whether the operator is available for contacts
+            station.mail = self.mailroom  # the mail kept between runs: this station's numbered messages, mail it carries, receipts
+            station.carries = bool(job.get("carry_mail", True))  # whether it holds mail for other stations
             for text, to in job["messages"]:  # the queued messages
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
@@ -2379,7 +2481,8 @@ class Panel:  # the control panel window
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
                 rig.set_frequency(base_hz)  # put the radio back on the calling frequency
                 self.say("radio back on the calling frequency")  # confirm
-            self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)")  # the outcome for sent traffic
+            self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)" + (f"; holding {len(self.mailroom.bag)} message(s) for other stations" if self.mailroom.bag else ""))  # the outcome for sent traffic
+            self.save_mail()  # keep the mail
         except Exception as problem:  # report any failure instead of dying silently
             self.say(f"stopped by a problem: {problem}")  # what went wrong
             if self.signal_log is not None:  # a signal log was started
@@ -2417,6 +2520,7 @@ class Panel:  # the control panel window
         self.save_layout()  # remember the window's size and the dividers
         self.save_settings()  # remember the settings
         self.save_outbox()  # and the messages still waiting
+        self.save_mail()  # and the mail
         if self.worker is not None:  # a station or the monitor was running
             self.worker.join(timeout=3)  # give it a moment to unkey and release the sound card
         self.rigs.stop()  # stop the rig control program this panel started

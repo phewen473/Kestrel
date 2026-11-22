@@ -51,6 +51,17 @@ def is_group(call):  # callsign or group name?
     return not any(ch.isdigit() for ch in clean_call(call))  # every amateur callsign contains a digit; names such as ALL do not
 
 
+def call_hash(call):  # the short code that stands for a callsign in a mail notice
+    """Return a 16-bit code (1 to 65535) for `call`: the CRC-16 of its 48 address bits, with 0 kept to mean "empty"."""
+    return bits_to_int(crc16(call_to_bits(call))) or 1  # never 0, which marks an unused entry
+
+
+def message_hash(origin, msg_id):  # the short code that stands for a message ID in a mail notice
+    """Return a 16-bit code (1 to 65535) for the message numbered `msg_id` by `origin`: the CRC-16 of the origin's 48 address bits followed by the 16-bit number."""
+    from .bits import int_to_bits  # number -> bits
+    return bits_to_int(crc16(np.concatenate([call_to_bits(origin), int_to_bits(msg_id, 16)]))) or 1  # never 0, which marks an unused entry
+
+
 def link_id(first, second):  # the short number two locked stations put in every frame
     """Return the link number for the pair of stations: `first` is the one that beaconed, `second` the one that answered.
 
