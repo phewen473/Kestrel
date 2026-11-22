@@ -84,7 +84,7 @@ Two faults in the first design were found this way and fixed:
 | `adapt.py` | How a receiver chooses the level to ask for |
 | `simulate.py` | Stations joined by the channel simulator: `run_link` (two stations), `run_group` (one caller, several answering stations), `Path`, `describe` |
 | `params.py` | The starting values above |
-| `mail.py` | Store and forward: `Mailroom`, the mail a station keeps between contacts and runs (its numbered messages, mail it carries for others, receipts, other stations' notices), saved to a JSON file |
+| `mail.py` | Store and forward: `Mailroom`, the mail a station keeps between contacts and runs (its numbered messages, mail it carries for others, receipts, other stations' notices), saved to a JSON file. Since library interface 9 `Mailroom(...)` gives a `CompiledMailroom` (the store and its rules in C++, `cpp/src/mail.cpp`) when the compiled library is in use, and a `PythonMailroom` otherwise; both read and write the same file and behave the same (a test drives both with the same random calls and compares every answer, the news and the whole store) |
 
 ## Added with spec v0.16
 

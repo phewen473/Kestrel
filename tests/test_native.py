@@ -5,6 +5,8 @@ one (with the library switched off for that call) and compares. The tests
 are skipped when the library has not been built (python tools/build_native.py).
 """
 
+import json  # the mail store compares its file contents
+
 import numpy as np  # numerical arrays
 import pytest  # the test runner
 
@@ -433,3 +435,95 @@ def test_frame_fields_match_python(python_only):  # header, address block and co
     for frame_type, bits in zip((control.FRAME_TYPE_BEACON, control.FRAME_TYPE_ANSWER, control.FRAME_TYPE_ACK, control.FRAME_TYPE_IDENT, control.FRAME_TYPE_NOTICE), good):  # each
         _same(python_only, control.unpack, frame_type, bits)  # unpacked the same
     _same(python_only, control.unpack, 0, np.zeros(10, dtype=int))  # not a control frame
+
+
+def test_mail_store_matches_python():  # the compiled mail store (interface 9) against link/mail.py, call for call
+    from link.mail import CompiledMailroom, PythonMailroom  # the two stores
+    from modem.address import call_hash, message_hash  # short codes
+    rng = np.random.default_rng(11)  # repeatable
+    calls = ["Q1AAAA", "Q2BB", "Q3CCC", "Q4DD", "Q5EEE", "ALL"]  # the stations about
+    for run in range(6):  # several independent runs
+        clock = [1.8e9 if run % 2 else 1800000000]  # the wall clock (a whole number in some runs, as a clock may give)
+        py = PythonMailroom("Q1AAAA", clock=lambda: clock[0])  # the reference
+        cc = CompiledMailroom("Q1AAAA", clock=lambda: clock[0])  # the library's
+        py.next_id = 65530 + run  # the same first number (near the wrap)
+        cc._ask("init", "Q1AAAA", 65530 + run)  # in both
+        numbers = []  # own message numbers so far
+        held = []  # (origin, number, dest) held so far
+        for step in range(400):  # random calls
+            pick = int(rng.integers(0, 22))  # which method
+            who = calls[int(rng.integers(0, len(calls)))]  # a station
+            other = calls[int(rng.integers(0, len(calls)))]  # another
+            number = numbers[int(rng.integers(0, len(numbers)))] if numbers and rng.random() < 0.8 else int(rng.integers(0, 65536))  # a number, usually a real one
+            if pick == 0:  # queue a message
+                call = ("own_add", (f"text {int(rng.integers(0, 4))}", other if rng.random() < 0.95 else "bad call", set(numbers[:2]) if rng.random() < 0.3 else ()))  # sometimes a repeat
+            elif pick == 1:  # drop one
+                call = ("own_drop", (number,))  # taken back
+            elif pick == 2:  # carried
+                call = ("own_carried", (number, who))  # a carrier
+            elif pick == 3:  # may hand?
+                call = ("can_hand", (number, who))  # asked
+            elif pick == 4:  # delivered
+                call = ("own_done", (number, who if rng.random() < 0.5 else None))  # directly or by receipt
+            elif pick == 5:  # hold one
+                origin = other if rng.random() < 0.9 else "Q7GG"  # usually a known station
+                n = int(rng.integers(0, 40))  # its number
+                call = ("hold", (who, origin, n, f"held {n}", int(rng.integers(0, 4)), int(rng.integers(1, 63)), calls[int(rng.integers(0, len(calls)))]))  # held
+                held.append((origin, n, who))  # remembered
+            elif pick == 6 and held:  # one held
+                o, n, d = held[int(rng.integers(0, len(held)))]  # which
+                call = ("bag_item", (o, n))  # looked up
+            elif pick == 7:  # held for
+                call = ("held_for", (who,))  # listed
+            elif pick == 8:  # to pass
+                call = ("to_pass", (who,))  # one to pass on
+            elif pick == 9 and held:  # passed
+                o, n, d = held[int(rng.integers(0, len(held)))]  # which
+                call = ("passed", (o, n, who))  # passed on
+            elif pick == 10 and held:  # delivered held
+                o, n, d = held[int(rng.integers(0, len(held)))]  # which
+                call = ("delivered_held", (o, n, d))  # delivered
+            elif pick == 11:  # handled
+                call = ("mark_handled", (who, int(rng.integers(0, 40))))  # dealt with
+            elif pick == 12:  # handled?
+                call = ("is_handled", (who, int(rng.integers(0, 40))))  # asked
+            elif pick == 13:  # receipt
+                call = ("add_receipt", (who, int(rng.integers(0, 40)), other))  # announced
+            elif pick == 14:  # the notice
+                call = ("notice_lists", (list(rng.permutation(calls)[:int(rng.integers(0, 6))]),))  # with stations heard
+            elif pick == 15:  # a notice heard
+                codes = [call_hash(c) for c in calls]  # possible codes
+                receipts = [message_hash("Q1AAAA", n) for n in numbers[:2]] + [message_hash(o, n) for o, n, d in held[:2]]  # some that match
+                call = ("heard_notice", (who, codes[:int(rng.integers(0, 3))], receipts[:int(rng.integers(0, len(receipts) + 1))], codes[int(rng.integers(0, 3)):]))  # heard
+            elif pick == 16:  # reaches?
+                call = ("reaches", (who, other))  # asked
+            elif pick == 17:  # holds for me?
+                call = ("holds_for_me", (who,))  # asked
+            elif pick == 18:  # forget
+                call = ("forget_held_for_me", (who,))  # forgotten
+            elif pick == 19:  # tidy, after time passes
+                clock[0] += float(rng.choice([60.0, 3600.0, 7.5 * 3600, 30 * 3600]))  # time moves on
+                call = ("tidy", ())  # tidied
+            elif pick == 20:  # life hours
+                call = ("life_hours", (clock[0] + float(rng.uniform(-7200, 300000)),))  # for some expiry
+            else:  # room?
+                call = ("has_room", (who,))  # asked
+            name, args = call  # the call
+            results = []  # what each store gives
+            for room in (py, cc):  # both
+                try:  # it may raise
+                    results.append(("ok", getattr(room, name)(*args)))  # the answer
+                except Exception as err:  # noqa: BLE001 - the error is part of the comparison
+                    results.append(("error", type(err)))  # the kind of error
+            if name == "own_add" and results[0][0] == "ok" and results[0][1] not in numbers:  # a new message
+                numbers.append(results[0][1])  # remembered
+            assert results[0] == results[1], (run, step, name, args, results)  # the same answer
+            assert py.take_news() == cc.take_news(), (run, step, name)  # the same news
+            assert json.loads(json.dumps(py.to_dict())) == cc.to_dict(), (run, step, name)  # the same store
+            clock[0] += 1.0  # a second passes
+        reloaded = CompiledMailroom("Q1AAAA", clock=lambda: clock[0])  # the compiled store reading the Python store's file contents
+        reloaded._ask("from_dict", json.loads(json.dumps(py.to_dict())))  # loaded (and tidied)
+        py.tidy()  # the same tidy on the reference
+        assert json.loads(json.dumps(py.to_dict())) == reloaded.to_dict()  # the same
+        other_station = CompiledMailroom("Q9ZZ", clock=lambda: clock[0])  # another station
+        assert other_station._ask("from_dict", py.to_dict()) is False  # does not take Q1AAAA's mail

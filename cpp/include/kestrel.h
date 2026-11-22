@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 8  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits) */
+#define KES_ABI_VERSION 9  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -273,6 +273,19 @@ KES_API int kes_read_address_block(int frame_type, const uint8_t *bits, KesField
 KES_API int kes_levels_mask(const long *levels, size_t n);  /* modem/control.py levels_to_bits, as a number, or -1 */
 KES_API long kes_pack_control(int frame_type, const KesFields *fields, uint8_t *out);  /* modem/control.py pack_beacon / answer / ack / ident / notice: bits written (at most 192), or -1 */
 KES_API int kes_unpack_control(int frame_type, const uint8_t *bits, size_t n, KesFields *fields);  /* modem/control.py unpack: 0, or -1 */
+
+
+/* ---- Store and forward: the mail a station keeps (cpp/src/mail.cpp, since interface 9) ----
+ * link/mail.py Mailroom in C++. One store per station. Each request is JSON: {"op": a Mailroom method
+ * name, "args": [its arguments], "now": the clock}; `now` is the wall-clock time in seconds. The reply,
+ * collected with kes_mail_reply, is {"ok": the method's answer} or {"error": the Python error's name,
+ * "message": ...}. "to_dict" gives the mail file's contents and "from_dict" loads them, so the file is
+ * the same JSON as the Python version's. */
+typedef struct KesMail KesMail;  /* the store (its insides are private) */
+KES_API KesMail *kes_mail_new(void);  /* a new, empty store with a random first message number */
+KES_API void kes_mail_free(KesMail *mail);  /* free it */
+KES_API long kes_mail_request(KesMail *mail, const char *request, double now);  /* run one request; returns the reply's length in bytes, or -1 */
+KES_API long kes_mail_reply(KesMail *mail, char *out, size_t cap);  /* copy the last reply into out (no end mark); returns its length, or -1 if cap is too small */
 
 #ifdef __cplusplus  /* when included from C++ */
 }  /* end of the plain C names */

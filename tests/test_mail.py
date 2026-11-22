@@ -98,7 +98,12 @@ def test_hops_and_lifetime_travel_with_the_message():  # the address block of a 
     meet(a, b, 1)  # B takes a copy
     held = b.mail.bag[0]  # what B holds
     assert held["hops"] == 0 and abs(held["expires"] - (clock[0] + MAIL_LIFE_HOURS * 3600.0)) <= 3600.0  # handed on by its origin (no hops yet), with the full lifetime
-    held["hops"] = HOP_LIMIT  # pretend it has already been passed on as often as allowed
+    if hasattr(b.mail, "store"):  # the compiled store: its entries are copies, so change it through its own file contents
+        kept = b.mail.to_dict()  # the store as plain data
+        kept["bag"][0]["hops"] = HOP_LIMIT  # pretend it has already been passed on as often as allowed
+        b.mail._ask("from_dict", kept)  # put back
+    else:  # the Python store: its entries are the store itself
+        held["hops"] = HOP_LIMIT  # pretend it has already been passed on as often as allowed
     meet(c, b, 2)  # C beacons
     assert c.bulletins == [] and len(b.mail.bag) == 1  # B may not send it any further
 

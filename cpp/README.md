@@ -12,7 +12,7 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 8)
+## What is in it so far (interface version 9)
 
 | C function | Python reference | Agreement | Speed-up measured (sandbox) |
 |---|---|---|---|
@@ -32,6 +32,7 @@ quietly runs in pure Python, as it always has.
 | `kes_listener_*` (a listener object) | `live/listener.py` incremental search: the audio store with its stream numbers, blanking and notching each search, the pattern search of all levels side by side, the candidate list, fine timing, header reading, near misses | the same frames, near misses and tries, search by search | (Python keeps only the decoding of frames it is handed) |
 | `kes_encode_frame` | `modem/frame.py` `build_frame`, `build_control` (after the bits are packed): header and body coding, interleaving, pilots, tones, audio | identical audio | (the transmitter) |
 | `kes_crc16`, `kes_crc8`, `kes_call_to_bits`, `kes_bits_to_call`, `kes_call_hash`, `kes_message_hash`, `kes_link_id`, `kes_choose_packing`, `kes_text_to_bits`, `kes_bits_to_text`, `kes_header_bits`, `kes_address_block`, `kes_read_address_block`, `kes_pack_control`, `kes_unpack_control` (in `src/packing.cpp`) | `modem/crc.py`, `address.py`, `compress.py`, `text.py`, `control.py`, and `frame.py` `_header_bits`, `_address_block`, `_read_address_block` | the same bits, text and fields, and a refusal wherever Python raises an error | CRC-16 of a message body: 145 us -> 8 us |
+| `kes_mail_new`, `kes_mail_request`, `kes_mail_reply`, `kes_mail_free` (in `src/mail.cpp`) | `link/mail.py` `Mailroom`: store and forward, every method, by a JSON request naming the method | the same answers, news and stored mail, call for call; the same mail file | (the first of the link rules) |
 | `kes_set_threads`, `kes_threads` | - | - | - |
 
 The heavy loops (blanker, pattern search) share their work among up to 8 threads; each piece is
@@ -44,9 +45,10 @@ pure Python 52.6 s; interface 1 (three routines) 39.7 s; interface 3 15-18 s (sa
 
 The whole modem now has a compiled version: every heavy computation of the receiver and the
 transmitter, the continuous receiver's store and candidate list, and the packing and unpacking of
-every bit a frame carries. Still in Python: the glue that calls them in order (frame.py), the long
-beacon's soft-energy combining, the help for weak control frames (it calls the compiled Viterbi
-decoder), the link rules and store and forward, and the panel. Next: the link rules.
+every bit a frame carries. The link layer has begun: the mail store (store and forward) is in C++.
+Still in Python: the glue that calls the modem routines in order (frame.py), the long beacon's
+soft-energy combining, the help for weak control frames (it calls the compiled Viterbi decoder),
+the station's link rules (link/station.py, link/adapt.py), and the panel. Next: the link rules.
 
 The packing functions refuse (return -1) wherever the Python reference raises an error, and for
 any text outside 7-bit ASCII. The Python bridge then runs the Python code, which raises its own
@@ -58,6 +60,8 @@ worded error, so the program behaves the same either way.
 - `src/kestrel.cpp` — the signal routines: blanker, notch, searches, decoders, the listener, the transmitter's audio.
 - `src/packing.cpp` — packing and unpacking the bits: text (plain and compressed), addresses,
   grid locators, channel reports, the header, the address block, control-frame fields, check values.
+- `src/mail.cpp` — the mail store (store and forward), `link/mail.py`'s Mailroom in C++.
+- `src/json.hpp` — a small JSON reader and writer (the mail file, and the mail store's requests).
 - `third_party/pocketfft/` — the FFT (the same algorithm NumPy uses), header-only, BSD licence;
   its licence (`LICENSE.md`) travels with the library.
 - `CMakeLists.txt` — the build.
@@ -89,9 +93,9 @@ match the Python reference.
 
 ## Where things were left
 
-Interface version 8: the receiver (front end, body decoder, the continuous receiver's store and
-candidates), the transmitter's coding and audio, and the packing and unpacking of every field run
-compiled, tested against Python (including damaged and nonsense input). Next: the link rules and
-store and forward, so that Python is left only in the operator panel.
+Interface version 9: the receiver (front end, body decoder, the continuous receiver's store and
+candidates), the transmitter's coding and audio, the packing and unpacking of every field, and the
+mail store run compiled, tested against Python. Next: the station's link rules (link/adapt.py,
+then link/station.py), so that Python is left only in the operator panel.
 
 Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).

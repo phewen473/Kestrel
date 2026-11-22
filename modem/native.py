@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 8  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 9  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -152,6 +152,14 @@ def _load():  # find, open and check the library
         lib.kes_pack_control.restype = ctypes.c_long  # bits written, or -1
         lib.kes_unpack_control.argtypes = [ctypes.c_int, _BYTE_P, ctypes.c_size_t, _FIELDS_P]  # type, bits, count, fields
         lib.kes_unpack_control.restype = ctypes.c_int  # 0, or -1
+        lib.kes_mail_new.argtypes = []  # nothing
+        lib.kes_mail_new.restype = ctypes.c_void_p  # the store
+        lib.kes_mail_free.argtypes = [ctypes.c_void_p]  # the store
+        lib.kes_mail_free.restype = None  # returns nothing
+        lib.kes_mail_request.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double]  # store, request, time
+        lib.kes_mail_request.restype = ctypes.c_long  # the reply's length, or -1
+        lib.kes_mail_reply.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]  # store, room, its size
+        lib.kes_mail_reply.restype = ctypes.c_long  # the reply's length, or -1
         lib.kes_encode_frame.argtypes = [_BYTE_P, _BYTE_P, ctypes.c_size_t, ctypes.c_int, _LONG_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t,
                                          ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, audio
         lib.kes_encode_frame.restype = ctypes.c_long  # samples written, or -1
@@ -760,3 +768,40 @@ def unpack_control(frame_type, bits):  # control.py unpack
     b = _bits(bits)  # as bytes
     fields = _Fields()  # room
     return fields if _lib.kes_unpack_control(int(frame_type), _byte_p(b), len(b), ctypes.byref(fields)) == 0 else None  # the fields, or Python decides
+
+
+# ---- The mail store (interface 9) ----
+
+_ERRORS = {"ValueError": ValueError, "RuntimeError": RuntimeError, "TypeError": TypeError, "AttributeError": AttributeError, "KeyError": KeyError}  # the library's error names
+
+
+class CompiledMail:  # the library's mail store (link/mail.py builds its Mailroom on this when the library is in use)
+    """A handle on one mail store inside the library; request() runs one Mailroom method there."""
+
+    def __init__(self):  # a new, empty store
+        self._handle = _lib.kes_mail_new()  # made in the library
+        self._lib = _lib  # kept, so the store can be freed even if the library is later switched off (as the tests do)
+
+    def __del__(self):  # freed with this object
+        if getattr(self, "_handle", None):  # made
+            self._lib.kes_mail_free(self._handle)  # freed
+            self._handle = None  # once
+
+    def request(self, op, args=(), now=0.0):  # run one method
+        """Return what the store's method `op` returns for `args` at time `now`, or raise the error Python's Mailroom would."""
+        import json  # requests and replies are JSON
+        text = json.dumps({"op": op, "args": list(args), "now": now}, default=lambda v: v.item() if hasattr(v, "item") else list(v))  # the request (NumPy numbers and tuples made plain)
+        length = self._lib.kes_mail_request(self._handle, text.encode("utf-8"), float(now))  # run
+        if length < 0:  # refused outright
+            raise RuntimeError("the mail store refused the request")  # should not happen
+        room = ctypes.create_string_buffer(length + 1)  # space for the reply
+        self._lib.kes_mail_reply(self._handle, room, length + 1)  # collected
+        reply = json.loads(room.raw[:length].decode("utf-8"))  # read
+        if "error" in reply:  # the method raised
+            raise _ERRORS.get(reply["error"], RuntimeError)(reply.get("message", ""))  # the same kind of error
+        return reply["ok"]  # the answer
+
+
+def compiled_mail():  # a store, when the library is in use
+    """Return a new CompiledMail, or None when the library is not in use."""
+    return CompiledMail() if _lib is not None else None  # one store

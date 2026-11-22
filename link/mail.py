@@ -26,7 +26,7 @@ import random  # the first message number of a new station
 import threading  # the lock between the station's thread and the panel
 import time  # the wall clock
 
-from modem import call_hash, message_hash  # the short codes of a mail notice
+from modem import call_hash, message_hash, native  # the short codes of a mail notice; the compiled library
 from modem.address import clean_call  # tidies a callsign
 from modem.params import MSG_ID_BITS, NOTICE_SLOTS  # message numbers, notice list length
 
@@ -40,7 +40,7 @@ def key(origin, msg_id):  # how a message ID is written in the store
     return f"{clean_call(origin)}#{int(msg_id)}"  # callsign and number
 
 
-class Mailroom:  # one station's mail
+class PythonMailroom:  # one station's mail, kept in Python (the reference the compiled store is tested against)
     """The mail one station keeps between contacts and between runs (see the module notes)."""
 
     def __init__(self, call="", clock=time.time):  # an empty mailroom
@@ -281,3 +281,85 @@ class Mailroom:  # one station's mail
             setattr(room, name, data.get(name, getattr(room, name)))  # as kept
         room.tidy()  # anything that expired while the program was closed goes now
         return room  # ready
+
+
+class CompiledMailroom:  # one station's mail, kept in the compiled library (cpp/src/mail.cpp)
+    """The same Mailroom, its store and rules in C++. Every method asks the library; the attributes the panel reads (own, bag, receipts ...) are snapshots."""
+
+    def __init__(self, call="", clock=time.time):  # an empty mailroom
+        self.store = native.compiled_mail()  # the store in the library
+        self.clock = clock  # the wall clock (tests give their own)
+        self.lock = threading.RLock()  # kept for callers that take it (the library has its own)
+        self._ask("init", call, random.randrange(1 << MSG_ID_BITS))  # the callsign, and a random first number (as PythonMailroom)
+
+    def _ask(self, op, *args):  # run one method in the library
+        """Return the answer of the library's `op` for `args`, at the clock's time."""
+        return self.store.request(op, args, self.clock())  # asked
+
+    # The attributes PythonMailroom keeps, read from the library.
+    call = property(lambda self: self._ask("to_dict")["call"])  # the station's callsign
+    next_id = property(lambda self: self._ask("to_dict")["next_id"])  # the next message number
+    own = property(lambda self: self._ask("to_dict")["own"])  # own messages waiting
+    bag = property(lambda self: self._ask("to_dict")["bag"])  # messages held for others
+    handled = property(lambda self: self._ask("to_dict")["handled"])  # message IDs dealt with
+    receipts = property(lambda self: self._ask("to_dict")["receipts"])  # receipts announced
+    reach = property(lambda self: self._ask("to_dict")["reach"])  # notices heard
+
+    def new_number(self): return self._ask("new_number")  # the next message number
+    def own_add(self, text, dest, taken=()): return self._ask("own_add", text, dest, sorted(int(n) for n in taken))  # a message queued
+    def own_drop(self, number): return self._ask("own_drop", int(number))  # taken back
+    def own_item(self, number): return self._ask("own_item", int(number))  # one waiting message
+    def own_carried(self, number, carrier): return self._ask("own_carried", int(number), carrier)  # a carrier took it
+    def can_hand(self, number, partner): return self._ask("can_hand", int(number), partner)  # may it be handed on?
+    def own_done(self, number, via=None): return self._ask("own_done", int(number), via)  # delivered
+    def life_hours(self, expires): return self._ask("life_hours", expires)  # the lifetime a frame carries
+    def has_room(self, origin): return self._ask("has_room", origin)  # room for another?
+    def holding(self, origin, number): return self._ask("holding", origin, int(number))  # held already?
+    def hold(self, dest, origin, number, text, hops, life_hours, came_from): return self._ask("hold", dest, origin, int(number), text, int(hops), life_hours, came_from)  # held
+    def bag_item(self, origin, number): return self._ask("bag_item", origin, int(number))  # one held message
+    def held_for(self, dest): return self._ask("held_for", dest)  # held for one station
+    def to_pass(self, partner): return self._ask("to_pass", partner)  # one to pass on
+    def passed(self, origin, number, carrier): return self._ask("passed", origin, int(number), carrier)  # passed on
+    def delivered_held(self, origin, number, dest): return self._ask("delivered_held", origin, int(number), dest)  # delivered
+    def mark_handled(self, origin, number): return self._ask("mark_handled", origin, int(number))  # dealt with
+    def is_handled(self, origin, number): return self._ask("is_handled", origin, int(number))  # dealt with?
+    def add_receipt(self, origin, number, dest): return self._ask("add_receipt", origin, int(number), dest)  # announced
+    def notice_lists(self, heard_calls=()): return tuple(self._ask("notice_lists", list(heard_calls)))  # the next notice
+    def heard_notice(self, origin, held, receipts, heard): return self._ask("heard_notice", origin, [int(c) for c in held], [int(c) for c in receipts], [int(c) for c in heard])  # a notice heard
+    def reaches(self, station, dest): return self._ask("reaches", station, dest)  # does it hear dest?
+    def holds_for_me(self, station): return self._ask("holds_for_me", station)  # mail waiting there?
+    def forget_held_for_me(self, station): return self._ask("forget_held_for_me", station)  # no longer
+    def tidy(self): return self._ask("tidy")  # expired mail goes
+    def take_news(self): return [tuple(entry) for entry in self._ask("take_news")]  # news for the panel
+    def to_dict(self): return self._ask("to_dict")  # everything worth keeping
+
+    def save(self, path):  # write the mail to a file (the same file PythonMailroom writes)
+        data = json.dumps(self.to_dict(), indent=1)  # as text
+        temporary = path + ".new"  # written first, then put in place
+        with open(temporary, "w", encoding="utf-8") as handle:  # the new file
+            handle.write(data)  # the mail
+        os.replace(temporary, path)  # in place of the old one
+
+    @classmethod  # makes a CompiledMailroom
+    def load(cls, path, call="", clock=time.time):  # read the mail from a file
+        """Return the mail kept in `path`, or an empty store if there is none, it cannot be read, or it is another station's."""
+        room = cls(call, clock)  # an empty one to fill
+        try:  # the file may be missing or damaged
+            with open(path, encoding="utf-8") as handle:  # the kept mail
+                data = json.load(handle)  # as plain data
+        except (OSError, ValueError):  # nothing usable
+            return room  # start empty
+        room._ask("from_dict", data)  # taken in (another station's mail is ignored), and tidied
+        return room  # ready
+
+
+class Mailroom:  # one station's mail: the compiled store when the library is in use, otherwise the Python one
+    """Make a CompiledMailroom when the compiled library is in use, else a PythonMailroom; both behave the same."""
+
+    def __new__(cls, call="", clock=time.time):  # which kind to make
+        return (CompiledMailroom if native.compiled_mail is not None and native._lib is not None else PythonMailroom)(call, clock)  # the compiled one when it can be
+
+    @staticmethod  # reads a file
+    def load(path, call="", clock=time.time):  # read the mail from a file
+        """Return the mail kept in `path` (see PythonMailroom.load)."""
+        return (CompiledMailroom if native._lib is not None else PythonMailroom).load(path, call, clock)  # whichever kind is in use
