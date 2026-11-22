@@ -269,6 +269,34 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         """Close the contact once any traffic under way is finished (for a lock that was being kept open)."""
         self.close_when_done = True  # from now on, close as soon as neither side has anything to send
 
+    def cancel(self, now):  # the operator stops calling
+        """Stop a directed call or a beacon round that has not made a contact, and drop a waiting long beacon and broadcast frames.
+
+        Return a few words saying what was stopped, or "" when there was
+        nothing to stop. A contact under way is left alone (end() closes
+        it properly). The station goes back to listening: whoever runs it
+        sees RELEASED and starts afresh, as after any contact.
+        """
+        if self.state != "IDLE" or (self.role == "answerer" and self.pending is not None):  # a contact under way, or an answer waiting for its confirmation
+            return ""  # not this station's call-up to stop
+        stopped = []  # what is being stopped
+        if self.role == "caller":  # a directed call
+            stopped.append(f"calling {self.target}")  # that
+        elif self.role == "beaconer":  # a beacon round
+            stopped.append("beaconing")  # that
+        if self.long_waiting is not None:  # a long beacon waiting to go
+            stopped.append("the long beacon")  # that too
+        if self.broadcasts:  # broadcast frames waiting to go
+            stopped.append(f"{len(self.broadcasts)} broadcast frame(s)")  # those too
+        if not stopped:  # nothing under way
+            return ""  # nothing to stop
+        self.long_waiting, self.broadcasts = None, []  # nothing more waits to go out
+        self.state, self.pending, self.partner, self.link, self.candidates = "RELEASED", None, "", -1, []  # no partner, nothing awaited
+        self.role, self.single, self.leads, self.target, self.calls, self.beacons = "answerer", False, False, "", 0, 0  # back to listening afterwards
+        words = "stopped " + ", ".join(stopped) + " (operator)"  # what happened
+        self._say(now, words)  # in the log
+        return words  # for whoever runs the station
+
     def tuning(self, now):  # where should the radio be tuned at this moment?
         """Return the offset from the calling frequency, in hertz, that the radio should be on at time `now`."""
         if self.tune_at is not None and now >= self.tune_at:  # a retune that was decided earlier is now due
@@ -1217,6 +1245,7 @@ class CompiledStation:  # one station, its rules in the compiled library (cpp/sr
     def unqueue(self, text, to=None): return self._ask("unqueue", text, to)  # take a message back
     def mail_waiting_at(self, call): return self._ask("mail_waiting_at", call)  # mail waiting there?
     def end(self): self._ask("end")  # close when done
+    def cancel(self, now): return self._ask("cancel", now)  # stop calling
     def tuning(self, now): return self._ask("tuning", now)  # where the radio should be
     def next_wake(self): return self._ask("next_wake")  # when to poll next
     def new_contact(self): self._ask("new_contact")  # ready for another contact

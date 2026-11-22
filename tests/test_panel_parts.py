@@ -88,3 +88,40 @@ def test_installed_program_keeps_operator_files_in_the_user_profile(monkeypatch,
     folder = paths.data_dir()  # where the installed program keeps the operator's files
     assert folder.startswith(str(tmp_path)) and os.path.isdir(folder)  # in the profile, created when first needed
     assert os.listdir(folder) == []  # and empty: a fresh installation carries nobody's settings
+
+
+def test_band_names_follow_the_dial():  # the Band columns of the panel's lists
+    from live.bands import band_of  # the lookup under test
+    assert [band_of(khz) for khz in (1840.0, 3582.5, 5357.0, 7110.0, 10147.0, 14112.5, 18100.0, 21074.0, 24915.0, 28074.0, 50313.0)] == ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m"]  # every HF band and 6 m
+    assert band_of(0.0) == band_of(None) == band_of("") == band_of(9000.0) == ""  # no frequency, or none of the bands: nothing shown
+
+
+def test_sound_output_can_be_cut_short(monkeypatch):  # the Stop calling key takes a call off the air at once
+    import sys  # to stand in for the sound-card library
+    import threading  # the operator's key arrives from another thread
+    import time  # the clock
+    import types  # a stand-in module
+
+    import numpy as np  # numerical arrays
+
+    from live.audio import AudioOut  # the output under test
+    calls = []  # what the stand-in was asked to do
+
+    class Stream:  # a stream that would play for two seconds
+        def __init__(self):  # started now
+            self.until = time.monotonic() + 2.0  # when it would end
+
+        @property  # read like sounddevice's
+        def active(self):  # still playing?
+            return time.monotonic() < self.until and "stop" not in calls  # until its end, or until stopped
+
+    stream = Stream()  # the one stream
+    fake = types.SimpleNamespace(play=lambda *a, **k: calls.append("play"), get_stream=lambda: stream, stop=lambda: calls.append("stop"), wait=lambda: calls.append("wait"))  # the stand-in library
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)  # used by play()
+    out = AudioOut()  # the output
+    threading.Timer(0.2, out.abort).start()  # the operator presses Esc after a fifth of a second
+    started = time.monotonic()  # when playing began
+    out.play(np.zeros(12000 * 2))  # two seconds of audio
+    assert time.monotonic() - started < 1.0 and calls == ["play", "stop"] and not out.playing  # back almost at once, the sound stopped, nothing playing
+    out.abort()  # pressing it again with nothing playing
+    assert not out.cut  # does nothing

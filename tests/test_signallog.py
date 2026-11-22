@@ -176,3 +176,27 @@ def test_signal_report_summarises_a_log(tmp_path):  # tools/signal_report.py
     assert "40" in text and "answer" in text and "ALC at half scale" in text  # the band, the transmission and the ALC warning
     written = signal_report.write_tables(events, str(tmp_path / "csv"))  # the CSV tables
     assert any(path.endswith("rx.csv") for path in written)  # including the frames
+
+
+def test_long_beacon_candidates_are_logged(tmp_path):  # the long beacon's level (7) is not one of the speed levels: it once stopped the station with "tuple index out of range"
+    from live.signallog import SignalLog  # the log
+    from modem.params import LONG_LEVEL  # the long beacon's level number
+
+    log = SignalLog(str(tmp_path), mode="on")  # on
+    step = {"level": LONG_LEVEL, "start": 0, "sample": 70000, "offset_hz": 2.0, "quality": 30.0, "header": "long", "ok": False, "reason": "body check failed"}  # a long-beacon candidate, as the listener traces it
+    log.search(None, [dict(step)])  # logged
+    log.search(None, [dict(step, sample=70500)])  # the same signal a moment later: not logged again
+    events = [event for event in lines_of(str(tmp_path)) if event["event"] == "search"]  # the search lines
+    assert len(events) == 1 and events[0]["level"] == LONG_LEVEL  # logged once, as the long beacon
+
+
+def test_a_fault_in_the_signal_log_never_stops_the_station(tmp_path):  # the log helps find problems; it must not become one
+    from live.signallog import Guarded, SignalLog  # the log and its guard
+
+    said = []  # what the operator is told
+    log = Guarded(SignalLog(str(tmp_path), mode="on"), said.append)  # guarded, as the panel uses it
+    log.search(None, [{"level": "nonsense", "sample": 5, "quality": 30.0}])  # a trace the log cannot handle
+    log.search(None, [{"level": "nonsense", "sample": 9, "quality": 30.0}])  # and again
+    assert len(said) == 1 and "the station carries on" in said[0]  # reported once, nothing raised
+    assert any(name.startswith("signal_log_fault_") for name in os.listdir(str(tmp_path)))  # with the details saved
+    assert log.on and log.searches == 2  # attributes still read through

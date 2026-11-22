@@ -35,6 +35,8 @@ A plain beacon is followed by one 39-second reply slot. If three stations all an
 
 A sender never reports a message as delivered unless its acknowledgment was heard. If the message arrived but the acknowledgment was lost, the sender offers it again and the receiver answers "already have it".
 
+- **Stopping a call-up.** `station.cancel(now)` stops a directed call or a beacon round that has not made a contact, and drops a waiting long beacon and broadcast frames; the station is RELEASED (whoever runs it starts afresh) and listens afterwards. It returns what was stopped, or "" when nothing was (a contact in progress is left to `end()`). The panel's Stop calling key (Esc) uses it.
+
 ## Starting values (`params.py`)
 
 These are first settings, chosen in simulation and meant to be tuned on the air.

@@ -420,3 +420,28 @@ def test_a_waiting_message_can_be_taken_back():  # a queued message can be remov
     assert station.unqueue("FIRST", "Q2BB") is False  # it cannot be removed twice
     station.plan = [{"text": "SECOND", "part": 0, "parts": 1}]  # the remaining message is now under way
     assert station.unqueue("SECOND") is False and station.outbox == ["SECOND"]  # a message being sent is left alone
+
+
+def test_operator_can_stop_a_call():  # Esc / Stop calling: a directed call (Respond, Ctrl+Y) stops at once
+    a = Station("Q1AAAA", "EM92")  # the calling station, normally listening
+    a.listen()  # listening
+    a.call_once("Q2BB")  # Respond: call one station by name
+    first = a.poll(0.0)  # the first call goes out
+    assert first is not None and first.kind == "call" and a.pending == "confirm"  # waiting for a reply
+    assert a.cancel(5.0) == "stopped calling Q2BB (operator)"  # stopped
+    assert a.state == "RELEASED" and a.role == "answerer" and a.pending is None and a.target == ""  # nothing awaited, listening afterwards
+    a.new_contact()  # what the live loop does next
+    assert a.poll(100.0) is None and a.role == "answerer" and a.state == "IDLE"  # no more calls
+    assert a.cancel(101.0) == ""  # nothing left to stop
+    assert any("stopped calling Q2BB (operator)" in line for line in a.log)  # in the log
+
+
+def test_stop_leaves_a_contact_alone_and_clears_waiting_beacons():  # Stop is for call-ups only
+    a = Station("Q1AAAA", "EM92")  # a station
+    a.listen()  # listening
+    a.broadcast("Net at 2100Z.")  # a broadcast waiting
+    a.long_beacon()  # and a long beacon
+    assert "the long beacon" in a.cancel(1.0) and not a.broadcasts and a.long_waiting is None  # both dropped
+    b = Station("Q2BB", "FN31")  # another
+    b.state, b.partner, b.link = "LOCKED", "Q1AAAA", 77  # in a contact
+    assert b.cancel(2.0) == "" and b.state == "LOCKED"  # left to End contact

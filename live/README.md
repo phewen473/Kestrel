@@ -47,6 +47,10 @@ Since 0.31R1 the listener also helps weak control frames: it notches steady sign
 
 Since library interface 7 the listener's audio store, its stream numbers and its candidate list live in the compiled library (`modem/native.py` CompiledListener): the library blanks and notches the store, searches all levels side by side, times candidates finely, reads headers and reports near misses, and hands the listener each frame that is ready; the listener decodes it with the same Python code as before and tells the library what to cut out. `Listener(compiled=False)` keeps the whole Python version, the reference that tests compare against.
 
+`AudioOut.abort()` cuts the transmission being played short (the panel's Stop calling key); `play()` returns within a fiftieth of a second and the runner takes the transmitter off. `bands.band_of(dial_khz)` names the amateur band of a dial frequency ("20m"), for the panel's Band columns.
+
+`signallog.Guarded(log, say)` wraps a SignalLog so that a fault inside it is reported once (with a `signal_log_fault_...txt` file beside the log) and the station carries on; the panel uses it. (On 22 Nov 2026 a long-beacon candidate, traced at level 7, made the log index the five speed levels and stopped the station with "tuple index out of range"; fixed, and guarded against.)
+
 ## Rig control
 
 Kestrel controls the radio through **Hamlib's rigctld**, the same rig-control engine WSJT-X uses. Any radio Hamlib supports can be tuned and keyed, and rigctld can run on another computer on the network. Kestrel does not include Hamlib; it talks to rigctld over a network socket.

@@ -216,7 +216,9 @@ class SignalLog:  # writes the signal log
                 continue  # not logged
             sample = step.get("sample", -1)  # where it began in the stream
             from modem import LEVELS  # the speed levels (imported here: the log is often used without the modem loaded first)
-            tone = LEVELS[step["level"]].samples  # one tone length at its level
+            from modem.longbeacon import LONG  # the long beacon's own tone length
+            level = step.get("level", 0)  # the level the candidate was searched at (7 for the long beacon, which is not one of the speed levels)
+            tone = (LEVELS[level] if 0 <= level < len(LEVELS) else LONG).samples  # one tone length at its level (once LEVELS[7], which stopped the station: "tuple index out of range")
             key = (step["level"], sample // (2 * tone))  # the same signal found again lands in the same place, give or take two tones
             outcome = (step.get("header", ""), step.get("ok"), step.get("reason"))  # what became of it
             known = self.seen.get(key) or self.seen.get((key[0], key[1] - 1)) or self.seen.get((key[0], key[1] + 1))  # logged already, here or in a neighbouring place
@@ -335,3 +337,43 @@ class SignalLog:  # writes the signal log
                 pass  # carry on with the next
             total -= size  # that much less
         return removed  # how many
+
+
+class Guarded:  # a signal log whose faults never stop the station
+    """Wrap a SignalLog so that an error inside any of its methods is reported once (with its traceback saved beside the log) and then ignored.
+
+    The signal log is there to help find problems; it must never become
+    one. Reading and setting its attributes passes straight through.
+    """
+
+    def __init__(self, log, say=print):  # wrap `log`; `say` tells the operator
+        object.__setattr__(self, "_log", log)  # the real log
+        object.__setattr__(self, "_say", say)  # how to tell the operator
+        object.__setattr__(self, "_told", set())  # faults reported already (by method and kind of error)
+
+    def __getattr__(self, name):  # log.<name>
+        value = getattr(self._log, name)  # the real attribute
+        if not callable(value):  # a plain value
+            return value  # as it is
+
+        def safe(*args, **kwargs):  # the method, guarded
+            try:  # the real work
+                return value(*args, **kwargs)  # done
+            except Exception as problem:  # noqa: BLE001 - any fault in the log is reported and the station carries on
+                key = (name, type(problem).__name__)  # which fault
+                if key not in self._told:  # not reported yet
+                    self._told.add(key)  # once is enough
+                    import traceback  # the details
+                    path = os.path.join(self._log.folder, time.strftime("signal_log_fault_%Y%m%d_%H%M%SZ.txt", time.gmtime()))  # beside the log
+                    try:  # the folder may be unwritable too
+                        with open(path, "w", encoding="utf-8") as handle:  # the details
+                            handle.write(traceback.format_exc())  # where it happened
+                    except OSError:  # it is
+                        path = "(could not be saved)"  # say so
+                    self._say(f"signal log problem in {name}: {problem!r}; the station carries on (details: {path})")  # tell the operator
+                return None  # nothing logged this time
+
+        return safe  # the guarded method
+
+    def __setattr__(self, name, value):  # log.<name> = value
+        setattr(self._log, name, value)  # on the real log

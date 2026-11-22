@@ -176,6 +176,7 @@ class AudioOut:  # the transmitting side of the sound card
         self.last_peak_db = -120.0  # the peak level of the last transmission, in dBFS
         self.sending = None  # the audio now being played, at the card's rate, for a transmit scope
         self.started = 0.0  # when it began to play (time.monotonic)
+        self.cut = False  # set by abort(): the transmission under way stops at once
 
     def spectrum(self, top_hz=3000.0, points=512, low_hz=0.0):  # what is going out right now, for a transmit scope
         """Return the spectrum of the audio being played at this moment (`points` levels in dBFS from `low_hz` to `top_hz`), or None when nothing is playing."""
@@ -196,8 +197,20 @@ class AudioOut:  # the transmitting side of the sound card
         samples = to_card_rate(padded, self.gain)  # converted and scaled
         self.last_peak_db = level_dbfs(samples)[1]  # how close to full scale it goes, for the transmit meter
         self.sending, self.started = samples, time.monotonic()  # let a transmit scope follow it
-        self.playing = True  # the transmission is on its way
+        self.playing, self.cut = True, False  # the transmission is on its way, not cut short
         try:  # whatever happens...
-            sd.play(samples, CARD_RATE, device=self.device, blocking=True, latency="high")  # play with generous buffering, wait for the end
+            sd.play(samples, CARD_RATE, device=self.device, blocking=False, latency="high")  # start playing, with generous buffering
+            stream = sd.get_stream()  # the stream it plays on
+            while stream.active and not self.cut:  # until it ends, or the operator stops it
+                time.sleep(0.02)  # look fifty times a second
+            if self.cut:  # stopped by the operator
+                sd.stop()  # silence at once (the caller then takes the transmitter off)
+            else:  # it ran to its end
+                sd.wait()  # tidy up, and pass on any sound-card error
         finally:  # ...note that it has ended
-            self.playing = False  # no longer playing
+            self.playing, self.cut = False, False  # no longer playing, and ready for the next transmission
+
+    def abort(self):  # the operator stops the transmission on the air (safe to call from any thread)
+        """Cut the transmission now being played short; play() then returns and the transmitter comes off."""
+        if self.playing:  # something is going out
+            self.cut = True  # play() stops it within a fiftieth of a second

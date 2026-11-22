@@ -58,6 +58,25 @@ DATA_SEGMENTS_KHZ = (  # where U.S. amateurs may send data (RTTY and data) on HF
 )  # end of the table (General class starts 25 kHz higher on 80, 40, 20 and 15 metres)
 
 
+BAND_EDGES_KHZ = (  # the amateur bands, as operators name them, with their edges in kHz (U.S. allocations; 60 m is its five channels' span)
+    ("160m", 1800.0, 2000.0), ("80m", 3500.0, 4000.0), ("60m", 5330.0, 5410.0), ("40m", 7000.0, 7300.0), ("30m", 10100.0, 10150.0),  # 160 to 30 metres
+    ("20m", 14000.0, 14350.0), ("17m", 18068.0, 18168.0), ("15m", 21000.0, 21450.0), ("12m", 24890.0, 24990.0), ("10m", 28000.0, 29700.0),  # 20 to 10 metres
+    ("6m", 50000.0, 54000.0), ("2m", 144000.0, 148000.0), ("70cm", 420000.0, 450000.0),  # VHF and UHF
+)  # end of the table
+
+
+def band_of(dial_khz):  # which band a dial frequency is in
+    """Return the band name ("20m", "40m" ...) for a dial frequency in kHz, or "" when it is unknown or outside the amateur bands."""
+    try:  # the frequency may be missing
+        khz = float(dial_khz)  # as a number
+    except (TypeError, ValueError):  # not a number
+        return ""  # unknown
+    for name, low, high in BAND_EDGES_KHZ:  # each band
+        if low <= khz <= high:  # inside it
+            return name  # its name
+    return ""  # outside every band (or no frequency known)
+
+
 def in_data_segment(dial):  # may Kestrel transmit here at all?
     """Return the band name (such as "80") when the whole signal for dial frequency `dial` (kHz) lies inside a U.S. amateur data segment, else None."""
     low, high = signal_khz(dial)  # the signal's edges

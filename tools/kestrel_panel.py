@@ -48,10 +48,10 @@ from modem import native  # the compiled modem library, to say in About and --ch
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
-from live.bands import add_user_frequency, all_frequencies, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
+from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
 from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir  # recording the received audio to WAV files, and numbering every sample received  # noqa: E402
 from live.runner import attach_signal_log, feed_from, log_tick  # the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
-from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
+from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, Guarded, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
@@ -96,13 +96,14 @@ NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tun
 LOCKED = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
 SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("F1", "this list"), ("F2", "Listen (nothing is sent unless you start it)"), ("F3", "Monitor (receive only)"), ("F4", "Off (stop receiving and transmitting)"),  # (continued)
-    ("Ctrl+U", "Available / Unavailable for contacts"), ("F5", "Beacon (call anyone) on or off"), ("F6", "Call the station in the To box"), ("F7", "End the contact"), ("F8", "Stations heard in the last 48 hours"),  # (continued)
+    ("Ctrl+U", "Available / Unavailable for contacts"), ("F5", "Beacon (call anyone) on or off"), ("F6", "Call the station in the To box"), ("F7", "End the contact (or, with no contact, stop calling)"), ("F8", "Stations heard in the last 48 hours"),  # (continued)
     ("F9", "Telemetry received"), ("F10", "Mail held and carried"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
     ("Ctrl+Y", "Respond: call the station selected in the Stations heard list"),  # (continued)
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
     ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
-    ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"), ("Esc", "close a window"))  # the rest
+    ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
+    ("Esc", "in the main window: stop calling (a call started with Respond or Call station, a beacon round, a long beacon, broadcasts waiting) and cut such a transmission short; in other windows: close the window"))  # the rest
 
 
 def load_settings():  # read the remembered settings
@@ -250,6 +251,7 @@ class Panel:  # the control panel window
         self.audio = None  # the sound-card input, while a station or the monitor is running
         self.sink = None  # the sound-card output, while a station is running (its level follows the transmit slider)
         self.tx_active = False  # True while the transmitter is keyed
+        self.station_now = 0.0  # the running station's clock at its last look (its log lines are stamped with it)
         self.tx_kind = ""  # what is being sent, while the transmitter is keyed
         self.alc_warned = False  # whether the operator has been told the ALC is high during this transmission
         self.signal_log = None  # the signal log of the run under way, if any
@@ -320,7 +322,8 @@ class Panel:  # the control panel window
         options = ttk.Frame(root)  # the row of choices about how a contact is run
         options.grid(row=4, column=0, sticky="w", padx=8, pady=2)  # place it under the buttons
         ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
-        ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 16))  # close the contact properly, with identification
+        ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 4))  # close the contact properly, with identification
+        ttk.Button(options, text="Stop calling  Esc", command=self.stop_calling).pack(side="left", padx=(0, 16))  # stop a call or beacon round that has not made a contact, cutting it short on the air
         ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
         self.working = ttk.Combobox(options, state="readonly", width=54)  # stay on the calling frequency, or move to a numbered channel
         self.working.pack(side="left", padx=4)  # place it
@@ -344,7 +347,7 @@ class Panel:  # the control panel window
         split.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # it takes the rest of the window
         self.panes["lists"] = lists = ttk.PanedWindow(split, orient="horizontal")  # the three lists, side by side, with dividers between them
         split.add(lists, weight=1)  # the upper row
-        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
+        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
         change.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(change, text="Edit message", command=self.edit_message).pack(side="left", padx=(0, 4))  # change the selected waiting message
@@ -353,9 +356,15 @@ class Panel:  # the control panel window
         self.send_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a message brings up
         self.send_menu.add_command(label="Edit message...", command=self.edit_message)  # change it
         self.send_menu.add_command(label="Delete message", accelerator="Del", command=self.remove_message)  # take it back
+        self.send_menu.add_separator()  # then the list as a whole
+        self.send_menu.add_command(label="Select all", accelerator="Ctrl+A", command=lambda: self.select_all_rows(self.to_send))  # every message
+        self.send_menu.add_command(label="Copy", accelerator="Ctrl+C", command=lambda: self.copy_rows(self.to_send))  # to the clipboard
+        self.send_menu.add_command(label="Clear finished messages", command=self.clear_finished)  # delivered and sent ones leave the list; waiting ones stay
+        self.to_send.bind("<Control-a>", lambda event: (self.select_all_rows(self.to_send), "break")[1])  # Ctrl+A in the list
+        self.to_send.bind("<Control-c>", lambda event: (self.copy_rows(self.to_send), "break")[1])  # Ctrl+C in the list
         self.to_send.bind("<Button-3>", self.send_menu_at)  # a right click selects the message under the pointer and shows the menu
         self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
-        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
+        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
         keep = ttk.Frame(self.stations.master)  # buttons under that list
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(keep, text="Respond  Ctrl+Y", command=self.respond).pack(side="left", padx=(0, 8))  # call the selected station by name (answer its beacon by hand)
@@ -363,12 +372,24 @@ class Panel:  # the control panel window
         ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
         ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
         self.stations.bind("<Double-1>", lambda event: self.pick_station())  # a double-click chooses the callsign for the next message or call
+        self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
+        self.station_menu.add_command(label="Respond (call this station)", accelerator="Ctrl+Y", command=self.respond)  # call it by name
+        self.station_menu.add_command(label="Save as contact", command=self.save_contact)  # keep it
+        self.station_menu.add_command(label="Remove contact", command=self.remove_contact)  # forget it
+        self.station_menu.add_command(label="Show last 48 hours", command=self.station_history)  # its receptions
+        self.station_menu.add_separator()  # then the list as a whole
+        self.station_menu.add_command(label="Select all", accelerator="Ctrl+A", command=lambda: self.select_all_rows(self.stations))  # every station
+        self.station_menu.add_command(label="Copy", accelerator="Ctrl+C", command=lambda: self.copy_rows(self.stations))  # to the clipboard
+        self.station_menu.add_command(label="Clear stations heard (saved contacts stay)", command=self.clear_heard)  # empty the list of stations heard
+        self.stations.bind("<Control-a>", lambda event: (self.select_all_rows(self.stations), "break")[1])  # Ctrl+A in the list
+        self.stations.bind("<Control-c>", lambda event: (self.copy_rows(self.stations), "break")[1])  # Ctrl+C in the list
+        self.stations.bind("<Button-3>", self.station_menu_at)  # a right click selects the station under the pointer and shows the menu
         self.stations.bind("<Return>", lambda event: self.pick_station())  # so does Enter
         for call in sorted(self.contacts):  # the saved contacts are listed from the start
-            self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), "", "", "saved contact"))  # one row each
+            self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), self.contacts[call].get("band", ""), "", "", "saved contact"))  # one row each, with the band it was last heard on
         self.refresh_to()  # offer them in the To box
         for item in read_json(side_file("_outbox.json"), []):  # messages left waiting when the panel was last closed
-            self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", item.get("text", ""), "waiting"))  # back in the list
+            self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", self.band_for(item.get("to", "")), item.get("text", ""), "waiting"))  # back in the list
             self.outbox.append((item.get("text", ""), item.get("to", "")))  # and back in the queue for the next contact
         self.panes["bottom"] = bottom = ttk.PanedWindow(split, orient="horizontal")  # the lower row: the log, the scopes and the level meters, with dividers between them
         split.add(bottom, weight=3)  # under the lists
@@ -379,6 +400,14 @@ class Panel:  # the control panel window
         ttk.Checkbutton(activity, text="Show technical details", variable=self.details, command=self.redraw_log).grid(row=0, column=0, sticky="w", padx=4)  # the switch between the plain and the detailed log
         self.log = tk.Text(activity, height=4, width=30, font="TkFixedFont", state="disabled", relief="flat", borderwidth=0)  # the running log
         self.log.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)  # place it
+        self.log_menu = tk.Menu(root, tearoff=False)  # the menu a right click on the log brings up
+        self.log_menu.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all_log)  # the whole log
+        self.log_menu.add_command(label="Copy", accelerator="Ctrl+C", command=self.copy_log)  # the selection (or the whole log) to the clipboard
+        self.log_menu.add_command(label="Clear", command=self.clear_log)  # empty the log
+        self.log.bind("<Button-3>", lambda event: (self.log.focus_set(), self.popup(self.log_menu, event)))  # a right click anywhere on the log
+        self.log.bind("<Button-1>", lambda event: self.log.focus_set(), add="+")  # a click gives the log the keyboard, so Ctrl+A and Ctrl+C work on it
+        self.log.bind("<Control-a>", lambda event: (self.select_all_log(), "break")[1])  # Ctrl+A in the log
+        self.log.bind("<Control-c>", lambda event: (self.copy_log(), "break")[1])  # Ctrl+C in the log
         scroll = ttk.Scrollbar(activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
@@ -432,6 +461,7 @@ class Panel:  # the control panel window
         operate.add_cascade(label="Beacon type", underline=7, menu=beacon_type)  # short or long
         operate.add_command(label="Call the station in To", underline=0, accelerator="F6", command=self.call_to)  # a directed call
         operate.add_command(label="End contact", underline=0, accelerator="F7", command=self.end_contact)  # close the contact
+        operate.add_command(label="Stop calling (and cut the call short on the air)", underline=0, accelerator="Esc", command=self.stop_calling)  # stop a call or beacon round
         operate.add_checkbutton(label="Keep contact open", underline=0, variable=self.keep_open)  # hold the lock until End contact
         operate.add_separator()  # a divider
         operate.add_command(label="Choose frequency", underline=7, accelerator="Ctrl+R", command=lambda: self.frequency.focus_set())  # go to the frequency list
@@ -490,7 +520,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -1150,7 +1180,7 @@ class Panel:  # the control panel window
             return  # nothing to note
         grid = (result.fields or {}).get("grid", "")  # its grid locator, if it carries one
         kind = KIND.get(result.frame_type, "frame")  # what it was
-        self.heard.put((call, grid, result.snr_db, kind, dict(result.fields or {})))  # pass it to the window, with the frame's flags
+        self.heard.put((call, grid, result.snr_db, kind, dict(result.fields or {}), band_of(self.dial_hz() / 1000.0)))  # pass it to the window, with the frame's flags and the band it was heard on
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
@@ -1275,7 +1305,12 @@ class Panel:  # the control panel window
 
     def follow_station(self):  # keep the message lists, the readings, the beacon and the logbook in step with the station
         while not self.heard.empty():  # every station heard since the last look
-            call, grid, snr, kind, fields = self.heard.get()  # who, where, how strong, what it sent, and its flags
+            call, grid, snr, kind, fields, band = self.heard.get()  # who, where, how strong, what it sent, its flags, and the band it was heard on
+            if call in self.contacts and band and self.contacts[call].get("band") != band:  # a saved contact heard on another band
+                self.contacts[call]["band"] = band  # remember the band
+                write_json(CONTACTS_FILE, self.contacts)  # and keep it
+            if band and any(self.to_send.set(row, "to") == call for row in self.to_send.get_children()):  # a station there are messages for
+                self.refresh_send_bands()  # show the band it was just heard on
             if kind in ("beacon", "answer"):  # a beacon or an answer says whether its sender takes contacts
                 self.availability[call] = (bool(fields.get("listening", True)), time.time())  # a presence beacon says not; anything else says yes
             if kind == "long beacon":  # a long beacon says so in its own flag
@@ -1289,7 +1324,7 @@ class Panel:  # the control panel window
             if kind == "mail notice":  # a station says whom it holds mail for
                 if call_hash(self.settings["call"]) in fields.get("held", []):  # it holds mail for this station
                     self.say(f"{call} holds mail for you; it will be delivered when you work {call} (Listen answers its beacon by itself, or select it and press Respond, Ctrl+Y)")  # tell the operator
-            values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
+            values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), band, f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
             if call in self.heard_rows:  # already listed
                 self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
                 self.stations.move(self.heard_rows[call], "", 0)  # and move it to the top: most recently heard first
@@ -1402,6 +1437,7 @@ class Panel:  # the control panel window
     # ---- the station's own thread asks here what the window wants ----
 
     def tick(self, station, now):  # called by the live loop once every tenth of a second, in the station's own thread
+        self.station_now = now  # the station's clock, for requests that write to its log
         with self.actions_lock:  # take the waiting requests
             waiting, self.actions = self.actions, []  # all of them
         left = [action for action in waiting if not action(station)]  # do each; keep any that cannot be done yet
@@ -1607,10 +1643,34 @@ class Panel:  # the control panel window
     def end_contact(self):  # the End contact button
         station = self.station  # the station running at this moment, if any
         if station is None or station.state not in LOCKED:  # there is no contact to end
-            self.say("no contact in progress")  # say so
-            return  # nothing to do
+            self.stop_calling()  # but a call or beacon round may be under way: stop that instead
+            return  # nothing more to do
         station.end()  # close once any traffic under way is finished
         self.say("ending the contact: closing identification will be sent when the current exchange is done")  # confirm
+
+    def stop_calling(self):  # Esc, the Stop calling button: stop what this station started that has not made a contact
+        """Stop a directed call (Respond, Call station), a beacon round, a long beacon or waiting broadcasts, cutting such a transmission short on the air. A contact in progress is left to End contact."""
+        self.cancel_calls()  # calls still waiting for the station to be free
+        if self.beacon_wanted:  # the repeating beacon is on
+            self.beacon_var.set(False)  # its button comes out
+            self.beacon_off("repeating beacon stopped by the operator")  # and it stops
+        station = self.station  # the running station, if any
+        if station is None:  # nothing is running
+            return  # nothing more to stop
+        if station.state in LOCKED:  # a contact is under way
+            self.say("a contact is in progress: End contact (F7) closes it properly")  # say how
+            return  # left alone
+        if self.tx_active and self.tx_kind in ("call", "beacon", "long beacon", "broadcast", "mail notice") and self.sink is not None:  # such a frame is on the air now
+            self.sink.abort()  # cut it short; the transmitter comes off at once
+            self.say(f"{self.tx_kind} cut short on the air")  # say so
+
+        def stop(station):  # in the station's own thread
+            words = station.cancel(self.station_now)  # stop the call-up
+            if not words:  # nothing was under way
+                self.say("nothing to stop: no call or beacon is under way")  # say so
+            return True  # done
+
+        self.ask_station(stop, "")  # the station stops at its next look
 
     def queue_message(self):  # add the typed message to the list to send
         text = self.message.get().strip()  # what was typed
@@ -1622,7 +1682,7 @@ class Panel:  # the control panel window
         if to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
             messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.", parent=self.root)  # say so, and what to do
             return False  # refused
-        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", text, "waiting"))  # show it in the list
+        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", self.band_for(to), text, "waiting"))  # show it in the list
         self.to_send.yview_moveto(1.0)  # keep the newest row in view
         station = self.station  # the station running at this moment, if any
         if station is not None:  # one is running
@@ -1634,13 +1694,86 @@ class Panel:  # the control panel window
         self.save_outbox()  # a waiting message is kept even if the panel is closed
         return True  # accepted
 
-    def send_menu_at(self, event):  # a right click on the list of messages to send
-        row = self.to_send.identify_row(event.y)  # the message under the pointer
-        if not row:  # the click was on empty space
-            return  # no menu
-        if row not in self.to_send.selection():  # it is not among those already chosen
+    def send_menu_at(self, event):  # a right click anywhere in the list of messages to send
+        row = self.to_send.identify_row(event.y)  # the message under the pointer, if any
+        if row and row not in self.to_send.selection():  # a message that is not among those already chosen
             self.to_send.selection_set(row)  # choose it alone
-        self.send_menu.tk_popup(event.x_root, event.y_root)  # show Edit and Delete at the pointer
+        self.to_send.focus_set()  # the list has the keyboard (Del works next)
+        self.popup(self.send_menu, event)  # Edit and Delete at the pointer (they say what to select if nothing is)
+
+    def popup(self, menu, event):  # show a right-click menu at the pointer
+        try:  # whatever happens...
+            menu.tk_popup(event.x_root, event.y_root)  # the menu
+        finally:  # ...let go of the mouse afterwards
+            menu.grab_release()  # so the next click goes where it is aimed
+
+    def select_all_rows(self, tree):  # Select all, in a list
+        tree.selection_set(tree.get_children())  # every row
+        tree.focus_set()  # the list has the keyboard
+
+    def copy_rows(self, tree):  # Copy, in a list
+        """Put the selected rows (every row, if none is selected) on the clipboard: a line of headings, then one line per row, columns separated by tabs (pastes into a spreadsheet)."""
+        rows = tree.selection() or tree.get_children()  # the chosen rows, or all of them
+        columns = tree["columns"]  # the column names
+        lines = ["\t".join(tree.heading(name, "text") for name in columns)]  # the headings
+        lines += ["\t".join(str(tree.set(row, name)) for name in columns) for row in rows]  # each row
+        self.clip("\n".join(lines) + "\n", f"{len(rows)} row(s) copied")  # onto the clipboard
+
+    def clip(self, text, words):  # put text on the clipboard
+        self.root.clipboard_clear()  # empty it
+        self.root.clipboard_append(text)  # the text
+        self.say(words)  # confirm
+
+    def clear_finished(self):  # Clear finished messages
+        """Take delivered, sent and failed messages off the list; messages still waiting (or being sent) stay."""
+        done = [row for row in self.to_send.get_children() if not self.to_send.set(row, "state").startswith(("waiting", "sending", "broadcast"))]  # finished
+        self.to_send.delete(*done)  # off the list
+        self.save_outbox()  # the saved queue is unchanged in content, but kept in step
+        self.say(f"cleared {len(done)} finished message(s) from the list")  # confirm
+
+    def clear_heard(self):  # Clear stations heard
+        """Empty the Stations heard list; saved contacts stay (the 48-hour record, F8, is kept)."""
+        gone = [call for call in self.heard_rows if call not in self.contacts]  # the stations that are not saved contacts
+        for call in gone:  # each
+            self.stations.delete(self.heard_rows.pop(call))  # off the list
+        for call, row in self.heard_rows.items():  # the saved contacts left
+            self.stations.item(row, tags=())  # no longer highlighted as calling
+        self.calling.clear()  # nobody is highlighted as calling any more
+        self.refresh_to()  # the To box offers what is left
+        self.say(f"cleared {len(gone)} station(s) from the list; saved contacts stay, and the 48-hour record (F8) is kept")  # confirm
+
+    def select_all_log(self):  # Select all, in the Activity log
+        self.log.tag_add("sel", "1.0", "end-1c")  # every line
+        self.log.focus_set()  # the log has the keyboard
+
+    def copy_log(self):  # Copy, in the Activity log
+        """Put the selected text of the log (the whole log, if nothing is selected) on the clipboard."""
+        ranges = self.log.tag_ranges("sel")  # the selection, if any
+        text = self.log.get(ranges[0], ranges[1]) if ranges else self.log.get("1.0", "end-1c")  # it, or everything
+        self.clip(text if text.endswith("\n") else text + "\n", f"{len(text.splitlines())} log line(s) copied")  # onto the clipboard
+
+    def clear_log(self):  # Clear, in the Activity log
+        """Empty the Activity log on the screen (the logbook and the signal log are not touched)."""
+        self.history.clear()  # the lines kept for redrawing
+        self.redraw_log()  # an empty log
+
+    def refresh_send_bands(self):  # bring the Band column of Messages to send up to date
+        """Show, beside each message still to go, the band its station was last heard on (the band in use, for the partner or ALL)."""
+        if not hasattr(self, "to_send"):  # the list is not built yet
+            return  # nothing to do
+        for row in self.to_send.get_children():  # every message
+            if self.to_send.set(row, "state").startswith(("waiting", "sending", "broadcast")):  # not gone yet
+                to = self.to_send.set(row, "to")  # who it is for
+                self.to_send.set(row, "band", self.band_for("" if to == "partner" else to))  # its band now
+
+    def band_for(self, to):  # the band to show beside a message
+        """Return the band station `to` was last heard on (or saved with); for a message to the partner or to ALL, the band the radio is on now."""
+        if not to or to in ("partner", "ALL"):  # whoever the partner is, or everyone
+            return band_of(self.dial_hz() / 1000.0)  # the band in use
+        heard = next((row for row in self.heardlog.summary() if row["call"] == to), None)  # its latest reception, within 48 hours
+        if heard is not None and band_of(heard.get("dial_khz")):  # heard on a known band
+            return band_of(heard["dial_khz"])  # that band
+        return self.contacts.get(to, {}).get("band", "")  # the band it was last heard on as a saved contact, if known
 
     def edit_message(self):  # change a message that is still waiting
         """Open a small window to change the address and text of the selected waiting message."""
@@ -1680,6 +1813,7 @@ class Panel:  # the control panel window
                 self.outbox[self.outbox.index((old_text, old_to))] = (text, to)  # replace it where it stands
                 self.say(f"changed{' for ' + to if to else ''}: {text}")  # confirm
             self.to_send.set(row, "to", to or "partner")  # the list shows the new address
+            self.to_send.set(row, "band", self.band_for(to))  # and the band that station was last heard on
             self.to_send.set(row, "text", text)  # and the new text
             self.save_outbox()  # the saved queue follows the list
             top.destroy()  # close the window
@@ -1725,7 +1859,7 @@ class Panel:  # the control panel window
             return False  # the operator backed out
         if not self.ensure_listening("broadcast"):  # a broadcast needs a station that can transmit
             return False  # nothing started
-        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), "ALL", text, "broadcast when idle"))  # show it in the list
+        self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), "ALL", self.band_for(""), text, "broadcast when idle"))  # show it in the list (on the band the radio is on)
         self.to_send.yview_moveto(1.0)  # keep the newest row in view
         self.ask_station(lambda station: station.broadcast(text) or True, f"broadcast queued: {text}")  # the station sends it as soon as no contact is in progress
         return True  # on its way
@@ -1846,6 +1980,21 @@ class Panel:  # the control panel window
                 note = (note + "; " if note else "") + self.notice_words(call, notice[1])  # whom it holds mail for
             self.stations.set(row, "mail", note)  # show it
 
+    def station_menu_at(self, event):  # a right click on the Stations heard and saved contacts list
+        row = self.stations.identify_row(event.y)  # the station under the pointer, if any
+        if row and row not in self.stations.selection():  # one that is not among those already chosen
+            self.stations.selection_set(row)  # choose it alone
+            self.stations.focus(row)  # and give it the keyboard
+        self.stations.focus_set()  # the list has the keyboard
+        self.popup(self.station_menu, event)  # Respond, Save, Remove, Show last 48 hours at the pointer
+
+    def station_history(self):  # right click > Show last 48 hours
+        rows = self.stations.selection()  # the selected station
+        if not rows:  # none
+            messagebox.showinfo("Kestrel", "Select a station in the Stations heard list first.", parent=self.root)  # say so
+            return  # nothing to do
+        self.heard_window(self.stations.set(rows[0], "who"))  # its receptions in the last 48 hours
+
     def respond(self):  # Respond: call the station selected in the Stations heard list
         rows = self.stations.selection()  # the selected row
         if not rows:  # nothing selected
@@ -1887,9 +2036,9 @@ class Panel:  # the control panel window
         for index, (_, row) in enumerate(sorted(rows, key=key, reverse=backwards)):  # in the new order
             tree.move(row, "", index)  # move each row
 
-    def heard_window(self):  # Stations > Stations heard (last 48 hours)
-        top = self.window("heard", "Kestrel - stations heard in the last 48 hours")  # the window
-        every = tk.BooleanVar(value=False)  # show each reception, or one row per station
+    def heard_window(self, only=None):  # Stations > Stations heard (last 48 hours); with `only`, one station's receptions
+        top = self.window("heard", f"Kestrel - {only} heard in the last 48 hours" if only else "Kestrel - stations heard in the last 48 hours")  # the window
+        every = tk.BooleanVar(value=bool(only))  # show each reception, or one row per station (each reception, for one station)
         holder = ttk.Frame(top)  # holds the list, which is rebuilt when the choice changes
         holder.pack(fill="both", expand=True)  # fill the window
         tree_box = {}  # the list now shown
@@ -1899,13 +2048,15 @@ class Panel:  # the control panel window
                 child.destroy()  # goes
             self.heardlog.prune()  # forget anything older than 48 hours
             if every.get():  # every reception
-                tree = self.table(holder, (("time", "Time (UTC)", 120), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("khz", "Frequency kHz", 100)))  # the columns
+                tree = self.table(holder, (("time", "Time (UTC)", 120), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
                 for record in reversed(self.heardlog.snapshot()):  # newest first
-                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", level_name(record.get("level", 0)), record.get("kind", ""), f"{record.get('dial_khz', 0):.1f}"))  # one row
+                    if only and record["call"] != only:  # another station, when only one is wanted
+                        continue  # left out
+                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", level_name(record.get("level", 0)), record.get("kind", ""), band_of(record.get("dial_khz", 0)), f"{record.get('dial_khz', 0):.1f}"))  # one row
             else:  # one row per station
-                tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("khz", "Frequency kHz", 100)))  # the columns
+                tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
                 for row in self.heardlog.summary():  # most recent first
-                    tree.insert("", "end", values=(row["call"], row["grid"], utc(row["last"]), utc(row["first"]), row["count"], f"{row['last_snr']:+.0f} dB", f"{row['best_snr']:+.0f} dB", f"L{row['best_level']}", f"{row['dial_khz']:.1f}"))  # one row
+                    tree.insert("", "end", values=(row["call"], row["grid"], utc(row["last"]), utc(row["first"]), row["count"], f"{row['last_snr']:+.0f} dB", f"{row['best_snr']:+.0f} dB", f"L{row['best_level']}", band_of(row["dial_khz"]), f"{row['dial_khz']:.1f}"))  # one row
             tree.bind("<Double-1>", lambda event: use())  # a double-click puts the callsign in To
             tree.bind("<Return>", lambda event: use())  # so does Enter
             tree_box["tree"] = tree  # remember it
@@ -1931,12 +2082,13 @@ class Panel:  # the control panel window
             call = chosen()  # which one
             if call:  # one is selected
                 grid = next((row["grid"] for row in self.heardlog.summary() if row["call"] == call), "")  # its grid, if known
-                self.contacts[call] = {"grid": grid}  # remember it
+                band = band_of(next((row["dial_khz"] for row in self.heardlog.summary() if row["call"] == call), 0))  # the band it was last heard on
+                self.contacts[call] = {"grid": grid, "band": band}  # remember it
                 write_json(CONTACTS_FILE, self.contacts)  # save the list
                 if call in self.heard_rows:  # on the main list
                     self.stations.set(self.heard_rows[call], "saved", "*")  # mark it
                 else:  # not yet
-                    self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, grid, "", "", "saved contact"))  # add it
+                    self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, grid, band, "", "", "saved contact"))  # add it
                 self.refresh_to()  # offer it in the To box
                 self.say(f"{call} saved as a contact")  # confirm
 
@@ -2015,7 +2167,7 @@ class Panel:  # the control panel window
     def save_contact(self):  # keep the selected callsigns as contacts
         for row in self.stations.selection():  # each selected row
             call = self.stations.set(row, "who")  # its callsign
-            self.contacts[call] = {"grid": self.stations.set(row, "grid")}  # remember it, with its grid locator if known
+            self.contacts[call] = {"grid": self.stations.set(row, "grid"), "band": self.stations.set(row, "band")}  # remember it, with its grid locator and band if known
             self.stations.set(row, "saved", "*")  # mark the row
         write_json(CONTACTS_FILE, self.contacts)  # save the list
         self.refresh_to()  # and offer them first in the To box
@@ -2473,6 +2625,7 @@ class Panel:  # the control panel window
         self.frequency.current(min(max(select, 0), len(self.entries) - 1))  # select the wanted line
         self.base_khz = self.selected()["dial_khz"]  # the calling frequency, for the station thread and the scope
         self.refresh_working(self.settings["working"])  # and offer the working frequencies that go with it
+        self.refresh_send_bands()  # messages for the partner go out on this band
 
     def refresh_working(self, select=0):  # (re)fill the working-frequency choice for the selected calling frequency
         entry = self.selected()  # the calling frequency
@@ -2529,6 +2682,7 @@ class Panel:  # the control panel window
             return  # leave the radio where it is
         self.refresh_working(0)  # a new calling frequency has its own working frequencies; start at "stay"
         self.base_khz = self.selected()["dial_khz"]  # the new calling frequency
+        self.refresh_send_bands()  # messages for the partner now go out on this band
         self.save_settings()  # remember the choice
         if self.worker is not None and self.worker.is_alive():  # a station or the monitor is running: start it again on the new frequency (it tunes the radio as it starts)
             mode = self.mode  # the mode to come back to
@@ -2579,7 +2733,7 @@ class Panel:  # the control panel window
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
             self.audio = source  # let the scope and the meter show what it hears
-            signal_log = self.signal_log = SignalLog(self.signal_folder(), prefix=self.logbook.name, mode=job.get("signal_log", "off"))  # the detailed signal log (writes nothing when off)
+            signal_log = self.signal_log = Guarded(SignalLog(self.signal_folder(), prefix=self.logbook.name, mode=job.get("signal_log", "off")), self.say)  # the detailed signal log (writes nothing when off)
             if job.get("record_rx"):  # the operator wants the received audio saved
                 recorder = Recorder(recordings_dir(data_dir()), label=job["call"])  # hourly WAV files
                 recorder.on_open = signal_log.recording_file  # the signal log notes where each file starts on the timeline
@@ -2647,7 +2801,15 @@ class Panel:  # the control panel window
             self.say(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting (kept for the next run)" + (f"; holding {len(self.mailroom.bag)} message(s) for other stations" if self.mailroom.bag else ""))  # the outcome for sent traffic
             self.save_mail()  # keep the mail
         except Exception as problem:  # report any failure instead of dying silently
-            self.say(f"stopped by a problem: {problem}")  # what went wrong
+            import traceback  # where it happened
+            where = os.path.join(LOG_FOLDER, time.strftime("problem_%Y%m%d_%H%M%SZ.txt", time.gmtime()))  # a file for the details, beside the logbook
+            try:  # the folder may be unwritable
+                os.makedirs(LOG_FOLDER, exist_ok=True)  # make sure it exists
+                with open(where, "w", encoding="utf-8") as handle:  # the details
+                    handle.write(f"Kestrel {SPEC_VERSION} ({native.describe()})\n{traceback.format_exc()}")  # version, library, and the traceback
+            except OSError:  # it is
+                where = "(could not be saved)"  # say so
+            self.say(f"stopped by a problem: {problem!r} (details: {where})")  # what went wrong, and where the details are
             if self.signal_log is not None:  # a signal log was started
                 self.signal_log.note("stopped by a problem", problem=repr(problem))  # keep it there too
             self.mode = "off"  # nothing is running now

@@ -1134,6 +1134,45 @@ struct KesStation {  /* its state and rules */
         }  /* end of the single round */
     }  /* end of new_contact */
 
+    std::string cancel(double now) {  /* the operator stops calling (station.py cancel) */
+        if (state != "IDLE" || (is(role, "answerer") && !pending.is_null())) {  /* a contact under way, or an answer awaiting confirmation */
+            return "";  /* left alone */
+        }  /* end of the check */
+        std::vector<std::string> stopped;  /* what is stopped */
+        if (is(role, "caller")) {  /* a directed call */
+            stopped.push_back("calling " + target);  /* that */
+        } else if (is(role, "beaconer")) {  /* a beacon round */
+            stopped.push_back("beaconing");  /* that */
+        }  /* end of the roles */
+        if (!long_waiting.is_null()) {  /* a long beacon waiting */
+            stopped.push_back("the long beacon");  /* that too */
+        }  /* end of the long beacon */
+        if (!broadcasts.items().empty()) {  /* broadcast frames waiting */
+            stopped.push_back(std::to_string(broadcasts.items().size()) + " broadcast frame(s)");  /* those too */
+        }  /* end of the broadcasts */
+        if (stopped.empty()) {  /* nothing under way */
+            return "";  /* nothing to stop */
+        }  /* end of the check */
+        long_waiting = Json();  /* nothing more waits */
+        broadcasts = Json::list();  /* ... */
+        state = "RELEASED";  /* no partner */
+        pending = Json();  /* nothing awaited */
+        partner.clear();  /* nobody */
+        link = -1;  /* no link */
+        candidates = Json::list();  /* no answers */
+        role = "answerer";  /* listening afterwards */
+        single = leads = false;  /* ... */
+        target.clear();  /* ... */
+        calls = beacons = 0;  /* ... */
+        std::string words = "stopped ";  /* what happened */
+        for (size_t i = 0; i < stopped.size(); ++i) {  /* each item */
+            words += (i ? ", " : "") + stopped[i];  /* listed */
+        }  /* end of the items */
+        words += " (operator)";  /* by whom */
+        say(now, words);  /* in the log */
+        return words;  /* for whoever runs the station */
+    }  /* end of cancel */
+
     void release(double now, const std::string &why) {  /* the contact is over */
         if (!partner.empty() && !contains(worked, partner)) {  /* a partner, not yet in the set */
             worked.push_back(partner);  /* worked */
@@ -2242,6 +2281,7 @@ struct KesStation {  /* its state and rules */
         if (op == "unqueue") { return Json(unqueue(str(0), arg(1))); }  /* take back */
         if (op == "mail_waiting_at") { return Json(mail_waiting_at(str(0))); }  /* mail waiting? */
         if (op == "end") { close_when_done = true; return Json(); }  /* close when done */
+        if (op == "cancel") { return Json(cancel(num(0))); }  /* stop calling */
         if (op == "tuning") { return tuning(num(0)); }  /* where to tune */
         if (op == "handle") { return handle(a.at(0), num(1)); }  /* a frame heard */
         if (op == "poll") { return poll(num(0)); }  /* the clock */
