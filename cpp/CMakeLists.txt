@@ -19,6 +19,8 @@ endif()  # end of the default
 
 add_library(kestrel SHARED src/kestrel.cpp)  # the library itself (kestrel.dll on Windows, libkestrel.so on Linux)
 target_include_directories(kestrel PRIVATE include third_party/pocketfft)  # its own header, and the FFT
+find_package(Threads REQUIRED)  # the platform's thread library (the heavy loops share work among threads)
+target_link_libraries(kestrel PRIVATE Threads::Threads)  # linked in
 set_target_properties(kestrel PROPERTIES CXX_VISIBILITY_PRESET hidden PREFIX "")  # export only the kes_ functions; name the file "kestrel..." on every platform
 if(NOT MSVC)  # GCC and Clang (MinGW on Windows, g++ on Linux and the Raspberry Pi)
   target_compile_options(kestrel PRIVATE -O3 -fno-fast-math -ffp-contract=off)  # fast, but with exact IEEE arithmetic so results match the Python reference (no fused multiply-add)

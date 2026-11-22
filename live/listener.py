@@ -23,6 +23,7 @@ from dataclasses import dataclass  # simple record type
 import numpy as np  # numerical arrays
 
 from modem import LEVELS, MIN_SNR_DB, body_layout, control_layout, receive  # the speed levels, their limits, frame shapes and the receiver
+from modem import native  # the compiled modem library (when present, the patterns are searched side by side)
 from modem.blanker import blank_impulses  # removes static crashes before searching
 from modem.frame import _body_total, _read_header_how  # how long a frame is by its header, and reading a header
 from modem.preamble import detect_preamble, fine_time, preamble_samples  # the signature-pattern search, the fine timing of a candidate, and a pattern's length
@@ -50,6 +51,17 @@ class Heard:  # one frame taken out of the stream
     result: object  # the receiver's report (an RxResult); its sample field says where the frame began in the stream
     audio: np.ndarray  # the frame's audio, with a little either side
     audio_sample: int = -1  # the stream's number for the first sample of `audio`
+
+
+_POOL = []  # the worker threads that search the patterns side by side (made on first use, kept for the life of the program)
+
+
+def _pool():  # the worker threads
+    """Return the thread pool used to search several patterns at once."""
+    if not _POOL:  # not made yet
+        from concurrent.futures import ThreadPoolExecutor  # Python's own thread pool
+        _POOL.append(ThreadPoolExecutor(max_workers=len(LEVELS) + 1, thread_name_prefix="kestrel-search"))  # one thread per pattern (five levels and the long beacon)
+    return _POOL[0]  # the pool
 
 
 def frame_samples(result):  # how long is the frame this report describes?
@@ -135,14 +147,25 @@ class Listener:  # the continuous receiver
         end = len(x)  # the newest sample
         long_now = self.searches % LONG_EVERY == 0  # the long beacon's pattern is looked for on every fourth search
         levels = list(LEVELS) + ([longbeacon.LONG] if long_now else [])  # the patterns to look for this time
+        jobs = []  # (pattern, where its piece begins) for every pattern with new audio to search
         for spec in levels:  # each one
             new = self.unsearched_long if spec is longbeacon.LONG else self.unsearched  # how much audio this pattern has not been looked for in
             if new <= 0:  # none
                 continue  # nothing to do
             span = preamble_samples(spec)  # one whole pattern (twelve tones, the long beacon's too)
-            begin = max(0, end - min(new, end) - span - 2 * spec.samples - int(CONTEXT_S * FS))  # the pattern may have begun this far back, and some background besides
+            jobs.append((spec, max(0, end - min(new, end) - span - 2 * spec.samples - int(CONTEXT_S * FS))))  # the pattern may have begun this far back, and some background besides
+
+        def look(job):  # search one pattern's piece
+            """Return the strongest few patterns found in the piece of `x` that `job` (pattern, start) names."""
+            spec, begin = job  # the pattern, and where its piece begins
             piece = x[begin:end]  # the audio to search
-            found = detect_preamble(longbeacon.clean(piece), spec, whiten=True, fine=False) if spec is longbeacon.LONG else detect_preamble(piece, spec, fine=False)  # the strongest few patterns there, timed only coarsely (fine timing is done later for the few kept)
+            return detect_preamble(longbeacon.clean(piece), spec, whiten=True, fine=False) if spec is longbeacon.LONG else detect_preamble(piece, spec, fine=False)  # timed only coarsely (fine timing is done later for the few kept)
+
+        if native.available() and len(jobs) > 1:  # the compiled search lets Python run the patterns side by side (it releases Python's lock while it works)
+            results = list(_pool().map(look, jobs))  # all patterns at once, results in the same order as the jobs
+        else:  # pure Python: one after another (side by side would gain little)
+            results = [look(job) for job in jobs]  # in order
+        for (spec, begin), found in zip(jobs, results):  # each pattern's candidates, in the usual order
             for candidate in found:  # each
                 if spec is not longbeacon.LONG and candidate["quality"] < GATE[spec.number]:  # no stronger than chance matches in noise
                     continue  # not worth following up

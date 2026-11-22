@@ -86,5 +86,75 @@ def test_whole_receiver_decodes_the_same(python_only):  # end to end: the same f
     assert mine == python_only(decode) and len(mine) == 2  # both frames, identical either way
 
 
+def test_preamble_search_matches_python(python_only):  # the signature-pattern search, coarse and fine
+    from modem import longbeacon  # the long beacon's own pattern
+    from modem.levels import LEVELS  # every speed level
+    from modem.preamble import detect_preamble, make_preamble  # the routines under test, and a pattern to hide
+    rng = np.random.default_rng(8)  # repeatable
+    for spec in list(LEVELS) + [longbeacon.LONG]:  # each pattern
+        x = rng.normal(size=30 * FS if spec is not longbeacon.LONG else 40 * FS)  # band noise
+        pattern = make_preamble(spec)  # the pattern
+        at = int(rng.integers(FS, len(x) - len(pattern) - FS))  # somewhere in the middle
+        x[at:at + len(pattern)] += pattern * np.sqrt(10 ** (-12 / 10) * (2500 / 6000) / np.mean(np.square(pattern)))  # at -12 dB
+        whiten = spec is longbeacon.LONG  # the long beacon is searched with the band levelled out
+        coarse = detect_preamble(x, spec, whiten=whiten, fine=False)  # compiled, coarse
+        coarse_ref = python_only(detect_preamble, x, spec, whiten=whiten, fine=False)  # Python, coarse
+        assert len(coarse) == len(coarse_ref)  # as many candidates
+        for a, b in zip(coarse, coarse_ref):  # each candidate
+            assert (a["start"], a["offset_hz"]) == (b["start"], b["offset_hz"])  # exactly the same place and frequency
+            assert abs(a["quality"] - b["quality"]) <= 1e-12 * b["quality"]  # and quality, to rounding
+        fine = detect_preamble(x, spec, whiten=whiten)  # compiled, refined
+        ref = python_only(detect_preamble, x, spec, whiten=whiten)  # Python, refined
+        for a, b in zip(fine, ref):  # each candidate
+            assert abs(a["start"] - b["start"]) < 1e-6 and abs(a["offset_hz"] - b["offset_hz"]) < 1e-9  # the same start and frequency
+
+
+def test_short_audio_finds_no_pattern(python_only):  # too little audio for a whole pattern
+    from modem.levels import LEVELS  # every speed level
+    from modem.preamble import detect_preamble  # the routine under test
+    x = np.random.default_rng(9).normal(size=1000)  # a twelfth of a second
+    assert detect_preamble(x, LEVELS[0]) == python_only(detect_preamble, x, LEVELS[0]) == []  # nothing, either way
+
+
+def test_header_reader_matches_python(python_only):  # reading the header after a preamble, both copies
+    from modem import build_beacon, build_frame  # frames to read
+    from modem.frame import _read_header_how  # the routine under test
+    from modem.levels import LEVELS  # every speed level
+    from modem.preamble import preamble_samples  # where the header begins
+    rng = np.random.default_rng(10)  # repeatable
+    outcomes = set()  # which copies gave headers, to be sure both paths ran
+    for trial in range(8):  # a few frames at each level
+        for spec in LEVELS:  # each level
+            audio = build_beacon("Q1AAAA", "EM92", level=spec.number) if trial % 2 else build_frame("Header test", level=spec.number)  # a frame
+            x = rng.normal(size=len(audio) + 3 * FS)  # noise around it
+            x[FS:FS + len(audio)] += audio * np.sqrt(10 ** (float(rng.uniform(-20, -6)) / 10) * (2500 / 6000) / np.mean(np.square(audio)))  # at a random SNR
+            start = FS + preamble_samples(spec)  # the first header copy
+            for since in (None, float(len(x) // 2)):  # a first try, and a later one
+                mine = _read_header_how(x, start, 0.0, spec, since=since)  # compiled
+                ref = python_only(_read_header_how, x, start, 0.0, spec, since=since)  # Python
+                assert mine[1] == ref[1] and (mine[0] is None) == (ref[0] is None)  # the same outcome
+                if ref[0] is not None:  # a header was read
+                    assert np.array_equal(mine[0], ref[0])  # the same bits
+                outcomes.add(ref[1])  # noted
+    assert {"first", ""} <= outcomes  # headers found and not found both happened
+
+
+def test_thread_count_does_not_change_results():  # sharing work among threads must not change any answer
+    from modem.blanker import blank_impulses  # one shared routine
+    from modem.levels import LEVELS  # a level to search
+    from modem.preamble import detect_preamble  # another
+    x = np.random.default_rng(11).normal(size=60 * FS)  # a minute of noise
+    x[30000] = 80.0  # a static crash
+    answers = []  # what each thread count gives
+    try:  # put the count back afterwards
+        for count in (1, 3, 8):  # one thread, a few, the most
+            native.set_threads(count)  # limit them
+            answers.append((blank_impulses(x), detect_preamble(x, LEVELS[1], fine=False)))  # blanker and search
+    finally:  # always
+        native.set_threads(0)  # the computer's own count again
+    for blanked, found in answers[1:]:  # every other count
+        assert np.array_equal(blanked, answers[0][0]) and found == answers[0][1]  # exactly the same
+
+
 def test_describe_says_what_is_in_use():  # the About box line
-    assert native.describe() == "compiled modem library in use"  # loaded, so it says so
+    assert native.describe().startswith("compiled modem library in use")  # loaded, so it says so

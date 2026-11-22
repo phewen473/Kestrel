@@ -19,6 +19,7 @@ which candidate is a real frame.
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, used when present
 from .mfsk import symbols_to_audio  # turns tone numbers into sound
 from .params import LONG_LEVEL, LONG_PATTERN, PREAMBLE_PATTERNS, PREAMBLE_TONES  # the patterns and their length, and the long beacon's own pattern
 
@@ -63,12 +64,22 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False, fine=True
     """
     tones = pattern_tones(spec.number)  # this level's pattern
     n, hop = spec.samples, spec.samples // HOPS  # block length and step between blocks, in samples
+    reach = int(np.ceil(max_offset_hz / (spec.bin_hz / PAD)))  # how many half-bin steps the frequency error may be
+    done = native.detect_preamble(x, n, PAD * spec.tone_bins[tones], PAD, HOPS, reach, whiten, keep)  # the compiled search, when the library is in use
+    if done is not None:  # it was
+        found = []  # the candidates, as the Python below would give them
+        for row, shift, quality in done:  # strongest first
+            item = {"start": float(row * hop), "offset_hz": float(shift * spec.bin_hz / PAD), "quality": quality}  # one candidate
+            if fine:  # refined
+                found.append(fine_time(x, spec, item))  # start and frequency found finely
+            else:  # left coarse
+                found.append(dict(item, coarse=True))  # marked so
+        return found  # strongest first
     count = (len(x) - n) // hop + 1  # how many blocks fit
     starts = count - HOPS * (len(tones) - 1)  # how many start positions leave room for the whole pattern
     if starts < 1:  # the recording is too short to hold the pattern
         return []  # nothing to find
     bins = PAD * spec.tone_bins[tones]  # where each tone of the pattern sits, in half-bin steps
-    reach = int(np.ceil(max_offset_hz / (spec.bin_hz / PAD)))  # how many half-bin steps the frequency error may be
     low, high = int(bins.min()) - reach - 1, int(bins.max()) + reach + 2  # the only part of the spectrum that matters
     blocks = np.lib.stride_tricks.sliding_window_view(x, n)[::hop][:count]  # every block, without copying
     power = np.empty((count, high - low))  # the energy near the pattern's tones, block by block
@@ -102,6 +113,11 @@ def fine_time(x, spec, found):  # refine a candidate's start and frequency
     n, hop = spec.samples, spec.samples // HOPS  # tone length and the coarse search's step, in samples
     bins = PAD * spec.tone_bins[tones]  # where each tone of the pattern sits, in half-bin steps
     shift = int(round(found["offset_hz"] / (spec.bin_hz / PAD)))  # the coarse frequency error, in half-bin steps
+    done = native.fine_time(x, n, bins, PAD, HOPS, shift, found["start"])  # the compiled refinement, when the library is in use
+    if done == "short":  # too little audio to refine
+        return dict(found)  # as the Python below would return
+    if done is not None:  # refined
+        return {"start": done[0], "offset_hz": float(done[1] * spec.bin_hz / PAD), "quality": found["quality"]}  # the candidate, refined
     row = int(round(found["start"] / hop))  # the coarse start, in quarter tones
     last = len(x) - n * len(tones)  # the latest start that leaves room for the pattern
     rows = np.arange(len(tones))  # one row per tone

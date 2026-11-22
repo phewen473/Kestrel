@@ -152,7 +152,7 @@ All of these are now written into the specification (sections 4 and 5).
 | `interleave.py` | The bit shuffler |
 | `crc.py`, `bits.py`, `text.py` | Check values, bit helpers, and text to bits |
 | `blanker.py` | Static-crash blanker |
-| `native.py` | The bridge to the compiled library (`cpp/`): blanker, Viterbi decoder and tone-band measurement run compiled when it is present; each returns None otherwise and the Python code runs instead. `KESTREL_NATIVE=0` switches it off |
+| `native.py` | The bridge to the compiled library (`cpp/`): blanker, Viterbi decoder, tone-band measurement, pattern search, fine timing and header reading run compiled when it is present; each returns None otherwise and the Python code runs instead. `KESTREL_NATIVE=0` switches it off; `set_threads(n)` limits its threads |
 
 ## Measured results for L0 under fading (18 November 2026)
 

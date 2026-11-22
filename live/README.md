@@ -38,6 +38,9 @@ The modem's receiver works on a finished recording. A live station only has a st
 
 On simulated band noise this is about a seventh of the old computing, and on streams with frames about a quarter. On the 2014 Xeon workstation, 24 simulated six-minute streams (frames at every level, steady and fading, long beacons, mostly near their decoding limits) took the old search 1.1 to 1.8 times real time and the new one 0.2 to 0.4 times; the new search decoded 116 frames to the old one's 114 (three the old missed, one it missed itself: a frame at its level's limit whose header read depends on small timing differences). The old search is kept (`Listener(incremental=False)`) and a test checks that both decode the same frames at the same places. The static-crash blanker was also made faster without changing what it does.
 
+
+With the compiled modem library (`cpp/`, loaded by `modem/native.py`) the pattern search, fine timing and header reading run in C++, and the five levels and the long beacon are searched side by side on worker threads (the library lets go of Python's lock while it works). The answers are the same as the pure Python search; only the time changes.
+
 ## Rig control
 
 Kestrel controls the radio through **Hamlib's rigctld**, the same rig-control engine WSJT-X uses. Any radio Hamlib supports can be tuned and keyed, and rigctld can run on another computer on the network. Kestrel does not include Hamlib; it talks to rigctld over a network socket.

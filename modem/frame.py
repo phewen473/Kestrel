@@ -27,7 +27,7 @@ from .blanker import blank_impulses  # static-crash blanker
 from .preamble import detect_preamble, make_preamble, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header
-from . import control, ldpc  # control-frame fields, and error correction for the message body
+from . import control, ldpc, native  # control-frame fields, error correction for the message body, and the compiled library
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
@@ -247,9 +247,33 @@ def _body_total(bits):  # how many body tones a header says follow it
     return None  # no such frame type
 
 
+_BODY_TOTALS = []  # every body length a frame can have (worked out on first use, then kept: it never changes)
+
+
 def _body_totals():  # every body length a frame can have
     """Return the distinct body lengths, in tones, of every kind and size of frame (the places the second header copy can be)."""
+    if not _BODY_TOTALS:  # not worked out yet
+        _BODY_TOTALS.extend(_work_out_body_totals())  # work it out once
+    return _BODY_TOTALS  # the list
+
+
+def _work_out_body_totals():  # every body length a frame can have, worked out
+    """Return the distinct body lengths, sorted, from the layouts of every control frame and message size."""
     return sorted({control_layout(t)["total"] for t in CONTROL_BITS} | {body_layout(c)["total"] for c in range(len(SIZE_CLASSES))})  # control frames and every message size
+
+
+_TOTALS_BY_TYPE = []  # body length for every frame type and size class (filled on first use: the layouts are defined above)
+
+
+def _totals_by_type():  # the table the compiled header reader uses
+    """Return a list of 32 body lengths, frame type * 4 + size class, -1 where there is no such frame (as _body_total gives them)."""
+    if not _TOTALS_BY_TYPE:  # not worked out yet
+        for frame_type in range(8):  # every value the 3-bit field can hold
+            for size_class in range(4):  # every value the 2-bit field can hold
+                bits = np.concatenate([int_to_bits(frame_type, 3), np.zeros(3, dtype=np.uint8), int_to_bits(size_class, 2), np.zeros(8, dtype=np.uint8)])  # a header with just those fields
+                total = _body_total(bits)  # its body length
+                _TOTALS_BY_TYPE.append(-1 if total is None else int(total))  # kept (-1: no such frame)
+    return _TOTALS_BY_TYPE  # the table
 
 
 def _header_llrs(x, start, offset, spec):  # soft bits of one header copy
@@ -290,6 +314,10 @@ def _read_header_how(x, header_start, offset, spec, since=None):  # read the hea
     """
     if header_start < 0 or header_start + HEADER_SYMBOLS_ONCE * spec.samples > len(x):  # the first copy is not (yet) wholly inside the recording
         return None, ""  # nothing to read
+    done = native.read_header(x, header_start, offset, spec.samples, spec.tone_bins[0] - 1, spec.tone_bins[-1] + 1, spec.step, spec.number,
+                              _totals_by_type(), _body_totals(), since)  # the compiled reader, when the library is in use
+    if done is not None:  # it was
+        return done  # the same answer as the Python below
     first = _header_llrs(x, header_start, offset, spec)  # soft bits of the first copy
     bits = _check_header(first, spec) if since is None else None  # try it alone (unless it was tried before)
     if bits is not None:  # it checked out
