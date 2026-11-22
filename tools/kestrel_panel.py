@@ -68,7 +68,11 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)  # (continued: logging, recording and looks)
-            "quick1": "{call} {name} {grid}", "quick2": "{call} {name} {grid} RIG {rig} {power}W", "quick3": "{call} {telemetry}"}  # the quick messages
+            "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
+                      {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
+QUICK_MOST = 10  # the most quick messages an operator may keep
+QUICK_NAME_MOST = 40  # the longest name a quick message may have
+QUICK_OLD_NAMES = ("Call, name and grid", "Rig and power", "Telemetry")  # names given to the three quick messages kept by versions before 0.30, which had no names
 PTT_NAMES = {"none": "None (receive only, or VOX)", "rig": "CAT (through rig control)", "rts": "RTS line of a serial port", "dtr": "DTR line of a serial port"}  # keying methods, as the operator sees them
 START_NAMES = {"listen": "Listen", "monitor": "Monitor (receive only)", "off": "Nothing (start switched off)"}  # what the panel does when it opens
 ANSWER_NAMES = {False: "Just listen: show me beacons and calls; I choose whether to respond", True: "Answer every beacon and call automatically"}  # whether Listen transmits by itself
@@ -94,7 +98,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("F9", "Telemetry received"), ("F10", "Mail held and carried"), ("F11", "Broadcast the message to ALL"), ("F12", "Settings"),  # (continued)
     ("Ctrl+Y", "Respond: call the station selected in the Stations heard list"),  # (continued)
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
-    ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
+    ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"), ("Esc", "close a window"))  # the rest
 
@@ -102,7 +106,13 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
 def load_settings():  # read the remembered settings
     """Return the saved settings, with defaults for anything missing."""
     settings = dict(DEFAULTS)  # start from the defaults
-    settings.update(read_json(SETTINGS_FILE, {}))  # saved values replace the defaults
+    saved = read_json(SETTINGS_FILE, {})  # what was saved
+    settings.update(saved)  # saved values replace the defaults
+    if "quick" not in saved and any(f"quick{number}" in saved for number in (1, 2, 3)):  # quick messages kept by a version before 0.30 (three numbered slots, no names)
+        settings["quick"] = [{"name": QUICK_OLD_NAMES[number - 1], "text": saved[f"quick{number}"]} for number in (1, 2, 3) if saved.get(f"quick{number}", "").strip()]  # kept, with names
+    for number in (1, 2, 3):  # the old slots
+        settings.pop(f"quick{number}", None)  # are no longer used
+    settings["quick"] = [{"name": str(item.get("name", "")), "text": str(item.get("text", ""))} for item in settings["quick"] if isinstance(item, dict)][:QUICK_MOST]  # a fresh copy, so the defaults are never changed by editing
     return settings  # the settings to use
 
 
@@ -432,8 +442,8 @@ class Panel:  # the control panel window
         messages.add_command(label="Queue the message", underline=0, accelerator="Enter", command=self.queue_message)  # into the list to send
         messages.add_command(label="Broadcast the message to ALL", underline=0, accelerator="F11", command=self.broadcast_message)  # to everyone
         messages.add_separator()  # a divider
-        for number in (1, 2, 3):  # the three quick messages
-            messages.add_command(label=f"Quick message {number}", underline=14, accelerator=f"Ctrl+{number}", command=lambda n=number: self.use_quick(n))  # put it in the Message box
+        self.quick_submenu = tk.Menu(messages, tearoff=False)  # the quick messages, by name (filled by refresh_quick)
+        messages.add_cascade(label="Quick messages", underline=0, menu=self.quick_submenu)  # put it in the Messages menu
         messages.add_separator()  # a divider
         messages.add_command(label="Send telemetry to the station in To", underline=0, accelerator="Ctrl+4", command=self.send_telemetry)  # what this station hears, to one station
         messages.add_command(label="Broadcast telemetry to ALL", underline=10, accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
@@ -473,7 +483,8 @@ class Panel:  # the control panel window
         keys = {"<F1>": self.shortcuts_window, "<F2>": lambda: self.set_mode("listen"), "<F3>": lambda: self.set_mode("monitor"), "<F4>": lambda: self.set_mode("off"),  # (continued)
                 "<F5>": self.beacon_key, "<F6>": self.call_to, "<F7>": self.end_contact, "<F8>": self.heard_window, "<F9>": self.telemetry_window, "<F10>": self.mail_window,  # (continued: F10 also stops Windows' usual jump to the menu bar)
                 "<F11>": self.broadcast_message, "<F12>": lambda: self.settings_window(0), "<Control-l>": lambda: self.to.focus_set(), "<Control-m>": lambda: self.message.focus_set(),  # (continued)
-                "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued)
+                "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
+                **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
                 "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key}  # every shortcut
         for key, job in keys.items():  # each one
@@ -1701,20 +1712,25 @@ class Panel:  # the control panel window
             text = template  # sent as written
         return " ".join(text.split())[:telemetry.MAX_CHARS]  # tidy spacing, and no longer than one message
 
-    def refresh_quick(self):  # (re)fill the quick-message menu
-        self.quick_menu.delete(0, "end")  # empty it
-        for number in (1, 2, 3):  # each quick message
-            preview = self.settings[f"quick{number}"]  # its template
-            self.quick_menu.add_command(label=f"{number}:  {preview}", underline=0, accelerator=f"Ctrl+{number}", command=lambda n=number: self.use_quick(n))  # put it in the Message box
+    def refresh_quick(self):  # (re)fill the quick-message menus: the Quick button's, and Messages > Quick messages
+        for menu in (self.quick_menu, self.quick_submenu):  # both
+            menu.delete(0, "end")  # empty it
+            for number, item in enumerate(self.settings["quick"], start=1):  # each quick message, in the operator's order
+                menu.add_command(label=f"{number % 10}  {item['name']}", underline=0, accelerator=f"Alt+{number % 10}", command=lambda n=number: self.use_quick(n))  # by its name; it goes into the Message box
+            if not self.settings["quick"]:  # none at all
+                menu.add_command(label="(no quick messages yet)", state="disabled")  # say so
+            menu.add_separator()  # a divider
+            menu.add_command(label="Add, edit or delete quick messages...", command=lambda: self.settings_window(5))  # Settings, at the quick-message tab
         self.quick_menu.add_separator()  # a divider
         self.quick_menu.add_command(label="Send telemetry to the station in To", accelerator="Ctrl+4", command=self.send_telemetry)  # what this station hears
         self.quick_menu.add_command(label="Broadcast telemetry to ALL", accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
-        self.quick_menu.add_separator()  # a divider
-        self.quick_menu.add_command(label="Change the quick messages...", command=lambda: self.settings_window(5))  # Settings, at the quick-message tab
 
-    def use_quick(self, number):  # put a quick message in the Message box
+    def use_quick(self, number):  # put quick message `number` (counted from 1) in the Message box
+        if not 1 <= number <= len(self.settings["quick"]):  # there is no such quick message
+            self.say(f"there is no quick message {number}; add one in Settings > Quick messages")  # say so
+            return  # nothing to put in
         self.message.delete(0, "end")  # clear the box
-        self.message.insert(0, self.expand(self.settings[f"quick{number}"]))  # the filled-in message
+        self.message.insert(0, self.expand(self.settings["quick"][number - 1]["text"]))  # the filled-in message
         self.message.focus_set()  # ready for Enter (queue) or F11 (broadcast)
         self.message.icursor("end")  # with the cursor at the end, for any change
 
@@ -2188,9 +2204,108 @@ class Panel:  # the control panel window
         field(logging, 5, "signal_log", "Signal log (for analysis)", names=SIGNAL_NAMES, width=56)  # the detailed signal log
         note(logging, 6, f"The signal log goes in {os.path.join(LOG_FOLDER, 'signal')}, one file per UTC day: every signal the receiver\nlooked at, every frame (SNR, fading, offset, which header copy was read), every transmission and the radio's meters.\ntools/signal_report.py summarises it. Off uses no disk space. It takes effect the next time Listen or Monitor starts.")  # what it is and what it costs
         quick = page("Quick messages")  # the quick messages
-        for number in (1, 2, 3):  # each one
-            field(quick, number - 1, f"quick{number}", f"Quick message {number}", width=60)  # its template
-        note(quick, 3, "These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}\nTelemetry lists the stations heard in the last 30 minutes, strongest first, with their signal and fastest level.")  # the names that fill in
+        quick_items = [dict(item) for item in self.settings["quick"]]  # a working copy, kept only if Save is pressed
+        quick.columnconfigure(0, weight=1)  # the list takes the width
+        listing = ttk.Treeview(quick, columns=("key", "name", "text"), show="headings", height=10, selectmode="browse")  # the quick messages, one row each
+        for column, heading, width in (("key", "Key", 50), ("name", "Name", 170), ("text", "Message", 420)):  # its columns
+            listing.heading(column, text=heading)  # the heading
+            listing.column(column, width=width, anchor="w", stretch=column == "text")  # the width; the message column takes any spare room
+        listing.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=8, pady=(4, 2))  # place it
+        count = ttk.Label(quick, text="")  # how many there are, out of the most allowed
+        count.grid(row=2, column=0, sticky="w", padx=8)  # under the buttons
+
+        def show(select=None):  # (re)fill the list from the working copy
+            listing.delete(*listing.get_children())  # empty it
+            for number, item in enumerate(quick_items, start=1):  # each one
+                listing.insert("", "end", iid=str(number - 1), values=(f"Alt+{number % 10}", item["name"], item["text"]))  # its key, name and template
+            if select is not None and quick_items:  # a row to select
+                row = str(max(0, min(select, len(quick_items) - 1)))  # within the list
+                listing.selection_set(row)  # select it
+                listing.focus(row)  # and give it the keyboard's attention
+                listing.see(row)  # in view
+            count.configure(text=f"{len(quick_items)} of {QUICK_MOST} quick messages")  # how many
+            add_button.state(["disabled"] if len(quick_items) >= QUICK_MOST else ["!disabled"])  # no more than the most allowed
+
+        def chosen():  # the position of the selected quick message, or None
+            rows = listing.selection()  # the selected row
+            return int(rows[0]) if rows else None  # its position in the working copy
+
+        def editor(index=None):  # add (index None) or edit one quick message
+            item = quick_items[index] if index is not None else {"name": "", "text": ""}  # what it is now
+            top = self.window("quick_edit", "Kestrel - " + ("edit" if index is not None else "add") + " a quick message")  # the window
+            top.transient(dialog)  # it belongs to the Settings window
+            ttk.Label(top, text="Name").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))  # label of the name
+            name_box = ttk.Entry(top, width=40)  # the name the operator gives it
+            name_box.grid(row=0, column=1, sticky="w", padx=8, pady=(8, 2))  # place it
+            name_box.insert(0, item["name"])  # as it is now
+            ttk.Label(top, text="Message").grid(row=1, column=0, sticky="w", padx=8, pady=2)  # label of the template
+            text_box = ttk.Entry(top, width=80)  # the message, with fill-ins
+            text_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)  # place it
+            text_box.insert(0, item["text"])  # as it is now
+            ttk.Label(top, text="These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}", font="KestrelSmall").grid(row=2, column=1, sticky="w", padx=8)  # the fill-ins
+            preview = ttk.Label(top, text="", font="KestrelSmall", wraplength=560, justify="left")  # what it would say right now
+            preview.grid(row=3, column=1, sticky="w", padx=8, pady=(2, 4))  # place it
+            text_box.bind("<KeyRelease>", lambda event: preview.configure(text="Now it would read: " + self.expand(text_box.get())))  # follow the typing
+            preview.configure(text="Now it would read: " + self.expand(item["text"]) if item["text"] else "")  # the starting preview
+            (name_box if index is None else text_box).focus_set()  # ready to type
+
+            def keep():  # the operator accepts it
+                name, text = " ".join(name_box.get().split()), text_box.get().strip()  # the name (spacing tidied) and the template
+                others = {other["name"].lower() for number, other in enumerate(quick_items) if number != index}  # the names of the rest
+                problem = ("Give the quick message a name." if not name else f"The name can be at most {QUICK_NAME_MOST} characters." if len(name) > QUICK_NAME_MOST  # (continued)
+                           else "Another quick message already has that name." if name.lower() in others else "The message is empty." if not text  # (continued)
+                           else f"The message can be at most {telemetry.MAX_CHARS} characters." if len(text) > telemetry.MAX_CHARS else "")  # what, if anything, is wrong
+                if problem:  # something is wrong
+                    messagebox.showinfo("Kestrel", problem, parent=top)  # say what
+                    return  # stay in the window
+                if index is None:  # a new one
+                    quick_items.append({"name": name, "text": text})  # at the end
+                else:  # a change
+                    quick_items[index] = {"name": name, "text": text}  # in its place
+                top.destroy()  # close the window
+                show(len(quick_items) - 1 if index is None else index)  # show the list, with it selected
+
+            buttons = ttk.Frame(top)  # OK and Cancel
+            buttons.grid(row=4, column=1, sticky="e", padx=8, pady=8)  # under the boxes
+            ttk.Button(buttons, text="OK", command=keep).pack(side="left", padx=(0, 4))  # accept
+            ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="left")  # back out
+            top.bind("<Return>", lambda event: keep())  # Enter accepts
+
+        def edit():  # Edit...
+            index = chosen()  # the selected one
+            if index is None:  # none selected
+                messagebox.showinfo("Kestrel", "Select a quick message in the list first.", parent=dialog)  # say so
+                return  # nothing to edit
+            editor(index)  # open it
+
+        def delete():  # Delete
+            index = chosen()  # the selected one
+            if index is None:  # none selected
+                messagebox.showinfo("Kestrel", "Select a quick message in the list first.", parent=dialog)  # say so
+                return  # nothing to delete
+            if messagebox.askyesno("Kestrel", f"Delete the quick message \"{quick_items[index]['name']}\"?\n\nNothing changes until you press Save.", parent=dialog):  # make sure
+                del quick_items[index]  # take it out
+                show(index)  # the list again, with the next one selected
+
+        def move(step):  # Move up (-1) or Move down (+1)
+            index = chosen()  # the selected one
+            if index is None or not 0 <= index + step < len(quick_items):  # none selected, or already at that end
+                return  # nothing to do
+            quick_items[index], quick_items[index + step] = quick_items[index + step], quick_items[index]  # swap it with its neighbour
+            show(index + step)  # the list again, with it still selected
+
+        controls = ttk.Frame(quick)  # the buttons under the list
+        controls.grid(row=1, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 4))  # place them
+        add_button = ttk.Button(controls, text="Add...", command=lambda: editor(None))  # a new quick message
+        add_button.pack(side="left", padx=(0, 4))  # place it
+        ttk.Button(controls, text="Edit...", command=edit).pack(side="left", padx=(0, 4))  # change the selected one
+        ttk.Button(controls, text="Delete", command=delete).pack(side="left", padx=(0, 12))  # remove the selected one
+        ttk.Button(controls, text="Move up", command=lambda: move(-1)).pack(side="left", padx=(0, 4))  # earlier in the list (and a lower Alt key)
+        ttk.Button(controls, text="Move down", command=lambda: move(1)).pack(side="left")  # later in the list
+        listing.bind("<Double-1>", lambda event: edit())  # a double-click edits
+        listing.bind("<Delete>", lambda event: delete())  # the Delete key deletes
+        show(0)  # fill the list
+        note(quick, 3, f"Up to {QUICK_MOST} quick messages, each with a name you choose. Alt+1 to Alt+9 and Alt+0 put them in the Message box, in this order; they are also on the Quick button\nand under Messages > Quick messages. Changes are kept when you press Save.\n" "These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}\nTelemetry lists the stations heard in the last 30 minutes, strongest first, with their signal and fastest level.")  # the names that fill in
         looks = page("Appearance")  # the look
         field(looks, 0, "theme", "Theme", names=THEME_NAMES, width=30)  # system, light or dark
         from tkinter import font as tkfont  # for the list of fonts on this computer
@@ -2242,6 +2357,7 @@ class Panel:  # the control panel window
                 messagebox.showerror("Kestrel", f"The font size must be a whole number from {FONT_MIN} to {FONT_MAX}.", parent=dialog)  # say so
                 book.select(6)  # show the Appearance tab
                 return  # leave the window open
+            new["quick"] = [dict(item) for item in quick_items]  # the quick messages as edited
             restart = any(new[key] != self.settings[key] for key in ("call", "grid", "audio_in", "audio_out", "rig_model", "cat_port", "cat_baud", "cat_handshake", "radio_mode", "ptt", "port", "rigctld", "rig", "carry_mail"))  # does the running station need to start again?
             if new["call"] != self.settings["call"]:  # a different callsign has different mail
                 self.save_mail()  # keep the old callsign's
