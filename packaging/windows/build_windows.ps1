@@ -1,14 +1,15 @@
 # Build the Kestrel setup program for Windows.
 #
 # Run from PowerShell in the repository:   powershell -ExecutionPolicy Bypass -File packaging\windows\build_windows.ps1
-# Needs: Git, Python 3.12 (64-bit) and NSIS (makensis) on the build computer. The finished setup program needs none of them.
+# Needs: Git, Python 3.12 (64-bit), NSIS (makensis), and for the compiled modem MinGW-w64 g++ and CMake, on the build computer. The finished setup program needs none of them.
 #
 # What it does:
 #   1. Exports the committed code (git archive HEAD) into a fresh, neutral work folder, so nothing that is not
 #      in the repository (settings, logs, contacts, scratch files) can get into the installer, and no folder
 #      names of the build computer are recorded in the program.
 #   2. Makes a clean Python environment there with only the packages Kestrel needs, plus PyInstaller.
-#   3. Builds Kestrel.exe and its folder with PyInstaller (kestrel.spec).
+#   3. Builds the compiled modem library (kestrel.dll, with MinGW-w64 g++ and CMake if present), then Kestrel.exe
+#      and its folder with PyInstaller (kestrel.spec).
 #   4. Adds Hamlib's official Windows rigctld (downloaded once, checked against its published SHA-256), with its licences.
 #   5. Adds the getting-started notes, the licences and the specification.
 #   6. Scans every file, including the packed Python code, for anything naming the build computer or the
@@ -60,6 +61,16 @@ $VPy = Join-Path $Work "venv\Scripts\python.exe"                         # its P
 & $VPy -m pip install --quiet -r (Join-Path $Src "requirements.txt") pyinstaller  # Kestrel's packages and PyInstaller
 if ($LASTEXITCODE -ne 0) { throw "pip could not install the packages" }  # cannot go on
 
+Write-Host "Building the compiled modem library"                         # step 3a
+$Mingw = "C:\msys64\mingw64\bin"                                         # the usual MinGW-w64 folder (MSYS2)
+if ((Test-Path (Join-Path $Mingw "g++.exe")) -and -not (Get-Command g++ -ErrorAction SilentlyContinue)) { $env:Path = "$Mingw;$env:Path" }  # put MinGW (g++ and CMake) on the path if it is not already
+if ((Get-Command cmake -ErrorAction SilentlyContinue) -and (Get-Command g++ -ErrorAction SilentlyContinue)) {  # the tools are there
+    & $VPy (Join-Path $Src "tools\build_native.py")                       # build kestrel.dll into modem\_native
+    if ($LASTEXITCODE -ne 0) { throw "the compiled modem library did not build" }  # a broken build should be fixed, not shipped without
+} else {                                                                 # no compiler
+    Write-Warning "CMake or g++ not found: building without the compiled modem library (Kestrel will run in pure Python, more slowly)"  # say so and go on
+}
+
 Write-Host "Building Kestrel.exe"                                        # step 3
 Push-Location $Src                                                       # PyInstaller works relative to the code
 & $VPy -m PyInstaller --noconfirm --clean --distpath (Join-Path $Work "dist") --workpath (Join-Path $Work "build") "packaging\windows\kestrel.spec"  # build it
@@ -93,6 +104,7 @@ Copy-Item (Join-Path $Src "packaging\windows\README-installed.txt") (Join-Path $
 Copy-Item (Join-Path $Src "NOTICE") (Join-Path $App "docs\NOTICE.txt")  # the originator credit
 Copy-Item (Join-Path $Src "LICENSE") (Join-Path $App "docs\LICENSE-Apache-2.0.txt")  # the program's licence
 Copy-Item (Join-Path $Src "docs\LICENSE-CC-BY-4.0.txt") (Join-Path $App "docs\LICENSE-CC-BY-4.0.txt")  # the specification's licence
+Copy-Item (Join-Path $Src "cpp\third_party\pocketfft\LICENSE.md") (Join-Path $App "docs\LICENSE-pocketfft.txt")  # the FFT inside the compiled modem library (BSD licence: its notice must travel with it)
 Copy-Item (Join-Path $Src "docs\spec\kestrel-spec.md"), (Join-Path $Src "docs\spec\CHANGELOG.md") (Join-Path $App "docs")  # the specification and its history
 $Licences = @((Get-Content -Raw (Join-Path $Src "NOTICE")), "`r`n==== Kestrel program: Apache License 2.0 ====`r`n", (Get-Content -Raw (Join-Path $Src "LICENSE")), "`r`n==== Kestrel specification: CC BY 4.0 (see docs\LICENSE-CC-BY-4.0.txt) ====`r`n", "`r`n==== Hamlib: GNU GPL / LGPL (see hamlib\COPYING.txt, hamlib\COPYING.LIB.txt and hamlib\SOURCE.txt) ====`r`n") -join "`r`n"  # one text for the installer's licence page
 $Licences | Set-Content -Encoding utf8 (Join-Path $App "docs\LICENSES.txt")  # written beside the others

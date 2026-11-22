@@ -7,6 +7,7 @@ the first thing fading and multipath destroy. The receiver only asks
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, used when present
 from .params import BITS_PER_SYMBOL, FS, M_TONES  # waveform numbers shared by all levels
 
 _TONE_BITS = np.array([[(m >> (BITS_PER_SYMBOL - 1 - j)) & 1 for j in range(BITS_PER_SYMBOL)] for m in range(M_TONES)])  # the 5 bits each tone stands for
@@ -51,6 +52,10 @@ def band_energies(x, start, nsym, level, offset_hz=0.0, drift_hz_s=0.0):  # meas
     The bins beside each tone are kept because fast fading smears part of
     a tone's energy into them.
     """
+    lo, hi = level.tone_bins[0] - 1, level.tone_bins[-1] + 1  # the band kept: one bin below the lowest tone to one above the highest
+    done = native.band_energies(x, start, nsym, level.samples, offset_hz, drift_hz_s, lo, hi)  # the compiled version, when the library is in use
+    if done is not None:  # it was
+        return done  # the same energies, to within rounding
     spec = np.fft.fft(_mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s), axis=1)  # spectrum of each tone-length block
     return np.abs(spec[:, level.tone_bins[0] - 1:level.tone_bins[-1] + 2]) ** 2  # keep only the band the tones occupy, plus one bin each side
 

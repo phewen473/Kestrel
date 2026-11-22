@@ -153,6 +153,12 @@ Settings, your own frequencies, saved contacts, the 48-hour heard log and the lo
 
 `live_send.py` and `live_station.py` take `--ptt none|rig|cat|rts|dtr`, `--rig host:port`, `--band 40|30|20` (Kestrel's preselected frequency for that band), `--freq` (kHz), `--mode`, `--port`, `--baud` and `--gain`. Only transmit where your licence allows, with the published specification matching the program.
 
+## build_native.py - build the compiled modem library
+
+`python tools/build_native.py` runs CMake on `cpp/`, builds libkestrel and copies it to
+`modem/_native/`, where the modem loads it. Needs CMake and a C++17 compiler.
+See `cpp/README.md`.
+
 ## make_spec_tables.py - write the specification's tables
 
 ```

@@ -7,6 +7,8 @@ modem be tested end to end today.
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, used when present
+
 G1 = 0o171  # first generator: which register bits feed the first output bit
 G2 = 0o133  # second generator: which register bits feed the second output bit
 NSTATES = 64  # the encoder remembers 6 past bits, so it has 2**6 states
@@ -40,6 +42,9 @@ _SIGN2 = 1.0 - 2.0 * np.array([[_parity(int(r) & G2) for r in row] for row in _R
 
 def viterbi_decode(llrs):  # soft coded bits -> best-guess data bits
     """Decode soft values (positive = probably 0, negative = probably 1)."""
+    done = native.viterbi_decode(llrs)  # the compiled decoder, when the library is in use
+    if done is not None:  # it was
+        return done  # the same bits the Python below gives
     llrs = np.asarray(llrs, dtype=float)  # make sure we have floating-point numbers
     nsteps = len(llrs) // 2  # one decoding step per pair of coded bits
     metric = np.full(NSTATES, -1e18)  # score of the best path into each state (very low = impossible)

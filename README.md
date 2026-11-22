@@ -28,6 +28,7 @@ For a PC with nothing on it, build the setup program described in `packaging/REA
 | `docs/spec/tables/` | Tables the spec refers to: the error-correction check lists and the compression codes |
 | `sim/` | HF channel simulator: noise, fading, multipath, offset, drift, static crashes |
 | `modem/` | Modem prototype (Python reference): preamble, speed levels, header, LDPC error correction, text compression, receiver |
+| `cpp/` | libkestrel: the heaviest modem routines compiled (C++17, plain C interface), checked against the Python reference; optional (the modem runs in pure Python without it) |
 | `link/` | Link layer (Python reference): the rules that make, run and close a contact, and a two-station simulation |
 | `live/` | Kestrel on real audio: a continuous receiver, sound-card input and output, rig control through Hamlib's rigctld, and a live station |
 | `tests/` | Automated tests |
@@ -113,10 +114,11 @@ Kestrel (KES) is a new adaptive amateur digital mode: up to 200 characters per t
 ## Language and tools
 - Python 3.10 or newer; the local `.venv` uses Python 3.12.10.
 - Packages (`requirements.txt`): numpy >= 1.26, scipy >= 1.11, matplotlib >= 3.8, pytest >= 8.0; for the live tools also sounddevice >= 0.4 and pyserial >= 3.5.
-- Planned, not started: C++ modem core with CMake and a C interface, Qt operator program, Hamlib, PortAudio (see Development above).
+- C++17 modem library `cpp/` (CMake, C interface, loaded from Python with ctypes; FFT by pocketfft, BSD). Built with g++ on Linux and MinGW-w64 g++ 16 on Windows.
+- Planned, not started: Qt operator program (see Development above).
 
 ## How to build
-Nothing to compile yet. Create the environment once:
+Optional: `python tools/build_native.py` builds the compiled modem library into `modem/_native/` (needs CMake and a C++17 compiler; the modem runs in pure Python without it). Create the environment once:
 `python -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`.
 On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens the control panel.
 
@@ -133,6 +135,7 @@ On Windows, `setup_windows.bat` does both steps and `kestrel_panel.bat` opens th
 
 ## Where things were left
 Last commits:
+- 2026-11-22 (spec unchanged at 0.31): the compiled modem library begins: `cpp/` builds libkestrel (kestrel.dll / kestrel.so) with a C interface; the blanker, the Viterbi decoder and the tone-band measurement run compiled when the library is present (bit-identical or equal to rounding, checked by tests/test_native.py), with pure Python as the fallback and the reference. Help > About and --check say which is in use; the installer builds the DLL with MinGW. Next: the header search and preamble detection in C++.
 - 2026-11-22, spec v0.31 (no signal change): the live receiver searches incrementally. On the 2014 Xeon workstation the old search needed 1.47 s of computing per second of audio and fell behind real time; the new one needs a fraction of that, decoding the same frames (checked on simulated streams and in a new test). Next: the modem core in C++ with a C interface (Python modem kept as the reference).
 - 2026-11-21 (panel only, spec unchanged at 0.30): up to 10 quick messages, each named by the operator, managed in Settings > Quick messages (Add, Edit, Delete, Move up/down); Alt+1 to Alt+0 use them; the three earlier quick messages carry over with names. F10 opens Stations > Mail held and carried.
 - 2026-11-21, spec v0.30 (new signal version): store and forward, the first part of roadmap step 3. Messages for a named station get a lasting number; in any contact they are handed to the partner to carry (if its "Carry mail for others" setting is on); carriers deliver when the destination beacons or calls, and pass mail on only to stations that hear the destination; a new mail notice frame before the beacon lists whom a station holds mail for, delivery receipts and stations heard. Lifetime 62 hours, hop limit 4. Stations > Mail held and carried shows addresses, IDs and carriers only, never the content of other stations' mail. Mail kept per callsign in a file between runs. Also on the panel since 0.29: transmit scope above the receive scope with zoom; resizable panels; font choice; Floor and Range sliders on both scopes; edit and delete for queued messages.
@@ -183,6 +186,7 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `docs/spec/CHANGELOG.md` - what changed in each spec version.
 - `sim/channel.py` - HF channel simulator.
 - `docs/spec/tables/` - LDPC check lists and compression codes (written by `tools/make_spec_tables.py`).
+- `cpp/` - libkestrel, the compiled modem routines (`include/kestrel.h`, `src/kestrel.cpp`); `modem/native.py` loads it.
 - `modem/` - modem prototype (`levels.py`, `plan.py`, `frame.py`, `address.py`, `control.py`, `ldpc.py`, `compress.py`, `fec.py`, `preamble.py`, `mfsk.py` ...); `modem/README.md` has the measured results.
 - `link/` - link layer (`station.py`, `adapt.py`, `simulate.py`, `params.py`); `link/README.md` has the rules and what the simulation showed.
 - `live/` - real audio (`listener.py`, `audio.py`, `ptt.py`, `rig.py`, `runner.py`); `live/README.md` explains the live tools and the no-radio cable test.
@@ -192,7 +196,7 @@ Design wishes: beacon announces presence, a listener chooses to answer, then the
 - `LICENSE`, `NOTICE`, `docs/LICENSE-CC-BY-4.0.txt` - licences and attribution.
 
 ## Notes and gotchas
-- `origin` is public GitHub. The standing rule is to push to the local Git server and the backup drive; pushing to GitHub is his decision each time.
+- `origin` is public GitHub. Every increment is pushed to all three remotes (the local Git server, the backup drive and GitHub), after the private-word check.
 - The spec is versioned so that what is published always matches what is transmitted. Change the spec version whenever the signal changes.
 - No encryption, ever (Part 97).
 - `.venv\`, `__pycache__\`, `.pytest_cache\` and `results/demo.wav` are not tracked (`.gitignore`); recreate them as needed.

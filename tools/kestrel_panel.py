@@ -44,6 +44,7 @@ from link import Station  # the link rules  # noqa: E402
 from link.mail import Mailroom  # the mail kept between contacts and runs (store and forward)  # noqa: E402
 from link.params import HOP_LIMIT, MAIL_LIFE_HOURS  # how far and how long mail travels  # noqa: E402
 from modem import call_hash  # the short code a mail notice uses for a callsign  # noqa: E402
+from modem import native  # the compiled modem library, to say in About and --check whether it is in use  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -167,7 +168,7 @@ def about_text():  # the words in Help > About
             f"Kestrel version: {SPEC_VERSION} (the specification it follows, draft)\n"  # the program's version, which is that of the published description
             f"Signal version: {SIGNAL_VERSION} (what goes on the air; a release that changes only the program leaves it alone)\n"  # the version of the transmitted signal
             f"Program: {build_info()}\n"  # which build of the program
-            f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n\n"  # the Python it runs on
+            f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}; {native.describe()}\n\n"  # the Python it runs on, and whether the compiled modem library is helping
             f"Stations must have the same signal version to hear each other.\n\n"  # the practical point
             f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licences
 
@@ -2658,6 +2659,7 @@ def self_check():  # Kestrel.exe --check: is everything the program needs presen
         note(True, f"numpy {np.__version__}, scipy {scipy.__version__}")  # present
     except Exception as problem:  # missing
         note(False, f"numpy/scipy: {problem}")  # say so
+    note(True, f"modem: {native.describe()}")  # compiled library or pure Python (either works; the library is faster)
     try:  # the sound system
         devices = list_devices()  # every sound device
         note(bool(devices), f"sound system: {sum(1 for d in devices if d[2] > 0)} input and {sum(1 for d in devices if d[3] > 0)} output devices")  # how many

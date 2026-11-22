@@ -8,11 +8,16 @@ recording is.
 
 import numpy as np  # numerical arrays
 
+from . import native  # the compiled library, used when present
+
 BLOCK = 1200  # samples per neighbourhood: a tenth of a second at 12,000 samples per second
 
 
 def blank_impulses(x, threshold=4.5, guard=12):  # remove loud spikes
     """Return a copy of `x` with samples far above the level of their own neighbourhood set to zero."""
+    done = native.blank_impulses(x, threshold, guard)  # the compiled version, when the library is in use
+    if done is not None:  # it was
+        return done  # its result is the same as the Python below gives
     level = np.abs(x)  # size of every sample, ignoring sign
     blocks = -(-len(level) // BLOCK)  # number of neighbourhoods, rounding up
     if blocks == 0:  # an empty recording

@@ -19,7 +19,8 @@ empty. (Run from the source folder, Kestrel still uses `local/`.)
 
 ### Building it
 
-On a Windows computer with Git, 64-bit Python 3.12 and NSIS:
+On a Windows computer with Git, 64-bit Python 3.12 and NSIS (and, for the compiled modem,
+MSYS2's MinGW-w64 g++ and CMake):
 
     powershell -ExecutionPolicy Bypass -File packaging\windows\build_windows.ps1
 
@@ -32,7 +33,11 @@ The setup program and its SHA-256 checksum are written to
    no folder names of the build computer;
 2. makes a clean Python environment with only the packages in
    `requirements.txt` and PyInstaller;
-3. builds `Kestrel.exe` and its folder with PyInstaller (`kestrel.spec`);
+3. builds the compiled modem library `kestrel.dll` with MinGW-w64 g++ and CMake
+   (`tools/build_native.py`; it looks in `C:\msys64\mingw64\bin` if they are not on the
+   path, and builds without it, with a warning, if there is no compiler), then
+   `Kestrel.exe` and its folder with PyInstaller (`kestrel.spec`), which packs the DLL
+   into `modem\_native`;
 4. adds Hamlib's official 64-bit Windows release (version and SHA-256
    pinned in the script), with its licences and the address of its
    source code (`hamlib\SOURCE.txt`), as the GPL asks;

@@ -6,10 +6,12 @@ import os  # file paths
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))  # the repository root (two levels above this file; SPECPATH is set by PyInstaller)
 
+NATIVE = os.path.join(ROOT, "modem", "_native", "kestrel.dll")  # the compiled modem library, built by build_windows.ps1 before this runs
 analysis = Analysis(  # find everything the panel imports
     [os.path.join(ROOT, "tools", "kestrel_panel.py")],  # the program to build
     pathex=[ROOT],  # so the link, live, modem and sim packages are found
     datas=[(os.path.join(ROOT, "VERSION"), ".")],  # the commit stamp, for Help > About
+    binaries=[(NATIVE, os.path.join("modem", "_native"))] if os.path.isfile(NATIVE) else [],  # the compiled modem library, where modem/native.py looks for it (left out if it was not built: the modem then runs in pure Python)
     hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports", "tools.decode_wav", "tools.signal_report"],  # imported inside functions, so the search may not see them (the two tools serve File > Decode a recording and File > Signal log report)
     excludes=["matplotlib", "pytest", "IPython", "PyQt5", "PyQt6", "PySide6", "notebook"],  # used only by the study tools and tests, not by the panel
     noarchive=False,  # keep the Python files packed in one archive

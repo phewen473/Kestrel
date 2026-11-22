@@ -19,3 +19,5 @@ packaging/cache/
 # PyInstaller's working folders
 build/
 dist/
+# the compiled modem library, built by tools/build_native.py (the installer builds its own)
+modem/_native/
