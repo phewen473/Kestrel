@@ -1,5 +1,10 @@
 # Kestrel specification changelog
 
+## 0.31R3 (draft) - 22 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.30.** Nothing in the specification changes either.
+- The reference program: a contact book in the panel (`live/contacts.py`, `contacts.json`): details kept for each saved station (name, location, grid locator, radio, power, antenna, notes), its last reading, and a history of the traffic with it, 30 to 200 entries (default 120), all traffic or completed contacts only. A new record is filled in from what was heard (callsign, grid locator, band, frequency, level, signal).
+
 ## 0.31R2 (draft) - 22 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30**; 0.30, 0.31, 0.31R1 and 0.31R2 stations work together.

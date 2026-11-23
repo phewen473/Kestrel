@@ -14,8 +14,9 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 | `rig.py` | `RigCtl`: sets frequency and mode, and keys the transmitter, through Hamlib's `rigctld` |
 | `bands.py` | The preselected frequency for each band (80, 40, 30 and 20 m), a check that a frequency keeps the signal inside a 97.221(b) segment, and a check that it is inside the U.S. data segments at all |
 | `runner.py` | `run_station`: runs one `link.Station` on real audio, in real time, with hooks the control panel uses to ask for a beacon or call and to log every frame |
+| `contacts.py` | `ContactBook`: the operator's contact book (`contacts.json`): each saved station's details, last reading and a history of traffic with it (30 to 200 entries, default 120; all traffic or completed contacts only), fed by the logbook's events; grid locator distance and bearing (since 0.31R3) |
 | `heardlog.py` | `HeardLog`: every station decoded in the last 48 hours, kept on disk |
-| `logbook.py` | `Logbook`: a CSV file per UTC day at three levels of detail (basic, advanced, verbose) and an ADIF file of completed contacts |
+| `logbook.py` | `Logbook` (its `observers`, such as the contact book, are told of every event at any level of detail): a CSV file per UTC day at three levels of detail (basic, advanced, verbose) and an ADIF file of completed contacts |
 | `telemetry.py` | Telemetry messages (TLM1, spec Section 6.12): build one from the heard log, read one back, and compare stations |
 | `theme.py` | Light and dark looks for the control panel, and following Windows' own setting |
 | `recorder.py` | `TimedSource`: numbers every received sample, so the listener, the signal log and the recordings share one timeline (sample n arrived at t0 + n / 12000); `Recorder` and `RecordingSource`: save the received audio to hourly 16-bit WAV files (12,000 samples per second, kept 7 days); `read_wav` reads any WAV file back at the modem's rate |

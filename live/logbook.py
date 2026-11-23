@@ -60,6 +60,7 @@ class Logbook:  # the CSV and ADIF logs
         self.name = name  # the start of every file name (kestrel, or kestrel_<profile> for a second panel)
         self.level = level if level in LEVELS else "basic"  # the level of detail
         self.lock = threading.Lock()  # one writer at a time
+        self.observers = []  # functions told of every event, whatever the level of detail: observer(event, when, fields) (the contact book, since 0.31R3)
 
     def csv_path(self, when=None):  # the day's CSV file
         """Return the path of the CSV file for the UTC day of `when` (now if None)."""
@@ -74,10 +75,20 @@ class Logbook:  # the CSV and ADIF logs
         return EVENT_LEVEL.get(event, 2) <= LEVELS.index(self.level)  # unknown events only in verbose
 
     def write(self, event, when=None, **fields):  # add one row
-        """Write one row for `event` if the chosen level records it; columns above the level are left empty. Return the row written, or None."""
+        """Write one row for `event` if the chosen level records it; columns above the level are left empty. Return the row written, or None.
+
+        Every observer is told of the event first, at any level of detail,
+        with all the fields given (including any that are not columns, such
+        as report_db: how the other station reported hearing this one).
+        """
+        when = time.time() if when is None else when  # the moment of the event
+        for observer in self.observers:  # whoever wants to know (the contact book)
+            try:  # an observer's fault must never stop the logbook
+                observer(event, when, fields)  # tell it
+            except Exception:  # anything at all
+                pass  # the logbook goes on
         if not self.wants(event):  # not at this level
             return None  # nothing written
-        when = time.time() if when is None else when  # the moment of the event
         depth = LEVELS.index(self.level)  # how many column groups to fill
         row = {name: "" for name in COLUMNS}  # an empty row
         row.update({"utc_date": time.strftime("%Y-%m-%d", time.gmtime(when)), "utc_time": time.strftime("%H:%M:%S", time.gmtime(when)), "event": event})  # when, and what

@@ -46,6 +46,7 @@ from link.params import HOP_LIMIT, MAIL_LIFE_HOURS  # how far and how long mail 
 from modem import call_hash  # the short code a mail notice uses for a callsign  # noqa: E402
 from modem import native  # the compiled modem library, to say in About and --check whether it is in use  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
+from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
@@ -71,6 +72,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)  # (continued: logging, recording and looks)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
+DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
 QUICK_MOST = 10  # the most quick messages an operator may keep
 QUICK_NAME_MOST = 40  # the longest name a quick message may have
 QUICK_OLD_NAMES = ("Call, name and grid", "Rig and power", "Telemetry")  # names given to the three quick messages kept by versions before 0.30, which had no names
@@ -240,7 +242,7 @@ class Panel:  # the control panel window
         self.heard = queue.Queue()  # reports of stations heard, waiting to go into the list (filled by the working thread)
         self.heard_rows = {}  # callsign -> its row in the stations-heard list
         self.notice = None  # the warning window about an idle working frequency, while one is showing
-        self.contacts = read_json(CONTACTS_FILE, {})  # saved contacts: callsign -> {"grid": locator}
+        self.contacts = ContactBook(CONTACTS_FILE, self.settings.get("contact_history", HISTORY_DEFAULT), self.settings.get("contact_history_mode", "all"))  # the contact book: callsign -> record with name, rig, notes and history (live/contacts.py; since 0.31R3)
         self.entries = []  # the frequency entries behind the drop-down list
         self.rigs = RigServer()  # the rig control program this panel starts for the chosen radio
         self.rig_lock = threading.Lock()  # only one thread at a time may start or tune through rig control
@@ -274,6 +276,7 @@ class Panel:  # the control panel window
         self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
+        self.logbook.observers.append(self.contacts.observe)  # the contact book learns of every call, reception and contact from the logbook, at any level of detail
         self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
         self.panes = {}  # the dividers the operator can drag, by name, so their positions can be remembered
         self.colours = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colours
@@ -334,6 +337,10 @@ class Panel:  # the control panel window
         self.to = ttk.Combobox(typing, width=11)  # the callsign a message is for, or the station to call: type one, or pick a saved contact or a station heard; blank means whoever the partner is
         self.to.grid(row=0, column=1, sticky="w")  # place it
         self.to.bind("<Return>", lambda event: self.message.focus_set())  # Enter in the To box moves on to the message
+        record_buttons = ttk.Frame(typing)  # the contact buttons, under the To box (since 0.31R3)
+        record_buttons.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))  # place them
+        ttk.Button(record_buttons, text="Add Contact", command=self.add_contact).pack(side="left")  # a new contact, for the callsign in the To box
+        ttk.Button(record_buttons, text="Edit Contact", command=self.edit_contact).pack(side="left", padx=4)  # the record of the callsign in the To box
         self.quick_menu = tk.Menu(root, tearoff=False)  # the quick messages
         quick = ttk.Menubutton(typing, text="Quick", menu=self.quick_menu)  # the button that opens them
         quick.grid(row=0, column=2, padx=(8, 0))  # place it
@@ -371,9 +378,10 @@ class Panel:  # the control panel window
         ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
         ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
         ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
-        self.stations.bind("<Double-1>", lambda event: self.pick_station())  # a double-click chooses the callsign for the next message or call
+        self.stations.bind("<Double-1>", lambda event: self.open_station_record())  # a double-click opens the station's contact record (a new one, filled in from what was heard, if it is not saved yet), and puts its callsign in the To box
         self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
         self.station_menu.add_command(label="Respond (call this station)", accelerator="Ctrl+Y", command=self.respond)  # call it by name
+        self.station_menu.add_command(label="Contact record...", command=self.open_station_record)  # its record (as a double-click)
         self.station_menu.add_command(label="Save as contact", command=self.save_contact)  # keep it
         self.station_menu.add_command(label="Remove contact", command=self.remove_contact)  # forget it
         self.station_menu.add_command(label="Show last 48 hours", command=self.station_history)  # its receptions
@@ -503,7 +511,7 @@ class Panel:  # the control panel window
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
         bar.add_cascade(label="View", underline=0, menu=view)  # put the menu on the bar
         settings = tk.Menu(bar, tearoff=False)  # the Settings menu
-        for tab, words, key in ((0, "Station...", 0), (1, "Radio and rig control...", 0), (2, "Audio...", 0), (3, "Operating (start-up, beacon)...", 0), (4, "Logging...", 0), (5, "Quick messages...", 0), (6, "Appearance...", 1)):  # one item per tab of the Settings window
+        for tab, words, key in ((0, "Station...", 0), (1, "Radio and rig control...", 0), (2, "Audio...", 0), (3, "Operating (start-up, beacon)...", 0), (4, "Logging...", 0), (5, "Quick messages...", 0), (6, "Appearance...", 1), (7, "Contacts...", 0)):  # one item per tab of the Settings window
             settings.add_command(label=words, underline=key, accelerator="F12" if tab == 0 else "", command=lambda t=tab: self.settings_window(t))  # open Settings at that tab
         bar.add_cascade(label="Settings", underline=0, menu=settings)  # put the menu on the bar
         help_menu = tk.Menu(bar, tearoff=False)  # the Help menu
@@ -1184,7 +1192,8 @@ class Panel:  # the control panel window
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
-                           level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name())  # the logbook, from the advanced level up
+                           level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(),  # (continued)
+                           report_db=getattr((result.fields or {}).get("report"), "snr_db", None))  # the logbook, from the advanced level up (report_db, how the sender heard this station, goes only to the contact book)
 
     def log_frame(self, result):  # every report from the receiver (called from the working thread), for the verbose log
         if not self.logbook.wants("frame"):  # not logging at that level
@@ -1307,8 +1316,7 @@ class Panel:  # the control panel window
         while not self.heard.empty():  # every station heard since the last look
             call, grid, snr, kind, fields, band = self.heard.get()  # who, where, how strong, what it sent, its flags, and the band it was heard on
             if call in self.contacts and band and self.contacts[call].get("band") != band:  # a saved contact heard on another band
-                self.contacts[call]["band"] = band  # remember the band
-                write_json(CONTACTS_FILE, self.contacts)  # and keep it
+                self.contacts.put(call, band=band)  # remember the band (and keep it in the file)
             if band and any(self.to_send.set(row, "to") == call for row in self.to_send.get_children()):  # a station there are messages for
                 self.refresh_send_bands()  # show the band it was just heard on
             if kind in ("beacon", "answer"):  # a beacon or an answer says whether its sender takes contacts
@@ -2081,16 +2089,7 @@ class Panel:  # the control panel window
         def keep():  # save the selected callsign as a contact
             call = chosen()  # which one
             if call:  # one is selected
-                grid = next((row["grid"] for row in self.heardlog.summary() if row["call"] == call), "")  # its grid, if known
-                band = band_of(next((row["dial_khz"] for row in self.heardlog.summary() if row["call"] == call), 0))  # the band it was last heard on
-                self.contacts[call] = {"grid": grid, "band": band}  # remember it
-                write_json(CONTACTS_FILE, self.contacts)  # save the list
-                if call in self.heard_rows:  # on the main list
-                    self.stations.set(self.heard_rows[call], "saved", "*")  # mark it
-                else:  # not yet
-                    self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, grid, band, "", "", "saved contact"))  # add it
-                self.refresh_to()  # offer it in the To box
-                self.say(f"{call} saved as a contact")  # confirm
+                self.contact_window(call)  # its record: a new one filled in from what was heard, or the saved one (since 0.31R3)
 
         buttons = ttk.Frame(top)  # the row of buttons
         buttons.pack(fill="x", padx=8, pady=(0, 8))  # at the bottom
@@ -2165,19 +2164,239 @@ class Panel:  # the control panel window
             self.message.focus_set()  # ready to type a message
 
     def save_contact(self):  # keep the selected callsigns as contacts
-        for row in self.stations.selection():  # each selected row
+        rows = self.stations.selection()  # the selected rows
+        if len(rows) == 1:  # one station: open its record to fill in (since 0.31R3)
+            self.open_station_record()  # as a double-click does
+            return  # the window does the rest
+        for row in rows:  # several: each is saved as it is
             call = self.stations.set(row, "who")  # its callsign
-            self.contacts[call] = {"grid": self.stations.set(row, "grid"), "band": self.stations.set(row, "band")}  # remember it, with its grid locator and band if known
+            if call not in self.contacts:  # not saved yet (a saved one keeps its record)
+                self.contacts.put(call, grid=self.stations.set(row, "grid"), band=self.stations.set(row, "band"))  # remember it, with its grid locator and band if known
             self.stations.set(row, "saved", "*")  # mark the row
-        write_json(CONTACTS_FILE, self.contacts)  # save the list
         self.refresh_to()  # and offer them first in the To box
 
     def remove_contact(self):  # forget the selected contacts
-        for row in self.stations.selection():  # each selected row
-            self.contacts.pop(self.stations.set(row, "who"), None)  # forget it
-            self.stations.set(row, "saved", "")  # unmark the row
-        write_json(CONTACTS_FILE, self.contacts)  # save the list
-        self.refresh_to()  # and reorder the To box
+        calls = [self.stations.set(row, "who") for row in self.stations.selection() if self.stations.set(row, "who") in self.contacts]  # the selected saved contacts
+        if not calls:  # none
+            return  # nothing to do
+        entries = sum(len(self.contacts[call]["history"]) for call in calls)  # the history they hold
+        if not messagebox.askyesno("Kestrel - Delete Contact", f"Delete {', '.join(calls)}?\n\nThe record{'s' if len(calls) > 1 else ''} and {entries} history entr{'ies' if entries != 1 else 'y'} are removed from contacts.json. This cannot be undone.\n\nLogbook entries, messages and the 48-hour list of stations heard are kept.", icon="warning", parent=self.root):  # ask first: the history goes too (since 0.31R3)
+            return  # kept
+        for call in calls:  # each one
+            self.forget_contact(call)  # out of the book and off the list
+
+
+    def add_contact(self):  # the Add Contact button, under the To box (since 0.31R3)
+        call = self.to.get().strip().upper()  # the callsign in the To box, if any
+        if call and call in self.contacts:  # already a contact
+            self.say(f"{call} is already a contact; opening its record")  # say so
+        self.contact_window(call)  # a new record (for that callsign, or one to type), or the saved one
+
+    def edit_contact(self):  # the Edit Contact button, under the To box (since 0.31R3)
+        call = self.to.get().strip().upper()  # the callsign in the To box, if any
+        if call in self.contacts:  # a saved contact
+            self.contact_window(call)  # its record
+            return  # done
+        if not self.contacts:  # no contacts at all
+            messagebox.showinfo("Kestrel", "There are no saved contacts yet. Use Add Contact, or double-click a station in Stations heard.", parent=self.root)  # say how to make one
+            return  # nothing to edit
+        if call:  # a callsign that is not saved
+            if messagebox.askyesno("Kestrel", f"{call} is not a contact yet.\n\nAdd it as a new contact?", parent=self.root):  # offer to add it
+                self.contact_window(call)  # a new record for it
+            return  # done
+        self.choose_contact()  # no callsign: pick one from the list
+
+    def choose_contact(self):  # pick a saved contact to edit
+        top = self.window("choose contact", "Kestrel - Edit Contact")  # a small window
+        ttk.Label(top, text="Choose a contact to edit:").pack(anchor="w", padx=10, pady=(10, 4))  # what to do
+        listing = tk.Listbox(top, height=min(15, max(5, len(self.contacts))), width=40, exportselection=False)  # the contacts
+        listing.pack(fill="both", expand=True, padx=10)  # place it
+        calls = sorted(self.contacts)  # alphabetical
+        for call in calls:  # each contact
+            name = self.contacts[call].get("name", "")  # its name, if known
+            listing.insert("end", f"{call}  {name}".rstrip())  # one line
+        if calls:  # at least one
+            listing.selection_set(0)  # the first chosen
+            listing.focus_set()  # ready for the arrow keys
+
+        def open_chosen():  # open the chosen one
+            picked = listing.curselection()  # the line chosen
+            if picked:  # one is
+                top.destroy()  # close this window
+                self.contact_window(calls[picked[0]])  # and open its record
+
+        listing.bind("<Double-1>", lambda event: open_chosen())  # a double-click opens it
+        listing.bind("<Return>", lambda event: open_chosen())  # so does Enter
+        buttons = ttk.Frame(top)  # the buttons
+        buttons.pack(fill="x", padx=10, pady=10)  # at the bottom
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")  # close
+        ttk.Button(buttons, text="Edit", command=open_chosen).pack(side="right", padx=4)  # open it
+
+    def open_station_record(self):  # a double-click on a station heard (since 0.31R3)
+        for row in self.stations.selection()[:1]:  # the row chosen
+            call = self.stations.set(row, "who")  # its callsign
+            self.to.set(call)  # into the To box, as a double-click did before
+            self.contact_window(call)  # its record: the saved one, or a new one filled in from what was heard
+
+    def heard_details(self, call):  # what is known of a station from the 48-hour list of stations heard
+        """Return the latest reception of `call` in the 48-hour heard log as a dict (t, grid, snr, level, kind, dial_khz), or None."""
+        latest, grid = None, ""  # nothing yet
+        for record in self.heardlog.snapshot():  # every reception, oldest first
+            if record.get("call") == call:  # this station
+                latest = record  # the latest so far
+                grid = record.get("grid") or grid  # a grid, once one is known
+        if latest is None:  # never heard (in 48 hours)
+            return None  # nothing known
+        return dict(latest, grid=grid)  # the latest reception, with the grid if any reception carried one
+
+    def forget_contact(self, call):  # take a contact out of the book and the lists
+        self.contacts.delete(call)  # out of the book and its file, history and all
+        row = self.heard_rows.get(call)  # its row in Stations heard, if any
+        if row is not None:  # listed
+            if self.stations.set(row, "text") == "saved contact":  # listed only because it was saved (not heard this session)
+                self.stations.delete(row)  # take the row away
+                del self.heard_rows[call]  # and forget it
+            else:  # heard this session
+                self.stations.set(row, "saved", "")  # unmark it
+        self.refresh_to()  # the To list
+        self.say(f"{call} deleted from your contacts")  # confirm
+
+    def contact_window(self, call=""):  # a contact's record: add, edit or delete it (since 0.31R3)
+        """Open the record of `call`: the saved one, or a new one. A new one is filled in from the 48-hour list of stations heard when the station was heard (callsign, grid locator, band, frequency, level and signal)."""
+        call = (call or "").strip().upper()  # the callsign, if any
+        saved = call in self.contacts  # a saved contact?
+        record = dict(self.contacts[call]) if saved else {"call": call, "name": "", "location": "", "grid": "", "radio": "", "power_w": "", "antenna": "", "notes": "", "last_heard": {}, "history": []}  # a copy to show
+        heard = None if saved or not call else self.heard_details(call)  # for a new contact, what was heard of it
+        if heard is not None:  # it was heard
+            record["grid"] = heard.get("grid", "")  # its grid, if it sent one
+            record["last_heard"] = {"t": heard.get("t"), "band": band_of(heard.get("dial_khz") or 0), "dial_khz": heard.get("dial_khz"), "level": level_name(heard.get("level", 0)), "snr_db": heard.get("snr")}  # how it was heard
+        top = self.window(f"contact {call}", f"Kestrel - {'Contact' if saved else 'New Contact'}{' - ' + call if call else ''}")  # the window
+        top.columnconfigure(0, weight=1)  # it takes the width
+        top.columnconfigure(1, weight=1)  # both halves
+        top.rowconfigure(4, weight=1)  # the history takes the spare height
+        if not saved and heard is not None:  # filled in from what was heard: say so
+            ttk.Label(top, text=f"{call} is not in your contacts yet. The grid locator, band, frequency, level and signal were filled in from what was heard at {time.strftime('%H:%M:%S', time.gmtime(heard['t']))} UTC (Stations heard). Nothing is saved until you click Save.", wraplength=820, justify="left").grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))  # the note
+        elif not saved:  # a new contact from nothing
+            ttk.Label(top, text="A new contact. Nothing is saved until you click Save.", justify="left").grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))  # the note
+        boxes = {}  # the text boxes, by field name
+
+        def box(frame, row, name, label, width=28, readonly=False):  # one labelled text box
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(4, 8), pady=3)  # its label
+            entry = ttk.Entry(frame, width=width)  # the box
+            entry.insert(0, str(record.get(name, "") or ""))  # what is known
+            if readonly:  # the callsign of a saved contact cannot change (delete it and add the new one)
+                entry.configure(state="readonly")  # shown but not changed
+            entry.grid(row=row, column=1, sticky="w", pady=3)  # place it
+            boxes[name] = entry  # keep it
+            return entry  # for wiring
+
+        station = ttk.LabelFrame(top, text="Station", padding=8)  # who and where
+        station.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(10, 0))  # the left half
+        box(station, 0, "call", "Callsign", width=14, readonly=saved)  # the callsign
+        box(station, 1, "name", "Name")  # the operator's name
+        box(station, 2, "location", "Location")  # where
+        grid_box = box(station, 3, "grid", "Grid locator", width=10)  # the grid locator
+        ttk.Label(station, text=f"From {self.settings['grid'] or 'your grid'}").grid(row=4, column=0, sticky="w", padx=(4, 8), pady=3)  # distance from this station
+        away = ttk.Label(station, text="")  # filled in below
+        away.grid(row=4, column=1, sticky="w", pady=3)  # place it
+
+        def show_distance(event=None):  # the distance and bearing, as the grid is typed
+            found = distance_bearing(self.settings["grid"], grid_box.get())  # from this station's grid
+            away.configure(text=f"{found[0]:.0f} mi, bearing {found[1]:.0f}°" if found else "(needs both grid locators)")  # or why not
+
+        grid_box.bind("<KeyRelease>", show_distance)  # follow the typing
+        show_distance()  # and show it now
+        rig = ttk.LabelFrame(top, text="Rig", padding=8)  # the other station's radio
+        rig.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(10, 0))  # the right half
+        box(rig, 0, "radio", "Radio")  # the radio
+        box(rig, 1, "power_w", "Power (W)", width=8)  # its power
+        box(rig, 2, "antenna", "Antenna")  # its antenna
+        last = record.get("last_heard") or {}  # how it was last heard
+        when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(last["t"])) if last.get("t") else "not heard yet"  # when
+        parts = [when] + [part for part in (last.get("band", ""), f"{last['dial_khz']:.1f} kHz" if last.get("dial_khz") else "", f"audio {last['offset_hz']:+.0f} Hz" if last.get("offset_hz") is not None else "", last.get("level", ""), f"{last['snr_db']:+.0f} dB" if last.get("snr_db") is not None else "") if part]  # what is known
+        ttk.Label(rig, text="Last heard").grid(row=3, column=0, sticky="nw", padx=(4, 8), pady=3)  # label
+        ttk.Label(rig, text="  ·  ".join(parts), wraplength=380, justify="left").grid(row=3, column=1, sticky="w", pady=3)  # the reading
+        ttk.Label(rig, text="Radio, power and antenna are not sent over the air: fill them in when you learn them.", font="KestrelSmall", wraplength=400, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # why they are blank
+        notes_row = ttk.Frame(top)  # the notes
+        notes_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))  # under both halves
+        notes_row.columnconfigure(1, weight=1)  # the box takes the width
+        ttk.Label(notes_row, text="Notes").grid(row=0, column=0, sticky="nw", padx=(4, 8))  # label
+        notes = tk.Text(notes_row, height=3, width=60, wrap="word", font="TkDefaultFont")  # the notes box, in the panel's usual lettering
+        notes.insert("1.0", record.get("notes", "") or "")  # what is known
+        notes.grid(row=0, column=1, sticky="ew")  # place it
+        notes.configure(background=self.colours["text_bg"], foreground=self.colours["text_fg"], insertbackground=self.colours["text_fg"])  # in the chosen look, as the log is
+        history = record.get("history", [])  # the history, oldest first
+        mode = MODE_NAMES.get(self.settings.get("contact_history_mode", "all"), "All traffic")  # what is recorded
+        first_words = "starts with this reception once saved" if not history and heard is not None and self.settings.get("contact_history_mode", "all") == "all" else f"{len(history)} kept"  # how many entries
+        ttk.Label(top, text=f"Contact history: {first_words}, newest first, up to {self.contacts.limit} (Settings > Contacts; recording: {mode})").grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))  # its heading
+        frame = ttk.Frame(top)  # the history list and its scroll bar
+        frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=10)  # place it
+        frame.columnconfigure(0, weight=1)  # the list takes the width
+        frame.rowconfigure(0, weight=1)  # and the height
+        columns = (("t", "UTC", 130), ("band", "Band", 50), ("khz", "kHz", 70), ("lvl", "Level", 50), ("heard", "We heard", 76), ("them", "They heard", 86), ("msgs", "Msgs in/out", 92), ("out", "Outcome", 200))  # its columns
+        listing = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=9)  # the history
+        for name, heading, width in columns:  # each column
+            listing.heading(name, text=heading)  # its heading
+            listing.column(name, width=width, stretch=name == "out")  # its width (the outcome takes the rest)
+        for entry in reversed(history):  # newest first
+            listing.insert("", "end", values=(time.strftime("%Y-%m-%d %H:%M", time.gmtime(entry.get("start", 0))), entry.get("band", ""), f"{entry['dial_khz']:.1f}" if entry.get("dial_khz") else "",  # (continued)
+                                              entry.get("level", ""), f"{entry['heard_db']:+.0f} dB" if entry.get("heard_db") is not None else "—", f"{entry['their_db']:+.0f} dB" if entry.get("their_db") is not None else "—",  # (continued)
+                                              f"{entry.get('msgs_in', 0)} / {entry.get('msgs_out', 0)}", entry.get("outcome", "")))  # one entry
+        if not history and heard is not None and self.settings.get("contact_history_mode", "all") == "all":  # a new contact that was heard: its first entry, once saved
+            listing.insert("", "end", values=(time.strftime("%Y-%m-%d %H:%M", time.gmtime(heard["t"])), band_of(heard.get("dial_khz") or 0), f"{heard['dial_khz']:.1f}" if heard.get("dial_khz") else "", level_name(heard.get("level", 0)),  # (continued)
+                                              f"{heard['snr']:+.0f} dB" if heard.get("snr") is not None else "—", "—", "0 / 0", f"Heard {heard.get('kind', '')}".strip()))  # the reception it was made from
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=listing.yview)  # its scroll bar
+        listing.configure(yscrollcommand=scroll.set)  # joined up
+        listing.grid(row=0, column=0, sticky="nsew")  # place the list
+        scroll.grid(row=0, column=1, sticky="ns")  # and the bar
+
+        def save():  # the Save button
+            new_call = boxes["call"].get().strip().upper()  # the callsign
+            if not CALL_PATTERN.match(new_call):  # not a callsign
+                messagebox.showerror("Kestrel", f"'{new_call}' does not look like an amateur callsign. Check it and try again.", parent=top)  # say so
+                return  # leave the window open
+            grid = boxes["grid"].get().strip()  # the grid locator
+            grid = grid[:2].upper() + grid[2:4] + grid[4:].lower()  # written the usual way
+            if grid and distance_bearing(grid, grid) is None:  # not a locator
+                messagebox.showerror("Kestrel", f"'{grid}' is not a grid locator (four or six characters, such as FM05 or FM05ow).", parent=top)  # say so
+                return  # leave the window open
+            first = new_call not in self.contacts  # a new contact?
+            fields = {name: boxes[name].get().strip() for name in ("name", "location", "radio", "power_w", "antenna")}  # the operator's fields
+            fields.update(grid=grid, notes=notes.get("1.0", "end").strip())  # the grid and the notes
+            if first and new_call == call and record.get("last_heard"):  # new, and filled in from what was heard
+                fields.update(last_heard=record["last_heard"], band=record["last_heard"].get("band", ""))  # keep how it was heard
+            self.contacts.put(new_call, **fields)  # into the book and its file
+            if first and new_call == call and heard is not None and self.contacts.mode == "all":  # its first history entry: the reception it was made from
+                self.contacts.add_entry(new_call, {"start": heard["t"], "end": heard["t"], "band": band_of(heard.get("dial_khz") or 0), "dial_khz": heard.get("dial_khz") or 0.0, "level": level_name(heard.get("level", 0)),  # (continued)
+                                                   "heard_db": heard.get("snr"), "their_db": None, "msgs_in": 0, "msgs_out": 0, "outcome": f"Heard {heard.get('kind', '')}".strip(), "rank": 0})  # as it was heard
+            if new_call in self.heard_rows:  # on the stations list
+                self.stations.set(self.heard_rows[new_call], "saved", "*")  # marked as saved
+            elif first:  # not on it
+                self.heard_rows[new_call] = self.stations.insert("", "end", values=("*", new_call, grid, fields.get("band", ""), "", "", "saved contact"))  # add it
+            self.refresh_to()  # offer it in the To box
+            self.say(f"{new_call} {'added to' if first else 'saved in'} your contacts")  # confirm
+            top.destroy()  # close the window
+
+        def delete():  # the Delete Contact button
+            entries = len(self.contacts[call]["history"])  # the history it holds
+            if messagebox.askyesno("Kestrel - Delete Contact", f"Delete {call}{' (' + record['name'] + ')' if record.get('name') else ''}?\n\nThe record and its {entries} history entr{'ies' if entries != 1 else 'y'} are removed from contacts.json. This cannot be undone.\n\nLogbook entries, messages and the 48-hour list of stations heard are kept.", icon="warning", parent=top):  # ask first
+                self.forget_contact(call)  # gone
+                top.destroy()  # close the window
+
+        def call_it():  # the Call button
+            self.to.set(boxes["call"].get().strip().upper())  # the callsign into the To box
+            top.destroy()  # close the window
+            self.call_to()  # call it by name
+
+        buttons = ttk.Frame(top)  # the buttons
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=10)  # at the bottom
+        if saved:  # only a saved contact can be deleted
+            ttk.Button(buttons, text="Delete Contact...", command=delete).pack(side="left")  # delete it
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")  # close without saving
+        ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=4)  # keep the changes
+        if call:  # a callsign to call
+            ttk.Button(buttons, text="Call  Ctrl+Y", command=call_it).pack(side="right", padx=(0, 8))  # call it by name
+        top.after(50, lambda: (top.focus_force(), (boxes["name"] if saved or call else boxes["call"]).focus_set()))  # ready to type
 
     # ---- store and forward ----
 
@@ -2502,6 +2721,13 @@ class Panel:  # the control panel window
         field(looks, 2, "font_size", f"Font size ({FONT_MIN} to {FONT_MAX})", [str(size) for size in range(FONT_MIN, FONT_MAX + 1)], editable=True, width=6)  # and its size
         note(looks, 3, "The font applies to the whole window as soon as you save. A smaller size fits more on a small screen.\nDrag the dividers between the panels to resize them; View > Reset the panel sizes puts them back.")  # what these do
 
+        contacts_tab = page("Contacts")  # the contact book (since 0.31R3)
+        field(contacts_tab, 0, "contact_history", f"History kept for each contact ({HISTORY_MIN} to {HISTORY_MAX})", width=6)  # how many entries each contact keeps
+        field(contacts_tab, 1, "contact_history_mode", "Record in history", names=MODE_NAMES, width=24)  # all traffic, or completed contacts only
+        note(contacts_tab, 2, "All traffic: every time a saved contact is heard, called or worked (beacons, calls with no answer, broadcasts, contacts).\nCompleted contacts: only contacts that were made and ended. When a history is full, the oldest entry is dropped.\nLowering the number trims longer histories when you click Save (you are asked first). The logbook is not affected.")  # what they mean
+        note(contacts_tab, 3, f"Contacts are kept in {CONTACTS_FILE}.")  # where
+        ttk.Button(contacts_tab, text="Open the folder", command=lambda: self.open_path(os.path.dirname(CONTACTS_FILE))).grid(row=4, column=0, sticky="w", padx=8)  # look at it
+
         def save():  # the Save button
             new = dict(self.settings)  # a copy to fill in
             for name, (box, names) in boxes.items():  # every setting
@@ -2542,6 +2768,15 @@ class Panel:  # the control panel window
                 if not messagebox.askyesno("Kestrel - check your callsign", f"Kestrel will identify every transmission as\n\n        {new['call']}\n\nIs that your callsign, exactly?", parent=dialog):  # make the operator look at it
                     book.select(0)  # show the Station tab
                     return  # leave the window open for a correction
+            if not (str(new["contact_history"]).isdigit() and HISTORY_MIN <= int(new["contact_history"]) <= HISTORY_MAX):  # not a history length on offer
+                messagebox.showerror("Kestrel", f"The history kept for each contact must be a whole number from {HISTORY_MIN} to {HISTORY_MAX}.", parent=dialog)  # say so
+                book.select(7)  # show the Contacts tab
+                return  # leave the window open
+            new["contact_history"] = int(new["contact_history"])  # stored as a number
+            dropped = self.contacts.trimmed_by(new["contact_history"])  # history entries a smaller number would drop
+            if dropped and not messagebox.askyesno("Kestrel - Contact history", f"Keeping {new['contact_history']} entries for each contact drops the oldest {dropped} history entr{'ies' if dropped != 1 else 'y'} now. Go ahead?", icon="warning", parent=dialog):  # ask first
+                book.select(7)  # show the Contacts tab
+                return  # leave the window open
             if not (new["font_size"].isdigit() and FONT_MIN <= int(new["font_size"]) <= FONT_MAX):  # not a size on offer
                 messagebox.showerror("Kestrel", f"The font size must be a whole number from {FONT_MIN} to {FONT_MAX}.", parent=dialog)  # say so
                 book.select(6)  # show the Appearance tab
@@ -2555,6 +2790,7 @@ class Panel:  # the control panel window
             self.save_settings()  # write them to the settings file
             self.apply_fonts()  # the lettering follows the choice at once
             self.logbook.level = new["log_level"]  # the logbook's level of detail
+            self.contacts.set_policy(new["contact_history"], new["contact_history_mode"])  # the contact history rules (a smaller length trims now)
             self.beacon_type_var.set(self.settings.get("beacon_type", "short"))  # the Beacon type menu follows the setting
             self.beacon_button.configure(text=self.beacon_words())  # and the button's label
             if self.station is not None:  # a station is listening now
@@ -2593,7 +2829,7 @@ class Panel:  # the control panel window
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")  # drop the changes
         ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=4)  # keep the changes
         dialog.bind("<Return>", lambda event: save())  # Enter saves
-        book.select(min(max(tab, 0), 6))  # open at the tab asked for
+        book.select(min(max(tab, 0), 7))  # open at the tab asked for
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
