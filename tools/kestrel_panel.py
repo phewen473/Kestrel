@@ -59,7 +59,7 @@ from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  #
 from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
 from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
 from modem.longnote import CHARS as LONG_NOTE_FRAME_CHARS, MOST_CHARS as LONG_NOTE_CHARS, note_fields  # long notes: characters per frame, the most in a note, and the check that a note can be sent (since 0.34)  # noqa: E402
-from live.notes import LongNotes  # sending long notes, receipts and resends, and putting received ones together (since 0.34)  # noqa: E402
+from live.notes import MOST_TRIES as LONG_NOTE_TRIES, LongNotes  # how many tries a long note gets, and sending long notes, receipts and resends, and putting received ones together (since 0.34)  # noqa: E402
 from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
@@ -408,7 +408,7 @@ class Panel:  # the control panel window
         split.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # it takes the rest of the window
         self.panes["lists"] = lists = ttk.PanedWindow(split, orient="horizontal")  # the three lists, side by side, with dividers between them
         split.add(lists, weight=1)  # the upper row
-        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 110)))  # outgoing messages, who each is for, and how far it has got
+        self.to_send = self._list(lists, 0, "Messages to send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 190)))  # outgoing messages, who each is for, and how far it has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
         change.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(change, text="Edit message", command=self.edit_message).pack(side="left", padx=(0, 4))  # change the selected waiting message
@@ -1429,7 +1429,7 @@ class Panel:  # the control panel window
         threading.Thread(target=job, daemon=True).start()  # decode without freezing the window
 
     def transmitting(self, tx, keyed):  # the transmitter went on or off (called from the working thread)
-        self.tx_active, self.tx_kind = keyed, tx.kind if keyed else ""  # note it, for the meters
+        self.tx_active, self.tx_kind = keyed, (f"{tx.kind} {tx.note}" if tx.kind.startswith("long") else tx.kind) if keyed else ""  # note it, for the meters and the transmit scope's words (a long note says which try and frame, since 0.34)
         if keyed:  # a new transmission
             self.alc_warned = False  # it may be warned about once
         if not keyed:  # it has just gone off
@@ -1807,6 +1807,9 @@ class Panel:  # the control panel window
         if not target:  # nobody
             messagebox.showinfo("Kestrel", "Type the callsign to call in the To box first (Ctrl+L).", parent=self.root)  # say so
             return  # nothing to do
+        if target == "ALL":  # every station: nobody can be called that way
+            messagebox.showinfo("Kestrel", "A call goes to one station. To reach every station, use Broadcast to ALL or a long note to ALL; to call for anyone, use Beacon (F5).", parent=self.root)  # say what does that
+            return  # nothing to do
         if target == self.settings["call"].strip().upper():  # this station's own callsign
             messagebox.showinfo("Kestrel", f"{target} is this station's own callsign.\n\nPut the callsign of the station you want to reach in the To box. Only a station using exactly that callsign will answer.", parent=self.root)  # say so, and what to do
             return  # nothing to do
@@ -1862,6 +1865,8 @@ class Panel:  # the control panel window
 
     def queue_text(self, text, to):  # queue a message for a station (or for whoever the partner is)
         """Queue `text` for `to` (a callsign, or "" for the partner); return True if it was accepted."""
+        if to == "ALL":  # ALL chosen in the To box: that is a broadcast, which nobody acknowledges
+            return self.broadcast_text(text)  # sent as one, after the usual check
         if to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
             messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.", parent=self.root)  # say so, and what to do
             return False  # refused
@@ -2061,11 +2066,15 @@ class Panel:  # the control panel window
         return self.long_notes  # kept between runs, so a note waiting for its receipt survives a change of mode
 
     def long_note_message(self):  # Ctrl+N: send the typed message as a long note
-        """Queue the typed message as a long note to the station in To (or ALL if To is empty), after the operator confirms."""
-        text, to = self.message.get().strip(), self.to.get().strip().upper() or "ALL"  # what was typed, and to whom
+        """Queue the typed message as a long note to the station in To (a callsign, or ALL chosen from its list), after the operator confirms."""
+        text, to = self.message.get().strip(), self.to.get().strip().upper()  # what was typed, and to whom
         own = self.settings["call"].strip().upper()  # this station
         if not text:  # nothing was typed
             messagebox.showinfo("Kestrel", f"Type the note first (Ctrl+M): up to {LONG_NOTE_CHARS} characters.", parent=self.root)  # say so
+            return  # nothing to do
+        if not to:  # nobody named
+            messagebox.showinfo("Kestrel", "Put the callsign of the station the note is for in the To box, or choose ALL from its list to send it to every station.", parent=self.root)  # say what to do
+            self.to.focus_set()  # go there
             return  # nothing to do
         if to == own:  # addressed to this station itself
             messagebox.showinfo("Kestrel", "A long note cannot be sent to this station's own callsign.", parent=self.root)  # say so
@@ -2093,6 +2102,11 @@ class Panel:  # the control panel window
         self.note_events.put(event)  # shown by the window's own thread
 
     def show_note_events(self):  # bring the lists up to date with long-note events
+        if self.long_notes is not None:  # notes may be under way
+            for dest, text, words in self.long_notes.status():  # each unfinished note and its progress (which try, which frame, the receipt countdown)
+                row = self.note_rows.get((dest, text))  # its row in Messages to send
+                if row is not None and self.to_send.exists(row):  # still listed
+                    self.to_send.set(row, "state", "long note: " + words)  # shown, twice a second
         while not self.note_events.empty():  # each event since the last look
             kind, *rest = self.note_events.get()  # what happened
             if kind == "received":  # a note arrived for this station, or for everyone
@@ -2103,7 +2117,7 @@ class Panel:  # the control panel window
                 continue  # next event
             dest, text, tries = rest  # the note's address, text and tries so far
             row = self.note_rows.get((dest, text))  # its row in Messages to send
-            words = {"delivered": "long note: delivered", "resending": f"long note: try {tries}", "failed": "long note: NOT delivered", "sent": "long note: sent"}.get(kind)  # its new state
+            words = {"delivered": f"long note: DELIVERED (try {tries}/{LONG_NOTE_TRIES})", "failed": f"long note: NOT delivered ({tries} tries)", "sent": "long note: sent to ALL"}.get(kind)  # its final state (progress while under way comes from status above)
             if row is not None and words and self.to_send.exists(row):  # still listed
                 self.to_send.set(row, "state", words)  # show how it went
             if kind in ("delivered", "failed", "sent"):  # finished
@@ -2559,7 +2573,7 @@ class Panel:  # the control panel window
     # ---- the stations list and the outbox ----
 
     def refresh_to(self):  # (re)fill the To box's list
-        self.to["values"] = sorted(self.contacts) + [call for call in self.heard_rows if call not in self.contacts]  # saved contacts first, then the other stations heard
+        self.to["values"] = ["ALL"] + sorted(self.contacts) + [call for call in self.heard_rows if call not in self.contacts]  # ALL first (every station: a broadcast, or a long note to everyone; since 0.34), then saved contacts, then the other stations heard
 
     def pick_station(self):  # a callsign in the stations list was chosen
         for row in self.stations.selection()[:1]:  # the row chosen

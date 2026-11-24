@@ -142,3 +142,19 @@ def test_runner_sends_a_queued_note_when_free():  # the live loop, with stand-in
     run_station(station, Source(), sink, Ptt(), say=lambda line: None, limit_s=1.0, listen_first=False, notes=notes, on_note=events.append)  # a second of running
     assert len(sink.sent) == 2 and all(abs(len(audio) / FS - longbeacon.SECONDS) < 0.1 for audio in sink.sent)  # the header and one text frame, a minute each
     assert notes.outgoing and notes.outgoing[0].waiting_until > 0 and notes.due(2.0) is None  # now waiting for the receipt
+
+
+def test_status_shows_try_frame_and_countdown():  # what the operator sees, step by step
+    from live.notes import LongNotes  # the note logic
+    notes = LongNotes("Q1AAAA")  # this station
+    notes.queue("Q2BB", "QSL -24 DB 73")  # a note of two text frames
+    assert notes.status() == [("Q2BB", "QSL -24 DB 73", "waiting to send (try 1/3)")]  # not sent yet
+    frames, what = notes.next_frames(0.0)  # the first try
+    assert frames[1].note == "to Q2BB: try 1 of 3, frame 2 of 3"  # each frame says which try and which frame
+    notes.on_air(what, 1, len(frames))  # the second frame is on the air
+    assert notes.status()[0][2] == "SENDING try 1/3, frame 2/3"  # shown as such
+    notes.sent(what, 180.0)  # all three sent
+    words = notes.status()[0][2]  # now waiting for the receipt
+    assert words.startswith("receipt due 2:") and words.endswith("(try 1/3, then try 2/3)")  # a countdown from two and a half minutes, and what comes next
+    notes.tick(180.0 + 151.0)  # no receipt in time
+    assert notes.status()[0][2] == "no receipt; try 2/3 next"  # the next try is due

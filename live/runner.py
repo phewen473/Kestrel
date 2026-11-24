@@ -366,7 +366,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                 due = None  # not yet
             if due is not None:  # something to send, and room to send it
                 frames, what = notes.next_frames(now())  # the frames
-                for frame in frames:  # header, then each text frame (or one receipt)
+                for number, frame in enumerate(frames):  # header, then each text frame (or one receipt)
+                    notes.on_air(what, number, len(frames))  # which frame is going, for the progress shown
                     transmit(frame)  # send it
                 notes.sent(what, now())  # wait for the receipt, or report a note to ALL sent
             for event in notes.events:  # what happened

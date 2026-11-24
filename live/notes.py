@@ -14,6 +14,7 @@ frames; live/runner.py drives it. Everything here takes the time as an
 argument, so it can be tested without a clock or a sound card.
 """
 
+import time  # the computer's clock, for the countdown shown to the operator
 from dataclasses import dataclass, field  # simple record types
 
 from link.station import Transmission  # a frame to send, as the runner sends it
@@ -35,6 +36,8 @@ class Outgoing:  # a note this station is sending
     tries: int = 0  # how many times it has been sent
     due: float = 0.0  # when it may next be sent
     waiting_until: float = -1.0  # while waiting for a receipt: when to give up waiting (-1: not waiting)
+    frame: tuple = None  # while it is on the air: (this frame's number, counting the header as 1, frames in all)
+    receipt_by: float = 0.0  # while waiting for a receipt: when it is due, on the computer's monotonic clock (for the countdown shown)
 
 
 @dataclass  # a plain record
@@ -149,15 +152,40 @@ class LongNotes:  # the long notes of one station
             if note.waiting_until < 0 and note.due <= now:  # due, and not waiting for a receipt
                 frames = build_note(self.call, note.dest, note.text)  # header and text frames
                 note.tries += 1  # one more try
-                out = [Transmission(audio, "long note", LONG_LEVEL, note=f"to {note.dest}, " + ("header" if n == 0 else f"text {n} of {len(frames) - 1}") + (f", try {note.tries}" if note.tries > 1 else "")) for n, audio in enumerate(frames)]  # each frame
+                tries = "" if note.dest == "ALL" else f"try {note.tries} of {MOST_TRIES}, "  # which try (a note to ALL is sent once)
+                out = [Transmission(audio, "long note", LONG_LEVEL, note=f"to {note.dest}: {tries}frame {n + 1} of {len(frames)}" + (" (header)" if n == 0 else "")) for n, audio in enumerate(frames)]  # each frame, saying which try and which frame
                 return out, ("note", note)  # the whole note, frame by frame
         return [], None  # nothing
+
+    def on_air(self, what, number, total):  # one frame of a note is about to go out
+        """Note that frame `number` (0 for the header) of `total` of the note in `what` is going out now (for the progress shown)."""
+        if what is not None and what[0] == "note":  # a note, not a receipt
+            what[1].frame = (number + 1, total)  # counted from 1
+
+    def status(self):  # what each note is doing, for the operator
+        """Return a list of (dest, text, words): each unfinished note and its progress, with a countdown while a receipt is awaited."""
+        lines = []  # one per note
+        for note in list(self.outgoing):  # each unfinished note
+            tries = "" if note.dest == "ALL" else f"try {max(note.tries, 1)}/{MOST_TRIES}, "  # which try (a note to ALL is sent once)
+            if note.frame is not None:  # on the air
+                words = f"SENDING {tries}frame {note.frame[0]}/{note.frame[1]}"  # which try and which frame
+            elif note.waiting_until >= 0:  # waiting for its receipt
+                left = max(0, int(note.receipt_by - time.monotonic() + 0.5))  # seconds still to wait
+                words = f"receipt due {left // 60}:{left % 60:02d} ({tries}" + (f"then try {note.tries + 1}/{MOST_TRIES})" if note.tries < MOST_TRIES else "last try)")  # the countdown, and what follows
+            elif note.tries == 0:  # not sent yet
+                words = f"waiting to send (try 1/{MOST_TRIES})" if note.dest != "ALL" else "waiting to send"  # when the frequency is free
+            else:  # due again
+                words = f"no receipt; try {note.tries + 1}/{MOST_TRIES} next"  # the next try
+            lines.append((note.dest, note.text, words))  # this note
+        return lines  # all of them
 
     def sent(self, what, now):  # the frames from next_frames have all gone
         """Note that a note's frames have gone out at `now`: wait for its receipt, or, for ALL, report it sent."""
         if what is None or what[0] != "note":  # a receipt, or nothing
             return  # nothing to do
         note = what[1]  # the note
+        note.frame = None  # off the air
+        note.receipt_by = time.monotonic() + RECEIPT_WAIT_S  # when the receipt is due, for the countdown
         if note.dest == "ALL":  # nobody answers a note to everyone
             if note in self.outgoing:  # still listed
                 self.outgoing.remove(note)  # done
