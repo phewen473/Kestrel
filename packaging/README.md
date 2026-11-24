@@ -39,16 +39,16 @@ The setup program and its SHA-256 checksum are written to
    `Kestrel.exe` and its folder with PyInstaller (`kestrel.spec`), which packs the DLL
    into `modem\_native`;
 4. adds Hamlib's official 64-bit Windows release (version and SHA-256
-   pinned in the script), with its licences and the address of its
+   pinned in the script), with its licenses and the address of its
    source code (`hamlib\SOURCE.txt`), as the GPL asks;
 5. adds the getting-started notes (`README-installed.txt`), the
-   licences and the specification;
+   licenses and the specification;
 6. runs `privacy_scan.py` over every file, including the Python code
    packed inside `Kestrel.exe`, and stops if it finds the build
    computer's name, the builder's user name or profile folder, or any
    word in `packaging\cache\private_words.txt` (a list you keep yourself;
    Git ignores it). The originator credit is allowed only in NOTICE, the
-   licence page, the specification and the About box;
+   license page, the specification and the About box;
 7. runs `Kestrel.exe --check` with a throwaway profile, then makes the
    setup program with NSIS (`kestrel.nsi`).
 

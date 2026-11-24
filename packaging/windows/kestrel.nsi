@@ -23,14 +23,14 @@ BrandingText "Kestrel ${VERSION} (${COMMIT})"  ; shown at the bottom of each pag
 !define MUI_ICON "kestrel.ico"                 ; the installer's own icon
 !define MUI_UNICON "kestrel.ico"               ; and the uninstaller's
 !define MUI_ABORTWARNING                       ; ask before abandoning the installation
-!define MUI_WELCOMEPAGE_TEXT "This will install Kestrel ${VERSION}, an adaptive amateur HF digital mode for short messages.$\r$\n$\r$\nEverything Kestrel needs is included: its own copy of Python and its libraries, and Hamlib's rig control program (rigctld) for tuning and keying the radio. Nothing else needs to be installed first.$\r$\n$\r$\nYou need an amateur radio licence to transmit."  ; the first page
+!define MUI_WELCOMEPAGE_TEXT "This will install Kestrel ${VERSION}, an adaptive amateur HF digital mode for short messages.$\r$\n$\r$\nEverything Kestrel needs is included: its own copy of Python and its libraries, and Hamlib's rig control program (rigctld) for tuning and keying the radio. Nothing else needs to be installed first.$\r$\n$\r$\nYou need an amateur radio license to transmit."  ; the first page
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Kestrel.exe"       ; offer to start Kestrel at the end
 !define MUI_FINISHPAGE_RUN_TEXT "Start Kestrel now"     ; the words beside that tick box
 !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\README.txt" ; offer to show the getting-started notes
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Show the getting-started notes"  ; the words beside that tick box
 
 !insertmacro MUI_PAGE_WELCOME                  ; welcome
-!insertmacro MUI_PAGE_LICENSE "${SRC}\docs\LICENSES.txt"  ; the licences (Kestrel, its specification, Hamlib)
+!insertmacro MUI_PAGE_LICENSE "${SRC}\docs\LICENSES.txt"  ; the licenses (Kestrel, its specification, Hamlib)
 !insertmacro MUI_PAGE_COMPONENTS               ; choose the optional desktop shortcut
 !insertmacro MUI_PAGE_DIRECTORY                ; where to install
 !insertmacro MUI_PAGE_INSTFILES                ; the copying

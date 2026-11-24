@@ -49,7 +49,7 @@
 #define KES_CFG_NOTCH_LOW 13  /* lowest frequency */
 #define KES_CFG_NOTCH_HIGH 14  /* highest frequency */
 #define KES_CFG_NOTCH_TIMES 15  /* how far above the band */
-#define KES_CFG_NOTCH_LOCAL 16  /* neighbourhood, in steps */
+#define KES_CFG_NOTCH_LOCAL 16  /* neighborhood, in steps */
 #define KES_CFG_NOTCH_MOST 17  /* most steps notched */
 #define KES_CFG_NOTCH_HALF 18  /* half the notch's width, Hz */
 #define KES_CFG_LONG_SAMPLES 19  /* samples in a long beacon (pattern and body) */
@@ -79,7 +79,7 @@ KES_API void kes_set_threads(int threads);  /* how many threads to use (0 = the 
 KES_API int kes_threads(void);  /* how many will be used */
 
 /* modem/blanker.py blank_impulses: copy x[0..n) to out, with samples far above
- * the level of their own tenth-of-a-second neighbourhood set to zero (and
+ * the level of their own tenth-of-a-second neighborhood set to zero (and
  * `guard` samples either side of each). out may not overlap x. */
 KES_API void kes_blank_impulses(const double *x, size_t n, double threshold, int guard, double *out);
 
@@ -132,7 +132,7 @@ KES_API int kes_read_header(const double *x, size_t n, double header_start, doub
                             int step, int level, const int *totals_by_type, const int *body_totals, size_t nbody, double since,
                             uint8_t *bits);
 
-/* modem/ldpc.py decode: normalised min-sum decoding of 2k soft values (positive = probably 0). The code's
+/* modem/ldpc.py decode: normalized min-sum decoding of 2k soft values (positive = probably 0). The code's
  * wiring is given edge by edge, sorted by check: edge_bits[e] and edge_checks[e], with check c's edges
  * from starts[c] (as ldpc.py _graph gives them). Writes k data bits; returns 1 when every check is
  * satisfied, 0 when it gave up after max_iterations rounds, -1 on bad arguments. */

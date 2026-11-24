@@ -102,7 +102,7 @@ double floor_div(double a, double b) {  /* the quotient, rounded down */
     return std::copysign(0.0, a / b);  /* a signed zero */
 }  /* end of floor_div */
 
-/* Ordered map from text to a value, with Python dict behaviour: a new key goes at the end, an old one keeps its place. */
+/* Ordered map from text to a value, with Python dict behavior: a new key goes at the end, an old one keeps its place. */
 template <typename T>
 struct Ordered {  /* the map */
     std::vector<std::pair<std::string, T>> items;  /* in order */

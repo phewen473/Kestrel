@@ -9,7 +9,7 @@ Useful options: --out (device number or part of its name), --level 0..4, --gain 
 --ptt none|rig|cat|rts|dtr; --rig host:port with --freq (kHz) and --mode tunes the radio through
 Hamlib's rigctld; --port and --baud are for the serial methods. See tools/README.md.
 
-Only transmit where your licence allows, with the published specification matching this program.
+Only transmit where your license allows, with the published specification matching this program.
 """
 
 import argparse  # reads the command-line options

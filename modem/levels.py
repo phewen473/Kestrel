@@ -9,7 +9,7 @@ from dataclasses import dataclass  # simple record type
 
 import numpy as np  # numerical arrays
 
-from .params import CENTRE_HZ, FS, M_TONES  # shared waveform numbers
+from .params import CENTER_HZ, FS, M_TONES  # shared waveform numbers
 
 
 @dataclass(frozen=True)  # a fixed record that cannot be changed by accident
@@ -18,7 +18,7 @@ class Level:  # one speed level
 
     number: int  # the level's number (0 is the slowest and most robust)
     samples: int  # audio samples in one tone
-    step: int  # how many FFT bins apart neighbouring tones sit
+    step: int  # how many FFT bins apart neighboring tones sit
     glide: float = 0.0  # share of a tone length over which the frequency glides smoothly to the next tone (0 = a sudden step); since signal version 0.32
 
     @property  # computed from the fields above
@@ -34,7 +34,7 @@ class Level:  # one speed level
     @property  # computed from the fields above
     def base_bin(self):  # where the lowest tone sits
         """FFT bin of the lowest tone, chosen so the 32 tones straddle 1500 Hz."""
-        return int(CENTRE_HZ / self.bin_hz + 0.5) - self.step * M_TONES // 2  # centre bin, minus half the width of the tone block
+        return int(CENTER_HZ / self.bin_hz + 0.5) - self.step * M_TONES // 2  # center bin, minus half the width of the tone block
 
     @property  # computed from the fields above
     def tone_bins(self):  # where all 32 tones sit

@@ -4,7 +4,7 @@ One calling frequency per band, so stations know where to find each
 other, and up to four numbered channels beside it for contacts to move
 to. Each is a DIAL frequency for upper sideband: the Kestrel signal sits
 from 500 Hz to 2500 Hz above it. Channels are 2.5 kHz apart: the widest
-Kestrel signal is 1.4 kHz, so neighbours have about a kilohertz between
+Kestrel signal is 1.4 kHz, so neighbors have about a kilohertz between
 them.
 
 From version 0.29 these sit in an area of Kestrel's own on each band,
@@ -30,14 +30,14 @@ SIGNAL_LOW_HZ = 500.0  # the lowest audio frequency allowed for (the fastest lev
 SIGNAL_HIGH_HZ = 2500.0  # the highest audio frequency allowed for (the fastest level reaches up to about 2200 Hz)
 CHANNEL_KHZ = 2.5  # channels are this far apart
 
-PRESETS_KHZ = {  # band name (metres) -> calling dial frequency in kHz, upper sideband
+PRESETS_KHZ = {  # band name (meters) -> calling dial frequency in kHz, upper sideband
     "80": 3582.5,  # signal 3583.0 to 3585.0 kHz: just above the JS8 activity (3578), below the Winlink segment (3585 up)
     "40": 7110.0,  # signal 7110.5 to 7112.5 kHz: above the Winlink and VARA segment (7100-7105) and VarAC (7105)
     "30": 10147.0,  # signal 10147.5 to 10149.5 kHz: the top of the band, above FT8, FT4, WSPR and most RTTY
     "20": 14112.5,  # signal 14113.0 to 14115.0 kHz: above the Winlink and VARA segment (to 14112) and VarAC (14105)
 }  # end of the table
 
-WORKING_KHZ = {  # band name (metres) -> the numbered channels: dial frequencies in kHz, upper sideband, Channel 1 first
+WORKING_KHZ = {  # band name (meters) -> the numbered channels: dial frequencies in kHz, upper sideband, Channel 1 first
     "80": (3585.0, 3587.5, 3590.0, 3592.5),  # signals 3585.5 to 3595.0 kHz: shared with Winlink gateways and RTTY, stopping short of VarAC (3595)
     "40": (7112.5, 7115.0, 7117.5, 7120.0),  # signals 7113.0 to 7122.5 kHz, inside the U.S. data segment (to 7125)
     "30": (10144.5,),  # signal 10145.0 to 10147.0 kHz: the band is 50 kHz wide and full, so there is room for one channel only
@@ -47,20 +47,20 @@ WORKING_KHZ = {  # band name (metres) -> the numbered channels: dial frequencies
 RADIO_MODES = {"PKTUSB": "USB-D", "USB": "USB"}  # the radio modes Kestrel uses, as Hamlib names them -> as operators know them (upper sideband only: data mode where the radio has one, plain USB where not)
 
 AUTOMATIC_SEGMENTS_KHZ = (  # HF segments of 97.221(b), in kHz
-    (3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5), (14100.5, 14112.0),  # 80, 40, 30 and 20 metres
-    (18105.0, 18110.0), (21090.0, 21100.0), (24925.0, 24930.0), (28120.0, 28189.0),  # 17, 15, 12 and 10 metres
+    (3585.0, 3600.0), (7100.0, 7105.0), (10140.0, 10150.0), (14095.0, 14099.5), (14100.5, 14112.0),  # 80, 40, 30 and 20 meters
+    (18105.0, 18110.0), (21090.0, 21100.0), (24925.0, 24930.0), (28120.0, 28189.0),  # 17, 15, 12 and 10 meters
 )  # end of the table
 
 
 DATA_SEGMENTS_KHZ = (  # where U.S. amateurs may send data (RTTY and data) on HF, widest (Amateur Extra) limits, in kHz
-    ("160", 1800.0, 2000.0), ("80", 3500.0, 3600.0), ("40", 7000.0, 7125.0), ("30", 10100.0, 10150.0), ("20", 14000.0, 14150.0),  # 160 to 20 metres
-    ("17", 18068.0, 18110.0), ("15", 21000.0, 21200.0), ("12", 24890.0, 24930.0), ("10", 28000.0, 28300.0),  # 17 to 10 metres
-)  # end of the table (General class starts 25 kHz higher on 80, 40, 20 and 15 metres)
+    ("160", 1800.0, 2000.0), ("80", 3500.0, 3600.0), ("40", 7000.0, 7125.0), ("30", 10100.0, 10150.0), ("20", 14000.0, 14150.0),  # 160 to 20 meters
+    ("17", 18068.0, 18110.0), ("15", 21000.0, 21200.0), ("12", 24890.0, 24930.0), ("10", 28000.0, 28300.0),  # 17 to 10 meters
+)  # end of the table (General class starts 25 kHz higher on 80, 40, 20 and 15 meters)
 
 
 BAND_EDGES_KHZ = (  # the amateur bands, as operators name them, with their edges in kHz (U.S. allocations; 60 m is its five channels' span)
-    ("160m", 1800.0, 2000.0), ("80m", 3500.0, 4000.0), ("60m", 5330.0, 5410.0), ("40m", 7000.0, 7300.0), ("30m", 10100.0, 10150.0),  # 160 to 30 metres
-    ("20m", 14000.0, 14350.0), ("17m", 18068.0, 18168.0), ("15m", 21000.0, 21450.0), ("12m", 24890.0, 24990.0), ("10m", 28000.0, 29700.0),  # 20 to 10 metres
+    ("160m", 1800.0, 2000.0), ("80m", 3500.0, 4000.0), ("60m", 5330.0, 5410.0), ("40m", 7000.0, 7300.0), ("30m", 10100.0, 10150.0),  # 160 to 30 meters
+    ("20m", 14000.0, 14350.0), ("17m", 18068.0, 18168.0), ("15m", 21000.0, 21450.0), ("12m", 24890.0, 24990.0), ("10m", 28000.0, 29700.0),  # 20 to 10 meters
     ("6m", 50000.0, 54000.0), ("2m", 144000.0, 148000.0), ("70cm", 420000.0, 450000.0),  # VHF and UHF
 )  # end of the table
 

@@ -9,7 +9,7 @@ transmitter (and the matching parts of the receiver) inside its own
 processes only, then measures two things for each candidate:
 
   1. its spectrum: how wide the signal is and how much power falls
-     outside its own tone band (splatter onto neighbours);
+     outside its own tone band (splatter onto neighbors);
   2. how weak a signal it still decodes on the sky-wave conditions of
      ITU-R F.1487 (sim/channel.py SKYWAVE), and with noise only.
 
@@ -18,7 +18,7 @@ Candidates (VARIANTS below):
   ramp          today's tones, with a 10 ms fade in and out at the ends of the transmission
   shape25       ramp + each change of tone glides over a quarter of a tone length (continuous phase)
   shape50       ramp + the glide takes half a tone length
-  gray          tones numbered in Gray code, so neighbouring tones differ in one bit only
+  gray          tones numbered in Gray code, so neighboring tones differ in one bit only
   gray_shape25  gray and shape25 together
   L0_step1 / L0_step3 / L2_step1 / L3_step2   a level's tones 1, 2 or 3 FFT bins apart instead of today's spacing
 
@@ -74,7 +74,7 @@ def shaped_audio(symbols, spec, alpha=0.0, ramp_ms=0.0):  # tone numbers -> soun
     glide = int(round(alpha * spec.samples))  # length of each glide, in samples
     if glide > 1:  # a glide is wanted
         kernel = np.hanning(glide + 2)[1:-1]  # a smooth bump (raised cosine) without its zero end points
-        kernel /= kernel.sum()  # scaled so the average frequency, and so the phase at each tone's centre, is kept
+        kernel /= kernel.sum()  # scaled so the average frequency, and so the phase at each tone's center, is kept
         before = glide // 2  # samples of padding needed before the start
         padded = np.concatenate([np.full(before, f[0]), f, np.full(glide - 1 - before, f[-1])])  # hold the first and last frequency at the ends
         f = np.convolve(padded, kernel, mode="valid")  # smooth the steps into glides (same length as before)
@@ -262,9 +262,9 @@ def _chart_spectra(spectra, args, out_dir):  # one panel per level, one line per
             db = 10 * np.log10(np.maximum(density / density.max(), 1e-12))  # dB below its own peak
             ax.plot(freqs, db, linewidth=0.8, label=name)  # draw it
         spec = LEVELS[level]  # the level's numbers (today's spacing in the main process)
-        centre = (spec.tone_bins[0] + spec.tone_bins[-1]) / 2 * spec.bin_hz  # the middle of the tone band
+        center = (spec.tone_bins[0] + spec.tone_bins[-1]) / 2 * spec.bin_hz  # the middle of the tone band
         half = (spec.tone_bins[-1] - spec.tone_bins[0]) * spec.bin_hz  # the tone band's width, used as a half-width of the view
-        ax.set_xlim(centre - half - 150, centre + half + 150)  # the band and some room either side
+        ax.set_xlim(center - half - 150, center + half + 150)  # the band and some room either side
         ax.set_ylim(-90, 3)  # 90 dB of range
         ax.set_title(f"L{level}")  # panel title
         ax.set_xlabel("audio frequency (Hz)")  # x-axis title

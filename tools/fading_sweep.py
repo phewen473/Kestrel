@@ -82,7 +82,7 @@ def main():  # the script itself
         for spec in LEVELS:  # one line per level
             pts = [(r[2], 100 * r[5]) for r in rows if r[0] == spec.number and r[1] == condition]  # (SNR, percent decoded) points
             ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", markersize=3, label=f"L{spec.number}")  # draw the line
-        ax.axhline(90, color="grey", linewidth=0.8, linestyle="--")  # the nine-in-ten line
+        ax.axhline(90, color="gray", linewidth=0.8, linestyle="--")  # the nine-in-ten line
         ax.set_title(NAMES[condition])  # panel title
         ax.set_xlabel("SNR in 2.5 kHz (dB)")  # x-axis title
         ax.set_ylim(-2, 102)  # a little room above 100 and below 0

@@ -23,13 +23,13 @@
 #include <thread>  /* worker threads */
 #include <vector>  /* growable arrays */
 
-#include "pocketfft_hdronly.h"  /* the FFT (the same algorithm NumPy uses), header-only, BSD licence */
+#include "pocketfft_hdronly.h"  /* the FFT (the same algorithm NumPy uses), header-only, BSD license */
 
 namespace {  /* helpers seen only inside this file */
 
 const double kPi = 3.141592653589793;  /* pi, to double precision (NumPy's np.pi) */
 const double kSampleRate = 12000.0;  /* Kestrel's audio sample rate, samples per second (modem/params.py FS) */
-const size_t kBlankBlock = 1200;  /* the blanker's neighbourhood: a tenth of a second (modem/blanker.py BLOCK) */
+const size_t kBlankBlock = 1200;  /* the blanker's neighborhood: a tenth of a second (modem/blanker.py BLOCK) */
 const int kStates = 64;  /* the convolutional code's encoder states (modem/fec.py NSTATES) */
 const int kTail = 6;  /* zero bits that end every coded block (modem/fec.py TAIL) */
 const int kG1 = 0171;  /* the code's first generator, octal (modem/fec.py G1) */
@@ -167,16 +167,16 @@ KES_API void kes_blank_impulses(const double *x, size_t n, double threshold, int
     for (size_t i = 0; i < n; ++i) {  /* each sample */
         level[i] = std::fabs(x[i]);  /* its size */
     }  /* end of the sizes */
-    size_t blocks = (n + kBlankBlock - 1) / kBlankBlock;  /* neighbourhoods, rounding up */
-    std::vector<double> typical(blocks);  /* the normal level in each neighbourhood */
-    parallel_for(blocks, 64, [&](size_t from, size_t to) {  /* the neighbourhoods, shared among threads */
-        std::vector<double> scratch(kBlankBlock);  /* room to find one neighbourhood's median */
-        for (size_t b = from; b < to; ++b) {  /* each neighbourhood in this share */
+    size_t blocks = (n + kBlankBlock - 1) / kBlankBlock;  /* neighborhoods, rounding up */
+    std::vector<double> typical(blocks);  /* the normal level in each neighborhood */
+    parallel_for(blocks, 64, [&](size_t from, size_t to) {  /* the neighborhoods, shared among threads */
+        std::vector<double> scratch(kBlankBlock);  /* room to find one neighborhood's median */
+        for (size_t b = from; b < to; ++b) {  /* each neighborhood in this share */
             size_t first = b * kBlankBlock;  /* its first sample */
             size_t count = std::min(kBlankBlock, n - first);  /* its length (the last may be short) */
             std::memcpy(scratch.data(), level.data() + first, count * sizeof(double));  /* a copy to reorder */
             typical[b] = median_inplace(scratch.data(), count) / 0.6745;  /* its median, as a typical level */
-        }  /* end of the neighbourhoods */
+        }  /* end of the neighborhoods */
     });  /* end of the shared loop */
     std::vector<double> positive;  /* every sample size above zero */
     positive.reserve(n);  /* room for all of them */
@@ -186,11 +186,11 @@ KES_API void kes_blank_impulses(const double *x, size_t n, double threshold, int
         }  /* end of the test */
     }  /* end of the sizes above zero */
     double quiet = positive.empty() ? 0.0 : median_not_negative(positive.data(), positive.size()) / 0.6745;  /* the normal level of the whole recording */
-    for (size_t b = 0; b < blocks; ++b) {  /* each neighbourhood */
+    for (size_t b = 0; b < blocks; ++b) {  /* each neighborhood */
         typical[b] = std::max(typical[b], quiet);  /* never judged quieter than the recording as a whole */
     }  /* end of the floor */
     for (size_t i = 0; i < n; ++i) {  /* each sample */
-        if (level[i] > threshold * typical[i / kBlankBlock]) {  /* far louder than its neighbourhood: a spike */
+        if (level[i] > threshold * typical[i / kBlankBlock]) {  /* far louder than its neighborhood: a spike */
             size_t from = (i >= static_cast<size_t>(guard)) ? i - guard : 0;  /* the spike's start, widened (not before the recording) */
             size_t to = std::min(n - 1, i + static_cast<size_t>(guard));  /* its end, widened (not after) */
             for (size_t j = from; j <= to; ++j) {  /* every sample it covers */
@@ -450,33 +450,33 @@ KES_API int kes_fine_time(const double *x, size_t n, size_t samples, const int *
         return sum;  /* the pattern's energy */
     };  /* end of energy_at */
     long row = static_cast<long>(std::nearbyint(coarse_start / static_cast<double>(hop)));  /* the coarse start, in quarter tones (rounded as Python's round()) */
-    long centre = std::min(std::max(row * hop, 0L), last);  /* the search starts there, kept inside the audio */
+    long center = std::min(std::max(row * hop, 0L), last);  /* the search starts there, kept inside the audio */
     long reach_samples = hop;  /* a quarter of a tone either side */
     std::vector<long> trial;  /* the start times tried at the last stage */
     std::vector<double> scores;  /* and the pattern's energy at each */
     long top = 0, step = 1;  /* the best trial, and the last stage's step */
     for (int stage = 0; stage < 2; ++stage) {  /* a sixteenth of a tone at a time, then an eighth of that */
         step = std::max(tone / (stage == 0 ? 16 : 128), 1L);  /* this stage's step */
-        long span = reach_samples / step;  /* steps to look each side of the centre */
+        long span = reach_samples / step;  /* steps to look each side of the center */
         trial.clear();  /* start afresh */
         scores.clear();  /* likewise */
         for (long k = -span; k <= span; ++k) {  /* each start time */
-            long at = centre + k * step;  /* where */
+            long at = center + k * step;  /* where */
             if (at >= 0 && at <= last) {  /* inside the audio */
                 trial.push_back(at);  /* tried */
                 scores.push_back(energy_at(at, 0));  /* its energy */
             }  /* end of the test */
         }  /* end of the start times */
         top = static_cast<long>(std::max_element(scores.begin(), scores.end()) - scores.begin());  /* the best (the first, if tied) */
-        centre = trial[static_cast<size_t>(top)];  /* look more finely around it next */
+        center = trial[static_cast<size_t>(top)];  /* look more finely around it next */
         reach_samples = step;  /* one step either side */
     }  /* end of the stages */
     double here = scores[static_cast<size_t>(top)];  /* the energy at the best start */
-    double below = energy_at(centre, -1), above = energy_at(centre, 1);  /* and half a bin either side in frequency */
+    double below = energy_at(center, -1), above = energy_at(center, 1);  /* and half a bin either side in frequency */
     double bend = below - 2 * here + above;  /* how sharply the energy peaks across frequency */
     double nudge = bend < 0 ? 0.5 * (below - above) / bend : 0.0;  /* where the true peak lies between fine steps */
-    double start = static_cast<double>(centre);  /* the best start found */
-    if (top > 0 && top < static_cast<long>(trial.size()) - 1) {  /* a neighbour on each side */
+    double start = static_cast<double>(center);  /* the best start found */
+    if (top > 0 && top < static_cast<long>(trial.size()) - 1) {  /* a neighbor on each side */
         double early = scores[static_cast<size_t>(top - 1)], late = scores[static_cast<size_t>(top + 1)];  /* one step earlier and later */
         double curve = early - 2 * here + late;  /* how sharply the energy peaks across time */
         if (curve < 0) {  /* a true peak */
@@ -631,7 +631,7 @@ KES_API int kes_read_header(const double *x, size_t n, double header_start, doub
 }  /* end of kes_read_header */
 
 KES_API int kes_ldpc_decode(const double *llrs, long k, const long *edge_bits, const long *edge_checks, long nedges, const long *starts,
-                            double scale, int max_iterations, uint8_t *bits) {  /* modem/ldpc.py decode: normalised min-sum */
+                            double scale, int max_iterations, uint8_t *bits) {  /* modem/ldpc.py decode: normalized min-sum */
     if (k < 1 || nedges < 1) {  /* nonsense */
         return -1;  /* refuse */
     }  /* end of the check */
@@ -717,14 +717,14 @@ KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int t
     double top = *std::max_element(tone_e, tone_e + cells);  /* the strongest energy */
     std::vector<double> scratch(tone_e, tone_e + cells);  /* a copy to find the median in */
     double whole = std::max(median_inplace(scratch.data(), cells) / std::log(2.0), 1e-12 * top + 1e-300);  /* the level over the whole frame (mfsk.py noise_level) */
-    size_t width = 2 * static_cast<size_t>(span) + 1;  /* symbols in each neighbourhood */
+    size_t width = 2 * static_cast<size_t>(span) + 1;  /* symbols in each neighborhood */
     if (!tracking || rows < width) {  /* tracking off, or the frame too short to track within */
         std::fill(level, level + rows, whole);  /* one level throughout */
         return 0;  /* done */
     }  /* end of the simple case */
-    std::vector<double> window(width * kTones);  /* one neighbourhood's energies */
+    std::vector<double> window(width * kTones);  /* one neighborhood's energies */
     for (size_t i = 0; i < rows; ++i) {  /* each symbol */
-        for (size_t w = 0; w < width; ++w) {  /* each symbol of its neighbourhood, mirrored at the frame's ends (as the Python pads) */
+        for (size_t w = 0; w < width; ++w) {  /* each symbol of its neighborhood, mirrored at the frame's ends (as the Python pads) */
             long at = static_cast<long>(i + w) - span;  /* its place in the frame */
             if (at < 0) {  /* before the first symbol */
                 at = -at;  /* mirrored: rows span, span - 1, ... 1 */
@@ -732,7 +732,7 @@ KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int t
                 at = 2 * static_cast<long>(rows) - 2 - at;  /* mirrored: rows n - 2, n - 3, ... */
             }  /* end of the mirroring */
             std::memcpy(window.data() + w * kTones, tone_e + static_cast<size_t>(at) * kTones, kTones * sizeof(double));  /* its 32 energies */
-        }  /* end of the neighbourhood */
+        }  /* end of the neighborhood */
         double local = median_inplace(window.data(), window.size()) / std::log(2.0);  /* the middle value, as an average noise energy */
         level[i] = std::max(local, 0.1 * whole);  /* never wildly below the frame's own level */
     }  /* end of the symbols */
@@ -773,9 +773,9 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
                 re[m] = value * std::cos(phase);  /* shifted down: real part */
                 im[m] = value * std::sin(phase);  /* imaginary part */
             }  /* end of the samples */
-            long centre = static_cast<long>(tone_bins[tones[p]]) * pad;  /* where the pilot should be on the fine grid */
+            long center = static_cast<long>(tone_bins[tones[p]]) * pad;  /* where the pilot should be on the fine grid */
             for (int j = -fine_span; j <= fine_span; ++j) {  /* the few fine steps either side */
-                long bin = ((centre + j) % static_cast<long>(length) + static_cast<long>(length)) % static_cast<long>(length);  /* that fine frequency, on the circle */
+                long bin = ((center + j) % static_cast<long>(length) + static_cast<long>(length)) % static_cast<long>(length);  /* that fine frequency, on the circle */
                 double sr = 0.0, si = 0.0;  /* the transform there */
                 size_t step_index = 0;  /* (bin * m) modulo the length */
                 for (size_t m = 0; m < samples; ++m) {  /* each sample */
@@ -792,8 +792,8 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
         }  /* end of the pilots */
         size_t peak = static_cast<size_t>(std::max_element(avg.begin(), avg.end()) - avg.begin());  /* the fine step with most energy */
         double frac = 0.0;  /* the fraction-of-a-step correction */
-        if (peak > 0 && peak < avg.size() - 1) {  /* a neighbour each side */
-            double a = avg[peak - 1], b = avg[peak], c = avg[peak + 1];  /* the peak and its neighbours */
+        if (peak > 0 && peak < avg.size() - 1) {  /* a neighbor each side */
+            double a = avg[peak - 1], b = avg[peak], c = avg[peak + 1];  /* the peak and its neighbors */
             double bend = a - 2 * b + c;  /* how sharply they curve */
             if (bend != 0) {  /* not flat */
                 frac = 0.5 * (a - c) / bend;  /* the top of the parabola */
@@ -895,16 +895,16 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windo
     double top = power.empty() ? 0.0 : *std::max_element(power.begin(), power.end());  /* the strongest energy anywhere (since 0.32) */
     bool has_noise = level > kNoNoise * top;  /* real audio always has a noise floor; audio made without any (a simulation) has none, and then nothing is steady (since 0.32) */
     std::vector<size_t> busy;  /* the steady steps */
-    std::vector<double> near;  /* one step's neighbourhood */
+    std::vector<double> near;  /* one step's neighborhood */
     for (size_t c = 0; c < width; ++c) {  /* each step */
-        double local = 0.0;  /* its neighbourhood's quiet level (not needed when the neighbour test is off) */
-        if (local_steps >= 0) {  /* the neighbour test is on */
-            size_t from = c >= static_cast<size_t>(local_steps) ? c - static_cast<size_t>(local_steps) : 0;  /* the neighbourhood's start */
+        double local = 0.0;  /* its neighborhood's quiet level (not needed when the neighbor test is off) */
+        if (local_steps >= 0) {  /* the neighbor test is on */
+            size_t from = c >= static_cast<size_t>(local_steps) ? c - static_cast<size_t>(local_steps) : 0;  /* the neighborhood's start */
             size_t to = std::min(width, c + static_cast<size_t>(local_steps) + 1);  /* and end */
             near.assign(typical.begin() + static_cast<long>(from), typical.begin() + static_cast<long>(to));  /* copied out */
             local = median_inplace(near.data(), near.size());  /* its quiet level */
-        }  /* end of the neighbourhood */
-        if (has_noise && typical[c] > times * level && (local_steps < 0 || typical[c] > times * local)) {  /* a noise floor exists, and this step is far above the band, and (unless the neighbour test is off) above its own neighbours, even at its quietest */
+        }  /* end of the neighborhood */
+        if (has_noise && typical[c] > times * level && (local_steps < 0 || typical[c] > times * local)) {  /* a noise floor exists, and this step is far above the band, and (unless the neighbor test is off) above its own neighbors, even at its quietest */
             busy.push_back(c);  /* steady and narrow */
         }  /* end of the test */
     }  /* end of the steps */
@@ -919,8 +919,8 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windo
                    padded.data(), spectrum.data(), 1.0);  /* transform it all at once */
     double per_hz = static_cast<double>(size) / kSampleRate;  /* steps of that transform per hertz */
     for (size_t c : busy) {  /* each steady step */
-        double centre = static_cast<double>(low + c) * bin_hz;  /* its frequency */
-        long first = static_cast<long>((centre - half_hz) * per_hz), last = static_cast<long>((centre + half_hz) * per_hz) + 1;  /* the notch, in fine steps (truncated, as Python's int()) */
+        double center = static_cast<double>(low + c) * bin_hz;  /* its frequency */
+        long first = static_cast<long>((center - half_hz) * per_hz), last = static_cast<long>((center + half_hz) * per_hz) + 1;  /* the notch, in fine steps (truncated, as Python's int()) */
         for (long k = std::max(first, 0L); k < std::min(last, static_cast<long>(spectrum.size())); ++k) {  /* each fine step in it */
             spectrum[static_cast<size_t>(k)] = 0.0;  /* cut out */
         }  /* end of the notch */
@@ -1096,7 +1096,7 @@ struct Pattern {  /* what the listener knows about one signature pattern (a spee
     double gate = 0.0;  /* candidates scoring below this are not followed up (none for the long beacon) */
     size_t preamble = 0;  /* the pattern's length, in samples */
     size_t lo = 0, hi = 0;  /* the FFT bins measured for a tone (one either side of the 32 tones) */
-    int step = 1;  /* bins between neighbouring tones */
+    int step = 1;  /* bins between neighboring tones */
     std::vector<int> bins;  /* the pattern's tones, in fine steps */
     bool set = false;  /* configured */
 };  /* end of Pattern */

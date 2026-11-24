@@ -10,7 +10,7 @@ other language:
     random-number routine (xorshift32);
   * each parity bit is the running XOR ("accumulation") of the checks so far.
 
-The decoder is the standard normalised min-sum belief-propagation decoder.
+The decoder is the standard normalized min-sum belief-propagation decoder.
 """
 
 from functools import lru_cache  # remembers each code after building it once
@@ -49,7 +49,7 @@ def info_checks(k):  # which three checks each data bit joins
 
     The three shuffles are repaired as they are read so that, wherever
     possible, no data bit uses the same check twice, no data bit uses two
-    neighbouring checks, and no two data bits share more than one check.
+    neighboring checks, and no two data bits share more than one check.
     Those rules remove the short loops that weaken an LDPC code.
     """
     rows = [_shuffle(k, seed) for seed in SEEDS]  # the three shuffles
@@ -61,7 +61,7 @@ def info_checks(k):  # which three checks each data bit joins
 
     def valid(j):  # does data bit j obey the rules?
         for lo, hi in pairs(j):  # look at each pair of its checks
-            if hi - lo <= 1 or (lo, hi) in used:  # same check twice, neighbouring checks, or a pair already taken
+            if hi - lo <= 1 or (lo, hi) in used:  # same check twice, neighboring checks, or a pair already taken
                 return False  # rule broken
         return True  # all three pairs are fine
 

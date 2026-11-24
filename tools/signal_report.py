@@ -1,4 +1,4 @@
-"""Summarise Kestrel signal logs: what was heard, how well, and what was sent.
+"""Summarize Kestrel signal logs: what was heard, how well, and what was sent.
 
 Run from the repository root:
 
@@ -263,7 +263,7 @@ def redecode(events, folders):  # play the saved clips through the receiver agai
 
 def main(argv=None):  # the script itself
     """Read the logs named, print the report, and write the tables if asked."""
-    parser = argparse.ArgumentParser(description="Summarise Kestrel signal logs")  # describe the tool
+    parser = argparse.ArgumentParser(description="Summarize Kestrel signal logs")  # describe the tool
     parser.add_argument("paths", nargs="+", help="signal log folder(s) or .jsonl file(s)")  # what to read
     parser.add_argument("--since", help="first UTC date to include, YYYY-MM-DD")  # optional start
     parser.add_argument("--until", help="last UTC date to include, YYYY-MM-DD")  # optional end

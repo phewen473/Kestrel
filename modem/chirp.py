@@ -41,8 +41,8 @@ def make_chirp_pair():  # what the transmitter sends at the start of every frame
 
 def _refine(curve, index):  # find the true top of a peak between samples
     """Return the peak position near `index`, to a fraction of a sample."""
-    if 0 < index < len(curve) - 1:  # we need a neighbour on each side
-        a, b, c = curve[index - 1], curve[index], curve[index + 1]  # the peak sample and its neighbours
+    if 0 < index < len(curve) - 1:  # we need a neighbor on each side
+        a, b, c = curve[index - 1], curve[index], curve[index + 1]  # the peak sample and its neighbors
         bend = a - 2 * b + c  # how sharply the three points curve
         if bend != 0:  # a flat line has no top to find
             return index + 0.5 * (a - c) / bend  # top of the parabola through the three points

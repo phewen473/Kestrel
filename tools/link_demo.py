@@ -88,13 +88,13 @@ def draw(events, path, title, out_path):  # the picture
     top.set_ylabel("SNR in 2.5 kHz (dB)")  # y-axis title
     top.grid(True, alpha=0.3)  # light grid lines
     callers = sorted({e["sender"] for e in events})  # the callsigns that transmitted
-    colours = dict(zip(callers, ("tab:blue", "tab:orange", "tab:green", "tab:purple")))  # one colour each
+    colors = dict(zip(callers, ("tab:blue", "tab:orange", "tab:green", "tab:purple")))  # one color each
     for e in events:  # one bar per transmission
-        shade = colours[e["sender"]]  # the sender's colour
+        shade = colors[e["sender"]]  # the sender's color
         bottom.barh(e["level"], e["seconds"], left=e["t"], height=0.6, color=shade if e["heard"] else "white", edgecolor=shade, hatch=None if e["heard"] else "////")  # solid when heard, hatched when lost
     for call in callers:  # legend entries
-        bottom.barh(0, 0, color=colours[call], label=call)  # an invisible bar that carries the label
-    bottom.barh(0, 0, color="white", edgecolor="grey", hatch="////", label="not decoded")  # legend entry for lost frames
+        bottom.barh(0, 0, color=colors[call], label=call)  # an invisible bar that carries the label
+    bottom.barh(0, 0, color="white", edgecolor="gray", hatch="////", label="not decoded")  # legend entry for lost frames
     bottom.set_yticks(range(5))  # one tick per level
     bottom.set_yticklabels([f"L{n}" for n in range(5)])  # named L0 to L4
     bottom.set_ylabel("Speed level of each transmission")  # y-axis title

@@ -71,8 +71,8 @@ def main():  # the script itself
     for condition in args.conditions:  # one line per condition
         pts = [(r[1], 100 * r[4]) for r in rows if r[0] == condition]  # (SNR, percent decoded) points
         ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=labels.get(condition, condition))  # draw the line
-    ax.axvline(-22, color="grey", linestyle="--", linewidth=1)  # mark the design target
-    ax.text(-21.8, 3, "L0 target", color="grey", fontsize=9)  # label the target line
+    ax.axvline(-22, color="gray", linestyle="--", linewidth=1)  # mark the design target
+    ax.text(-21.8, 3, "L0 target", color="gray", fontsize=9)  # label the target line
     ax.set_xlabel("SNR in 2.5 kHz (dB)")  # x-axis title
     ax.set_ylabel("Frames decoded (%)")  # y-axis title
     ax.set_title(f"Kestrel L0 prototype, 50-character frame, {args.trials} trials per point")  # chart title

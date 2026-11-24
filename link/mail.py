@@ -4,7 +4,7 @@ A Mailroom holds everything about mail that must outlast one contact and
 one run of the program:
 
 - the station's next message number, so a number is never reused while
-  copies of an older message with that number may still be travelling;
+  copies of an older message with that number may still be traveling;
 - its own messages to named stations ("own"), with the stations each has
   been handed to for carrying, until a delivery is confirmed or the
   message expires;

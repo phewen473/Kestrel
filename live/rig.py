@@ -208,7 +208,7 @@ class RigCtl:  # a connection to rigctld
     def set_mode(self, mode="PKTUSB", passband_hz=3000):  # choose the radio's mode
         """Put the radio in `mode` (PKTUSB is upper sideband for data) with a receive filter `passband_hz` wide.
 
-        Kestrel's fastest level spans about 800 to 2200 Hz of audio, centred on
+        Kestrel's fastest level spans about 800 to 2200 Hz of audio, centered on
         1500 Hz, so a filter about 3000 Hz wide passes every level with room to spare. A passband of 0 asks Hamlib for its usual width
         for the mode, which on some radios is a narrow data filter (600 Hz on
         an FTDX10) that removes the signal altogether.

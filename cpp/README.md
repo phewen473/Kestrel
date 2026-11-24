@@ -70,8 +70,8 @@ worded error, so the program behaves the same either way.
   picks the same reply slot as the Python one.
 - `src/internal.hpp` — calls between the parts of the library.
 - `src/json.hpp` — a small JSON reader and writer (the mail file, and the mail store's requests).
-- `third_party/pocketfft/` — the FFT (the same algorithm NumPy uses), header-only, BSD licence;
-  its licence (`LICENSE.md`) travels with the library.
+- `third_party/pocketfft/` — the FFT (the same algorithm NumPy uses), header-only, BSD license;
+  its license (`LICENSE.md`) travels with the library.
 - `CMakeLists.txt` — the build.
 
 ## Building
@@ -111,4 +111,4 @@ not let them interleave (the Python bridge holds a lock per handle; the station 
 store in one locked step). Next: the frame glue (receive and build) as single compiled calls, then
 a C++ program around the library (the panel, after asking the operator about Qt).
 
-Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its licence).
+Copyright 2026 P. H. Ewen (KO4WSC). Apache License 2.0 (pocketfft: BSD 3-clause, see its license).

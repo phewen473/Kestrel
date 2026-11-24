@@ -82,7 +82,7 @@ def test_ldpc_corrects_noisy_input():  # the decoder must fix a noisy codeword
 
 
 def test_crc_matches_published_check_values():  # compare with the standard test message
-    bits = _bytes_to_bits(b"123456789")  # the message every CRC catalogue uses
+    bits = _bytes_to_bits(b"123456789")  # the message every CRC catalog uses
     assert int("".join(map(str, crc16(bits))), 2) == 0x29B1  # CRC-16/CCITT-FALSE check value
     assert int("".join(map(str, crc8(bits))), 2) == 0xF4  # CRC-8 check value
 
@@ -102,9 +102,9 @@ def test_interleaver_is_a_true_shuffle_and_reverses():  # nothing lost, nothing 
     for n in (45, 760, 2860):  # the frame sizes the modem uses, roughly
         perm = permutation(n)  # where each bit goes
         assert sorted(perm) == list(range(n))  # every position used exactly once
-        values = np.arange(n)  # something easy to recognise
+        values = np.arange(n)  # something easy to recognize
         assert np.array_equal(deinterleave(interleave(values)), values)  # shuffle then unshuffle gives the original
-    assert abs(int(permutation(760)[1]) - int(permutation(760)[0])) > 200  # neighbours end up far apart
+    assert abs(int(permutation(760)[1]) - int(permutation(760)[0])) > 200  # neighbors end up far apart
 
 
 def test_chirp_measures_timing_and_frequency_in_noise():  # the chirp pair must find both

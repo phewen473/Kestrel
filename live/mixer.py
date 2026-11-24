@@ -17,7 +17,7 @@ match is made on the start of the full name Windows uses.
 import sys  # which operating system this is
 
 
-def _normalise(name):  # a device name reduced for comparing
+def _normalize(name):  # a device name reduced for comparing
     return " ".join(name.replace("(", " ").replace(")", " ").split()).lower()  # brackets and repeated spaces removed, lower case
 
 
@@ -48,11 +48,11 @@ def find(name, kind="input"):  # look for a device's volume control
         flow = 1 if kind == "input" else 0  # eCapture for inputs, eRender for outputs
         enumerator = AudioUtilities.GetDeviceEnumerator()  # Windows' list of sound devices
         devices = enumerator.EnumAudioEndpoints(flow, 1)  # the working (active) ones of the kind wanted
-        wanted = _normalise(name)  # the name to look for
+        wanted = _normalize(name)  # the name to look for
         for index in range(devices.GetCount()):  # each device
             device = devices.Item(index)  # the device
             full = AudioUtilities.CreateDevice(device).FriendlyName or ""  # its full name in Windows
-            if _normalise(full).startswith(wanted) or wanted.startswith(_normalise(full)):  # the same device, allowing for a shortened name
+            if _normalize(full).startswith(wanted) or wanted.startswith(_normalize(full)):  # the same device, allowing for a shortened name
                 control = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)  # its volume control
                 return DeviceLevel(cast(control, POINTER(IAudioEndpointVolume)), full)  # ready to use
     except Exception:  # pycaw is missing or Windows said no

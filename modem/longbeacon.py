@@ -8,7 +8,7 @@ leaves room in about a minute for tones three times as long as L0's:
 
     preamble (12 tones, the long pattern) | body (36 data tones with 3 pilots)
 
-    51 tones x 1.167 s = 59.5 s, 32 tones 2.57 Hz apart (about 82 Hz wide), centred near 1500 Hz.
+    51 tones x 1.167 s = 59.5 s, 32 tones 2.57 Hz apart (about 82 Hz wide), centered near 1500 Hz.
 
 The body is 66 field bits (callsign 48, grid 15, available 1, holds mail 1,
 spare 1) and a CRC-16, coded with the same K=7 rate-1/2 convolutional code
@@ -34,7 +34,7 @@ from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import Level  # one level's numbers
 from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, tone_energies, transmission  # the tone waveform
 from . import native  # the compiled library, used when present
-from .params import BODY_CRC_BITS, CALL_BITS, CENTRE_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
+from .params import BODY_CRC_BITS, CALL_BITS, CENTER_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
 from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
 
 LONG = Level(LONG_LEVEL, LONG_SAMPLES, LONG_STEP)  # the long beacon's tone length and spacing, as a level
@@ -104,11 +104,11 @@ def clean(x):  # take steady carriers out of the long beacon's band
     blocks = len(x) // n  # whole tone lengths in the audio
     if blocks < 8:  # too little audio to tell steady from brief
         return x  # leave it
-    done = native.remove_steady(x, n, CENTRE_HZ - CLEAN_HALF_HZ, CENTRE_HZ + CLEAN_HALF_HZ, CARRIER_TIMES, -1, CARRIER_MOST, NOTCH_HALF_HZ,
-                                next_fast_len(len(x), real=True), windowed=False)  # the compiled version, when the library is in use (no window, no neighbour test: as below)
+    done = native.remove_steady(x, n, CENTER_HZ - CLEAN_HALF_HZ, CENTER_HZ + CLEAN_HALF_HZ, CARRIER_TIMES, -1, CARRIER_MOST, NOTCH_HALF_HZ,
+                                next_fast_len(len(x), real=True), windowed=False)  # the compiled version, when the library is in use (no window, no neighbor test: as below)
     if done is not None:  # it was
         return done if not np.array_equal(done, x) else x  # the same audio, to rounding (x itself when nothing was notched, as below)
-    low, high = int((CENTRE_HZ - CLEAN_HALF_HZ) / LONG.bin_hz), int((CENTRE_HZ + CLEAN_HALF_HZ) / LONG.bin_hz)  # the bins from 100 Hz below the centre to 100 Hz above
+    low, high = int((CENTER_HZ - CLEAN_HALF_HZ) / LONG.bin_hz), int((CENTER_HZ + CLEAN_HALF_HZ) / LONG.bin_hz)  # the bins from 100 Hz below the center to 100 Hz above
     power = np.abs(np.fft.rfft(x[:blocks * n].reshape(blocks, n), axis=1)[:, low:high]) ** 2  # the energy in each bin, tone length by tone length
     typical = np.percentile(power, 10, axis=0)  # each bin's energy in its quietest tenth of the time: high only if something is there nearly all the time
     busy = np.flatnonzero(typical > CARRIER_TIMES * np.median(typical))  # bins that are occupied all the time
@@ -120,8 +120,8 @@ def clean(x):  # take steady carriers out of the long beacon's band
     spectrum = np.fft.rfft(x, size)  # the whole audio at once: very fine frequency steps
     per_hz = size / FS  # steps of that transform per hertz
     for number in busy:  # each occupied bin
-        centre = (low + number) * LONG.bin_hz  # its frequency
-        spectrum[int((centre - NOTCH_HALF_HZ) * per_hz):int((centre + NOTCH_HALF_HZ) * per_hz) + 1] = 0.0  # cut it out
+        center = (low + number) * LONG.bin_hz  # its frequency
+        spectrum[int((center - NOTCH_HALF_HZ) * per_hz):int((center + NOTCH_HALF_HZ) * per_hz) + 1] = 0.0  # cut it out
     return np.fft.irfft(spectrum, size)[:len(x)]  # back to audio
 
 

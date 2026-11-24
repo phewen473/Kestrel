@@ -146,7 +146,7 @@ def test_receiver_reads_the_second_header_copy_when_the_first_is_lost():  # the 
     assert any(step["header"] in ("both", "second") and step.get("ok") for step in trace)  # and the trace says so
 
 
-def test_signal_report_summarises_a_log(tmp_path):  # tools/signal_report.py
+def test_signal_report_summarizes_a_log(tmp_path):  # tools/signal_report.py
     import signal_report  # the report tool
     from live.signallog import SignalLog  # the log
 

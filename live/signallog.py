@@ -49,7 +49,7 @@ removed until they are back under it. The full-time recordings
 (recorder.py) are a separate setting and the largest of all, about 86 MB
 an hour.
 
-tools/signal_report.py reads these files and summarises them.
+tools/signal_report.py reads these files and summarizes them.
 """
 
 import json  # one JSON object per line
@@ -221,7 +221,7 @@ class SignalLog:  # writes the signal log
             tone = (LEVELS[level] if 0 <= level < len(LEVELS) else LONG).samples  # one tone length at its level (once LEVELS[7], which stopped the station: "tuple index out of range")
             key = (step["level"], sample // (2 * tone))  # the same signal found again lands in the same place, give or take two tones
             outcome = (step.get("header", ""), step.get("ok"), step.get("reason"))  # what became of it
-            known = self.seen.get(key) or self.seen.get((key[0], key[1] - 1)) or self.seen.get((key[0], key[1] + 1))  # logged already, here or in a neighbouring place
+            known = self.seen.get(key) or self.seen.get((key[0], key[1] - 1)) or self.seen.get((key[0], key[1] + 1))  # logged already, here or in a neighboring place
             if known is not None and known[0] == outcome:  # logged already, with the same outcome
                 continue  # once is enough
             self.seen[key] = (outcome, sample)  # remember it

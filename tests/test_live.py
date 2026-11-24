@@ -122,7 +122,7 @@ def test_rig_control_speaks_rigctld():  # tuning and keying through Hamlib's rig
 def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the band presets
     from live.bands import PRESETS_KHZ, dial_khz, in_automatic_segment, signal_khz  # the presets and their checks
 
-    assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40", "80"]  # one preset each for 20, 30, 40 and 80 metres
+    assert sorted(PRESETS_KHZ, key=int) == ["20", "30", "40", "80"]  # one preset each for 20, 30, 40 and 80 meters
     from live.bands import WORKING_KHZ, in_data_segment  # the channels, and the data-segment check
     for band in PRESETS_KHZ:  # every preset
         assert in_data_segment(dial_khz(band)) == band  # the calling frequency keeps the whole signal inside the band's U.S. data segment
@@ -134,7 +134,7 @@ def test_preselected_frequencies_sit_inside_the_automatic_segments():  # the ban
     assert not in_automatic_segment(14098.0)  # a signal that would straddle the beacon frequency at 14100 is refused
     assert not in_automatic_segment(7074.0)  # and so is one outside the segments altogether
     try:  # a band with no preset
-        dial_khz("160")  # 160 metres has none
+        dial_khz("160")  # 160 meters has none
         raised = False  # it should not get here
     except ValueError:  # the lookup refuses
         raised = True  # as it should
@@ -441,7 +441,7 @@ def test_scope_spectrum_zoomed_separates_long_beacon_tones():  # a zoomed-in sco
     from live.audio import CARD_RATE, SCOPE_LONG, scope_length, scope_spectrum  # the functions under test
     assert scope_length(1400.0, 1600.0) == SCOPE_LONG  # a narrow view uses the longer stretch of audio
     t = np.arange(SCOPE_LONG) / CARD_RATE  # that stretch, in seconds
-    levels = scope_spectrum(0.3 * np.sin(2 * np.pi * 1500.0 * t) + 0.3 * np.sin(2 * np.pi * 1502.571 * t), CARD_RATE, 1600.0, 720, 1400.0)  # two neighbouring long-beacon tones, seen 200 Hz wide
+    levels = scope_spectrum(0.3 * np.sin(2 * np.pi * 1500.0 * t) + 0.3 * np.sin(2 * np.pi * 1502.571 * t), CARD_RATE, 1600.0, 720, 1400.0)  # two neighboring long-beacon tones, seen 200 Hz wide
     hz = np.linspace(1400.0, 1600.0, 720)  # the frequency of each point
     assert len(levels) == 720  # one level per point across
     dip = levels[np.argmin(np.abs(hz - 1501.29))]  # the level midway between the two tones

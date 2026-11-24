@@ -114,7 +114,7 @@ def _load():  # find, open and check the library
                                       _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
         lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
         lib.kes_remove_steady.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int,
-                                          ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, windowed, low, high, times, neighbourhood, most, half width, size, out
+                                          ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, windowed, low, high, times, neighborhood, most, half width, size, out
         lib.kes_remove_steady.restype = ctypes.c_int  # steps notched, or -1
         lib.kes_decode_body.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int,  # x, n, body start, offset, samples, lo, hi, step
                                         ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t,  # tones, pilot places, pilot tones, pilots, data places, data tones

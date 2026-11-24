@@ -44,4 +44,4 @@ print(receive(heard))
 
 ## Where things stand
 
-Working and covered by the tests in `tests/`. Not yet modelled: slow SNR changes over minutes, interference from other signals, and the radio's own filters.
+Working and covered by the tests in `tests/`. Not yet modeled: slow SNR changes over minutes, interference from other signals, and the radio's own filters.

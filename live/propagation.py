@@ -65,7 +65,7 @@ def missing():  # can predictions be made?
 
 
 def band_frequencies():  # what to predict
-    """Return {band name: centre of Kestrel's signal on its calling frequency, in MHz}, lowest band first."""
+    """Return {band name: center of Kestrel's signal on its calling frequency, in MHz}, lowest band first."""
     return {f"{band} m": sum(signal_khz(dial)) / 2000.0 for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: item[1])}  # the middle of the signal (its low and high edges, in kHz, averaged, in MHz) on each calling frequency
 
 

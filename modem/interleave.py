@@ -9,7 +9,7 @@ from math import gcd  # greatest common divisor, used to keep the shuffle one-to
 
 import numpy as np  # numerical arrays
 
-GOLDEN = 0.6180339887498949  # 1 / golden ratio: spreads neighbours far apart
+GOLDEN = 0.6180339887498949  # 1 / golden ratio: spreads neighbors far apart
 
 
 def _step(n):  # choose the multiplier for a frame of n bits

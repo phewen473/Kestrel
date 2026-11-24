@@ -101,7 +101,7 @@ def _core_settings(window, step):  # what the compiled listener needs to know
     cfg[0:10] = [window, step, LONGEST_FRAME, CONTEXT_S, LONG_EVERY, 3, HEADER_SYMBOLS, PREAMBLE_TONES, NEAR_QUALITY, NEAR_QUALITY_MAX]  # the store, the rhythm, the frame shapes, near misses
     cfg[10:12] = list(blanker.blank_impulses.__defaults__)  # the blanker's threshold and guard, as blank_impulses uses them
     cfg[12:19] = [notch.BLOCK, notch.BAND_LOW_HZ, notch.BAND_HIGH_HZ, notch.CARRIER_TIMES, notch.LOCAL_STEPS, notch.CARRIER_MOST, notch.NOTCH_HALF_HZ]  # the steady-signal notch
-    cfg[19:25] = [longbeacon.SAMPLES, longbeacon.CENTRE_HZ - longbeacon.CLEAN_HALF_HZ, longbeacon.CENTRE_HZ + longbeacon.CLEAN_HALF_HZ, longbeacon.CARRIER_TIMES, longbeacon.CARRIER_MOST, longbeacon.NOTCH_HALF_HZ]  # the long beacon and its carrier notch
+    cfg[19:25] = [longbeacon.SAMPLES, longbeacon.CENTER_HZ - longbeacon.CLEAN_HALF_HZ, longbeacon.CENTER_HZ + longbeacon.CLEAN_HALF_HZ, longbeacon.CARRIER_TIMES, longbeacon.CARRIER_MOST, longbeacon.NOTCH_HALF_HZ]  # the long beacon and its carrier notch
     cfg[25:28] = [PAD, HOPS, (PREAMBLE_TONES + HEADER_SYMBOLS // 2) * LEVELS[0].samples]  # the search's steps, and what a near miss cuts out
     patterns = {}  # slot -> (values, bins)
     for slot, spec in enumerate(list(LEVELS) + [longbeacon.LONG]):  # the five levels, then the long beacon

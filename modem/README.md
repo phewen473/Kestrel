@@ -125,8 +125,8 @@ All of these are now written into the specification (sections 4 and 5).
 |---|---|
 | Sample rate | 12,000 samples per second |
 | Preamble | 12 tones at the frame's level, a fixed pattern per level (`PREAMBLE_PATTERNS` in `params.py`) |
-| Tones | 32 per level (5 bits each), centred near 1500 Hz |
-| Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalised min-sum, scale 0.9, up to 200 passes (0.8 and 80 before 0.31R1) |
+| Tones | 32 per level (5 bits each), centered near 1500 Hz |
+| Body error correction | LDPC code, rate 1/2 (repeat-accumulate kind); decoder: normalized min-sum, scale 0.9, up to 200 passes (0.8 and 80 before 0.31R1) |
 | Header error correction | Convolutional code, rate 1/2, constraint length 7, soft Viterbi decoder |
 | Interleaver | Golden-ratio step formula over the whole frame |
 | Checks | CRC-8 on the header, CRC-16 on the body |

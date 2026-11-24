@@ -35,7 +35,7 @@ EVENT_LEVEL = {"message": 0, "broadcast": 0, "contact start": 0, "contact end": 
                "frame": 2, "sent": 2, "meters": 2, "settings": 2}  # verbose events
 BANDS = ((1.8, 2.0, "160m"), (3.5, 4.0, "80m"), (5.06, 5.45, "60m"), (7.0, 7.3, "40m"), (10.1, 10.15, "30m"), (14.0, 14.35, "20m"),  # (continued)
          (18.068, 18.168, "17m"), (21.0, 21.45, "15m"), (24.89, 24.99, "12m"), (28.0, 29.7, "10m"), (50.0, 54.0, "6m"), (144.0, 148.0, "2m"))  # amateur bands in MHz, with their ADIF names
-AUDIO_CENTRE_HZ = 1500.0  # Kestrel's signal sits this far above the dial frequency (upper sideband)
+AUDIO_CENTER_HZ = 1500.0  # Kestrel's signal sits this far above the dial frequency (upper sideband)
 
 
 def band_for(mhz):  # which band a frequency is in
@@ -112,7 +112,7 @@ class Logbook:  # the CSV and ADIF logs
     def contact(self, record):  # add a completed contact to the ADIF file
         """Append one ADIF record. `record` has call, start, end (seconds since 1970), dial_khz and, if known, grid, my_call, my_grid, snr (heard, dB), power_w, rig, sent, received and best_level."""
         start, end = time.gmtime(record["start"]), time.gmtime(record["end"])  # the times, in UTC
-        mhz = (record["dial_khz"] * 1000.0 + AUDIO_CENTRE_HZ) / 1e6  # the signal's own frequency
+        mhz = (record["dial_khz"] * 1000.0 + AUDIO_CENTER_HZ) / 1e6  # the signal's own frequency
         text = "".join((  # the record's fields
             adif_field("CALL", record["call"]),  # the other station
             adif_field("QSO_DATE", time.strftime("%Y%m%d", start)), adif_field("TIME_ON", time.strftime("%H%M%S", start)),  # when it began

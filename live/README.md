@@ -113,7 +113,7 @@ Five lessons from testing; the first four are now built in:
 - **A station leaves a full second between its own transmissions,** and starts each with a third of a second of silence, so the radio and sound card are settled before the chirp.
 - **Ask the radio for a wide receive filter.** In the first two-radio test the tuned radio heard nothing: rig control had left it on its narrow data filter (600 Hz), which removed the signal. Tuning now asks for a 3000 Hz filter, which Kestrel's 500 to 2500 Hz chirp needs.
 - **A busy computer can lose received audio.** With the control panel and the decoder sharing one computer, the sound card occasionally threw away a little audio that was not collected in time, and one acknowledgment failed its check. The sound card is now opened with generous buffering, and if it still loses audio the station says so in its log.
-- **Check where the radio centres its data-mode filter.** One radio centred its data filter on 0 Hz of audio instead of 1500 Hz, so even a 3000 Hz filter passed only the lower half of the signal. Slow frames just got through and fast ones read as heavy fading. On that radio the cure was its data shift menu setting, put back to 1500 Hz. If a strong, steady signal reports a high fading index, look at the receive filter first.
+- **Check where the radio centers its data-mode filter.** One radio centered its data filter on 0 Hz of audio instead of 1500 Hz, so even a 3000 Hz filter passed only the lower half of the signal. Slow frames just got through and fast ones read as heavy fading. On that radio the cure was its data shift menu setting, put back to 1500 Hz. If a strong, steady signal reports a high fading index, look at the receive filter first.
 
 ## Not done yet
 

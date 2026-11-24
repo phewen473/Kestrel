@@ -126,7 +126,7 @@ def test_compressed_message_end_to_end():  # compression lets a longer text ride
     english = "arrived safe, will call sunday after church. love to all"  # 56 characters: too long for the smallest frame unless compressed
     result = _send(english, -19.0, 50)  # weak signal, noise only
     assert result.ok and result.text == english  # the exact message comes back
-    assert result.compressed and result.size_class == 0  # it travelled compressed in the smallest frame
+    assert result.compressed and result.size_class == 0  # it traveled compressed in the smallest frame
 
 
 def test_compression_reduces_the_number_of_parts():  # splitting packs more text into each part when it compresses

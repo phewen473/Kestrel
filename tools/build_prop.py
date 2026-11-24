@@ -37,7 +37,7 @@ PINNED_COMMIT = "cd172be56dc04b154e5d2fa91cbaa6ecf5284305"  # its commit: checke
 CACHE = os.path.join(ROOT, "packaging", "cache", "ITU-R-HF")  # where the source is kept between builds (git-ignored)
 P372_SOURCES = ("InitializeNoise.c", "MakeNoise.c", "Noise.c", "NoiseMemory.c")  # the noise library's files (the others are a test driver and an out-of-date copy)
 PROP_SOURCES = ("ITURHFProp.c", "ReadInputConfiguration.c", "Report.c", "DumpPathData.c", "ValidateITURHFP.c")  # the command-line program's files
-FLAGS = ["-std=gnu99", "-O2", "-fcommon"]  # C99 with the usual extensions, optimised; -fcommon for the shared variables in the headers
+FLAGS = ["-std=gnu99", "-O2", "-fcommon"]  # C99 with the usual extensions, optimized; -fcommon for the shared variables in the headers
 
 
 def windows_gcc():  # the MinGW gcc to use on Windows

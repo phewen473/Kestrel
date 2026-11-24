@@ -4,7 +4,7 @@ They match the specification (sections 4 and 5).
 """
 
 SPEC_VERSION = "0.32"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.32"  # the specification version in which the on-air behaviour last changed (0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
+SIGNAL_VERSION = "0.32"  # the specification version in which the on-air behavior last changed (0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 RAMP_S = 0.010  # every transmission fades in and out over this long, along a raised cosine (since 0.32), so it starts and stops without a click
@@ -31,7 +31,7 @@ LONG_STEP = 3  # the long beacon's tones sit three FFT bins apart: 2.57 Hz, abou
 FRAME_TYPE_LONG = 6  # the frame type the receiver reports for a long beacon (the long beacon has no header; this number is never sent)
 M_TONES = 32  # number of different tones every level can send
 BITS_PER_SYMBOL = 5  # each tone carries 5 bits, because 2**5 = 32
-CENTRE_HZ = 1500.0  # the tones of every level are centred near this audio frequency
+CENTER_HZ = 1500.0  # the tones of every level are centered near this audio frequency
 
 PILOT_EVERY = 15  # one known pilot tone is sent before every 15 data tones
 PILOT_STEP = 7  # pilot number g uses tone (7 * g + 3) mod 32

@@ -18,7 +18,7 @@ shortcuts.
 Your settings, saved contacts, the stations-heard log and the logbook
 are kept in the local/ folder, which Git ignores.
 
-Only transmit where your licence allows, with the published specification matching this program.
+Only transmit where your license allows, with the published specification matching this program.
 """
 
 import argparse  # reads the command-line options
@@ -71,7 +71,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
-            "scope_rx_colour": 50.0, "scope_tx_colour": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colours change, and the set of colours used)  # (continued: logging, recording and looks)
+            "scope_rx_color": 50.0, "scope_tx_color": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colors change, and the set of colors used)  # (continued: logging, recording and looks)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
@@ -116,6 +116,11 @@ def load_settings():  # read the remembered settings
     settings = dict(DEFAULTS)  # start from the defaults
     saved = read_json(SETTINGS_FILE, {})  # what was saved
     settings.update(saved)  # saved values replace the defaults
+    for side in ("rx", "tx"):  # the two scopes' color sliders, saved under British-spelled names before 0.32
+        old = f"scope_{side}_colo" + "ur"  # the old name (spelled out in two parts so a spelling sweep leaves it alone)
+        if old in saved and f"scope_{side}_color" not in saved:  # kept under the old name only
+            settings[f"scope_{side}_color"] = saved[old]  # carried over
+        settings.pop(old, None)  # the old name is no longer used
     if "quick" not in saved and any(f"quick{number}" in saved for number in (1, 2, 3)):  # quick messages kept by a version before 0.30 (three numbered slots, no names)
         settings["quick"] = [{"name": QUICK_OLD_NAMES[number - 1], "text": saved[f"quick{number}"]} for number in (1, 2, 3) if saved.get(f"quick{number}", "").strip()]  # kept, with names
     for number in (1, 2, 3):  # the old slots
@@ -177,7 +182,7 @@ def about_text():  # the words in Help > About
             f"Program: {build_info()}\n"  # which build of the program
             f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}; {native.describe()}\n\n"  # the Python it runs on, and whether the compiled modem library is helping
             f"Stations must have the same signal version to hear each other.\n\n"  # the practical point
-            f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licences
+            f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licenses
 
 
 def device_choices(kind):  # the sound devices to offer in a drop-down list
@@ -213,37 +218,37 @@ def utc(seconds):  # a time for display
 FONT_MIN, FONT_MAX = 7, 16  # the smallest and largest font sizes offered
 SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. It keeps the last transmission.\n\n"  # the transmit scope
               "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
-              "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labelled.\n\n"  # the scales
+              "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labeled.\n\n"  # the scales
               "Floor and Range (the sliders beside each scope): Floor sets the level at the bottom of the trace and the black of the waterfall; raise it to hide noise, lower it to see weaker signals. Range sets how many dB lie between the bottom and the top; fewer dB gives more contrast. Double-click a slider to reset it.\n\n"  # the sliders
-              "Colour (the third slider) and View > Waterfall colours: choose a set of colours that suits your eyes (two sets are made to be read with colour blindness, two are grey only), then move Colour to shift where the colours change. Up: weaker signals already reach the bright colours. Down: only strong signals do. Double-click it to put it back in the middle.\n\n"  # the colour controls
+              "Color (the third slider) and View > Waterfall colors: choose a set of colors that suits your eyes (two sets are made to be read with color blindness, two are gray only), then move Color to shift where the colors change. Up: weaker signals already reach the bright colors. Down: only strong signals do. Double-click it to put it back in the middle.\n\n"  # the color controls
               "Zoom: click a signal or its label, turn the mouse wheel, or pick a width in the View box. Right click, or Full view, shows everything again.\n\n"  # zooming
               "Sizes: drag the dividers between the panels to shrink one and grow another. View > Reset the panel sizes puts them back.")  # the dividers
 
-SCOPE_LIMITS = {"rx": ((-30.0, 30.0), (10.0, 90.0), (0.0, 100.0)), "tx": ((-110.0, -20.0), (10.0, 100.0), (0.0, 100.0))}  # the Floor, Range and Colour sliders' ends: Floor and Range in dB (receive floor relative to the noise, transmit floor below full scale); Colour from 0 to 100
-PALETTES = {  # the waterfall colour sets offered in View > Waterfall colours: name -> colour stops from weakest (0) to strongest (1), as (place, (red, green, blue))
-    "Classic": [(0.0, (0, 0, 40)), (0.35, (0, 40, 200)), (0.7, (255, 255, 0)), (1.0, (255, 60, 0))],  # black, blue, yellow, red (the colours used before 0.31R4)
-    "Colour-blind safe (blue to yellow)": [(0.0, (0, 32, 77)), (0.25, (54, 70, 107)), (0.5, (124, 123, 120)), (0.75, (196, 177, 102)), (1.0, (255, 234, 70))],  # dark blue through grey to yellow: one rising brightness, readable with red-green colour blindness
-    "Colour-blind safe (purple to yellow)": [(0.0, (68, 1, 84)), (0.25, (59, 82, 139)), (0.5, (33, 145, 140)), (0.75, (94, 201, 98)), (1.0, (253, 231, 37))],  # purple, blue, green, yellow: brightness rises steadily, readable with most colour blindness
-    "Heat (black, red, yellow, white)": [(0.0, (0, 0, 0)), (0.4, (180, 0, 0)), (0.75, (255, 200, 0)), (1.0, (255, 255, 255))],  # a fire's colours: strong contrast, no blue
-    "Grey (black to white)": [(0.0, (0, 0, 0)), (1.0, (255, 255, 255))],  # brightness only, no colour at all
-    "Grey, reversed (white to black)": [(0.0, (255, 255, 255)), (1.0, (0, 0, 0))],  # dark signals on a light background
+SCOPE_LIMITS = {"rx": ((-30.0, 30.0), (10.0, 90.0), (0.0, 100.0)), "tx": ((-110.0, -20.0), (10.0, 100.0), (0.0, 100.0))}  # the Floor, Range and Color sliders' ends: Floor and Range in dB (receive floor relative to the noise, transmit floor below full scale); Color from 0 to 100
+PALETTES = {  # the waterfall color sets offered in View > Waterfall colors: name -> color stops from weakest (0) to strongest (1), as (place, (red, green, blue))
+    "Classic": [(0.0, (0, 0, 40)), (0.35, (0, 40, 200)), (0.7, (255, 255, 0)), (1.0, (255, 60, 0))],  # black, blue, yellow, red (the colors used before 0.31R4)
+    "Color-blind safe (blue to yellow)": [(0.0, (0, 32, 77)), (0.25, (54, 70, 107)), (0.5, (124, 123, 120)), (0.75, (196, 177, 102)), (1.0, (255, 234, 70))],  # dark blue through gray to yellow: one rising brightness, readable with red-green color blindness
+    "Color-blind safe (purple to yellow)": [(0.0, (68, 1, 84)), (0.25, (59, 82, 139)), (0.5, (33, 145, 140)), (0.75, (94, 201, 98)), (1.0, (253, 231, 37))],  # purple, blue, green, yellow: brightness rises steadily, readable with most color blindness
+    "Heat (black, red, yellow, white)": [(0.0, (0, 0, 0)), (0.4, (180, 0, 0)), (0.75, (255, 200, 0)), (1.0, (255, 255, 255))],  # a fire's colors: strong contrast, no blue
+    "Gray (black to white)": [(0.0, (0, 0, 0)), (1.0, (255, 255, 255))],  # brightness only, no color at all
+    "Gray, reversed (white to black)": [(0.0, (255, 255, 255)), (1.0, (0, 0, 0))],  # dark signals on a light background
     "High contrast (black, white, yellow)": [(0.0, (0, 0, 0)), (0.5, (255, 255, 255)), (1.0, (255, 255, 0))],  # weak signals turn white quickly, strong ones yellow
 }  # end of the table
 
 
-def make_palette(name, colour):  # the 256 colours of one waterfall
-    """Return a 256 x 3 array of colours for the colour set `name`, with the Colour slider at `colour` (0 to 100; 50 = the set as drawn).
+def make_palette(name, color):  # the 256 colors of one waterfall
+    """Return a 256 x 3 array of colors for the color set `name`, with the Color slider at `color` (0 to 100; 50 = the set as drawn).
 
-    The slider moves where the colours change: above 50 the brighter colours are
+    The slider moves where the colors change: above 50 the brighter colors are
     reached by weaker signals (weak signals stand out), below 50 only strong
     signals reach them (a quieter picture). It does this by bending the
     brightness scale: brightness b is shown as b ** g, with g from 4 (slider at 0)
     to 1/4 (slider at 100).
     """
     stops = PALETTES.get(name, PALETTES["Classic"])  # the chosen set (the classic one if the name is unknown)
-    bend = 2.0 ** ((50.0 - float(colour)) / 25.0)  # the power applied to brightness: 1 at the middle of the slider
+    bend = 2.0 ** ((50.0 - float(color)) / 25.0)  # the power applied to brightness: 1 at the middle of the slider
     steps = np.linspace(0.0, 1.0, 256) ** bend  # the 256 brightness steps, bent
-    places = [p for p, _ in stops]  # where each colour stop sits
+    places = [p for p, _ in stops]  # where each color stop sits
     return np.stack([np.interp(steps, places, [c[k] for _, c in stops]) for k in range(3)], axis=1).astype("uint8")  # red, green and blue, each interpolated between the stops
 
 
@@ -310,7 +315,7 @@ class Panel:  # the control panel window
         self.logbook.observers.append(self.contacts.observe)  # the contact book learns of every call, reception and contact from the logbook, at any level of detail
         self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
         self.panes = {}  # the dividers the operator can drag, by name, so their positions can be remembered
-        self.colours = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colours
+        self.colors = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colors
         self.apply_fonts()  # the lettering chosen in Settings, before anything is drawn
         root.title(f"Kestrel {SPEC_VERSION}  -  signal v{SIGNAL_VERSION}")  # window title: the program's version, and the signal version so two stations can be compared at a glance (the two differ when a release changes only the program)
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
@@ -325,7 +330,7 @@ class Panel:  # the control panel window
         top = ttk.Frame(root)  # the strip holding the status line and the station's own details
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))  # place it at the top
         top.columnconfigure(0, weight=1)  # the status line takes the spare width
-        self.status = tk.Label(top, text="OFF", font="KestrelBig", anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of colour
+        self.status = tk.Label(top, text="OFF", font="KestrelBig", anchor="w", padx=8, pady=4)  # the station's state in large letters, on a band of color
         self.status.grid(row=0, column=0, sticky="ew")  # place it on the left
         self.me = ttk.Label(top, text="", font="KestrelMedium")  # this station's callsign and grid locator
         self.me.grid(row=0, column=1, sticky="e", padx=(8, 0))  # place it on the right
@@ -460,7 +465,7 @@ class Panel:  # the control panel window
         self.refresh_frequencies(self.settings["frequency"])  # fill the frequency list
         self.refresh_quick()  # fill the quick-message menu
         self.show_me()  # show this station's callsign and grid
-        self.colour_plain_widgets()  # colour the widgets the theme does not reach
+        self.color_plain_widgets()  # color the widgets the theme does not reach
         self._shortcuts()  # the keyboard shortcuts
         for event in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Motion>"):  # anything the operator does in the window...
             root.bind_all(event, self.touched, add="+")  # ...counts as being at the station
@@ -469,7 +474,7 @@ class Panel:  # the control panel window
         root.after(500, self.follow_station)  # start keeping the lists and readings up to date
         root.after(100, self.draw_scope)  # start drawing the scope
         root.after(200, self.draw_meters)  # start drawing the level meters
-        root.after(300, lambda: theme.colour_window(root, self.colours))  # the title bar again, now the window is on screen
+        root.after(300, lambda: theme.color_window(root, self.colors))  # the title bar again, now the window is on screen
         root.after(700, self.autostart)  # start listening, once the window is up
 
     # ---- building blocks ----
@@ -484,7 +489,7 @@ class Panel:  # the control panel window
         file_menu.add_command(label="Open the recordings folder", underline=9, command=lambda: self.open_path(recordings_dir(data_dir())))  # the received-audio WAV files
         file_menu.add_command(label="Decode a recording...", underline=0, command=self.decode_recording)  # play a WAV file through the receiver and list what it finds
         file_menu.add_command(label="Open the signal log folder", underline=5, command=lambda: self.open_path(self.signal_folder()))  # the detailed signal logs
-        file_menu.add_command(label="Signal log report...", underline=7, command=self.signal_log_report)  # summarise the signal logs into a text file
+        file_menu.add_command(label="Signal log report...", underline=7, command=self.signal_log_report)  # summarize the signal logs into a text file
         file_menu.add_separator()  # a divider
         file_menu.add_command(label="Exit", underline=1, accelerator="Alt+F4", command=self.close)  # close the panel
         bar.add_cascade(label="File", underline=0, menu=file_menu)  # put the menu on the bar
@@ -539,11 +544,11 @@ class Panel:  # the control panel window
         for choice in theme.CHOICES:  # system, light, dark
             looks.add_radiobutton(label=THEME_NAMES[choice], underline=0, value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
         view.add_cascade(label="Theme", underline=0, menu=looks)  # put it in the View menu
-        self.palette_var = tk.StringVar(value=self.settings.get("scope_palette") if self.settings.get("scope_palette") in PALETTES else "Classic")  # the waterfall colour set chosen (the classic one if the saved name is unknown)
-        colours = tk.Menu(view, tearoff=False)  # the Waterfall colours submenu
-        for name in PALETTES:  # every colour set offered
-            colours.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
-        view.add_cascade(label="Waterfall colours", underline=0, menu=colours)  # put it in the View menu
+        self.palette_var = tk.StringVar(value=self.settings.get("scope_palette") if self.settings.get("scope_palette") in PALETTES else "Classic")  # the waterfall color set chosen (the classic one if the saved name is unknown)
+        colors = tk.Menu(view, tearoff=False)  # the Waterfall colors submenu
+        for name in PALETTES:  # every color set offered
+            colors.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
+        view.add_cascade(label="Waterfall colors", underline=0, menu=colors)  # put it in the View menu
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -591,7 +596,7 @@ class Panel:  # the control panel window
         self.scope_w, self.trace_h, self.fall_h, self.low_hz, self.top_hz = 420, 60, 50, 0.0, 3000.0  # the receive scope's width in points, the heights of its trace and waterfall, and the lowest and highest frequencies shown
         self.tx_w, self.tx_top, self.tx_trace_h, self.tx_fall_h = 420, 14, 30, 16  # the transmit scope's width, where its trace begins (under a line of words), and the heights of its trace and waterfall
         self.left, self.right, self.above, self.below = 40, 40, 16, 18  # margins for the scales: dB on the left, seconds on the right, radio kHz above, audio Hz below
-        self.palettes = {}  # each waterfall's 256 colours ("rx" or "tx" -> array), made from the colour set and that scope's Colour slider
+        self.palettes = {}  # each waterfall's 256 colors ("rx" or "tx" -> array), made from the color set and that scope's Color slider
         self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the receive waterfall picture, newest line at the top
         self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # the transmit waterfall picture
         self.line_s = 0.10  # seconds between waterfall lines, measured as the scope runs
@@ -600,7 +605,7 @@ class Panel:  # the control panel window
         self.tx_was = False  # whether a transmission was under way at the last look
         self.scope_db = {}  # each scope's Floor and Range slider settings, as Tk variables: ("rx" or "tx", "floor" or "range") -> DoubleVar
         for which in ("rx", "tx"):  # the receive and transmit scopes
-            for part in ("floor", "range", "colour"):  # the bottom of the picture, how many dB it covers, and where the waterfall's colours change
+            for part in ("floor", "range", "color"):  # the bottom of the picture, how many dB it covers, and where the waterfall's colors change
                 self.scope_db[which, part] = tk.DoubleVar(value=float(self.settings.get(f"scope_{which}_{part}", DEFAULTS[f"scope_{which}_{part}"])))  # as last left
         self.panes["scopes"] = scopes = ttk.PanedWindow(parent, orient="vertical")  # the two scopes, one above the other, with a divider to drag between them
         parent.add(scopes, weight=3)  # between the log and the meters
@@ -625,7 +630,7 @@ class Panel:  # the control panel window
         self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # its waterfall as a picture
         self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
         self.trace = self.scope.create_line(0, 0, 0, 0, fill="#7cfc00")  # its trace, placed when the scales are drawn
-        self.scope.bind("<Button-1>", self.scope_click)  # a click centers the view there, zooming in on a labelled signal
+        self.scope.bind("<Button-1>", self.scope_click)  # a click centers the view there, zooming in on a labeled signal
         self.scope.bind("<Button-3>", lambda event: self.set_view(1500.0, 3000.0))  # a right click returns to the full view
         self.scope.bind("<MouseWheel>", self.scope_wheel)  # the wheel zooms in and out about the pointer
         controls = ttk.Frame(frame)  # a row of zoom controls under the picture
@@ -644,13 +649,13 @@ class Panel:  # the control panel window
         self.scope.bind("<Configure>", self.scope_resized)  # and so does the receive scope
 
     def _scope_sliders(self, parent, which):  # the Floor and Range sliders of one scope ("rx" or "tx")
-        """Return a frame holding three vertical sliders: Floor sets the level at the bottom of the trace and the black of the waterfall; Range sets how many dB lie between that and the top; Colour shifts where the waterfall's colours change (since 0.31R4)."""
+        """Return a frame holding three vertical sliders: Floor sets the level at the bottom of the trace and the black of the waterfall; Range sets how many dB lie between that and the top; Color shifts where the waterfall's colors change (since 0.31R4)."""
         box = ttk.Frame(parent)  # the three sliders side by side
         box.rowconfigure(1, weight=1)  # the sliders take the height
         words = {"floor": ("Floor", "Raise it to hide more noise (blacker waterfall); lower it to see weaker signals.\nDouble-click to reset."),  # what each slider is for
                  "range": ("Range", "Fewer dB: more contrast, weak signals stand out; more dB: strong signals are not flattened.\nDouble-click to reset."),  # (continued)
-                 "colour": ("Colour", "Up: weaker signals reach the bright colours; down: only strong ones do. The colours themselves: View > Waterfall colours.\nDouble-click to reset.")}  # (continued)
-        for column, part in enumerate(("floor", "range", "colour")):  # the three sliders
+                 "color": ("Color", "Up: weaker signals reach the bright colors; down: only strong ones do. The colors themselves: View > Waterfall colors.\nDouble-click to reset.")}  # (continued)
+        for column, part in enumerate(("floor", "range", "color")):  # the three sliders
             low, high = SCOPE_LIMITS[which][column]  # its ends
             ttk.Label(box, text=words[part][0], font="KestrelTiny").grid(row=0, column=column)  # its name above it
             slider = ttk.Scale(box, orient="vertical", from_=high, to=low, length=40, variable=self.scope_db[which, part], command=lambda value: self.scope_db_moved())  # up is a higher floor, or a wider range
@@ -663,28 +668,28 @@ class Panel:  # the control panel window
         self.scope_db_moved(redraw=False)  # show the starting values
         return box  # for the caller to place
 
-    def scope_db_moved(self, redraw=True):  # a Floor, Range or Colour slider has moved
+    def scope_db_moved(self, redraw=True):  # a Floor, Range or Color slider has moved
         for (which, part), var in self.scope_db.items():  # every slider
-            value = round(var.get())  # whole dB (or whole steps, for Colour)
+            value = round(var.get())  # whole dB (or whole steps, for Color)
             self.settings[f"scope_{which}_{part}"] = float(value)  # remembered with the other settings
             label = getattr(self, f"scope_{which}_{part}_text", None)  # its value label, once made
             if label is not None:  # made already
-                label.configure(text=f"{value:+d}" if part == "floor" else f"{value}")  # the floor with its sign, the range and colour as plain numbers
-        self.make_palettes()  # each waterfall's colours, for its Colour slider and the colour set chosen
+                label.configure(text=f"{value:+d}" if part == "floor" else f"{value}")  # the floor with its sign, the range and color as plain numbers
+        self.make_palettes()  # each waterfall's colors, for its Color slider and the color set chosen
         if redraw:  # the sliders exist and the scales need to follow
             self.draw_scales()  # new dB marks on both scopes
 
-    def make_palettes(self):  # (re)make both waterfalls' colours
-        """Make the 256 colours of each waterfall from the colour set chosen in View > Waterfall colours and that scope's Colour slider."""
-        name = self.palette_var.get()  # the colour set chosen
+    def make_palettes(self):  # (re)make both waterfalls' colors
+        """Make the 256 colors of each waterfall from the color set chosen in View > Waterfall colors and that scope's Color slider."""
+        name = self.palette_var.get()  # the color set chosen
         for which in ("rx", "tx"):  # the receive and transmit waterfalls
-            self.palettes[which] = make_palette(name, self.scope_db[which, "colour"].get())  # its colours
+            self.palettes[which] = make_palette(name, self.scope_db[which, "color"].get())  # its colors
 
-    def palette_chosen(self):  # View > Waterfall colours: a colour set was picked
-        """Use the colour set just chosen on both waterfalls, remember it, and recolour what is already on show."""
+    def palette_chosen(self):  # View > Waterfall colors: a color set was picked
+        """Use the color set just chosen on both waterfalls, remember it, and recolor what is already on show."""
         self.settings["scope_palette"] = self.palette_var.get()  # remembered with the other settings
-        self.make_palettes()  # the new colours
-        self.fall[:] = self.palettes["rx"][0]  # the receive waterfall starts afresh in the new "nothing there" colour, so old lines in the old colours do not linger
+        self.make_palettes()  # the new colors
+        self.fall[:] = self.palettes["rx"][0]  # the receive waterfall starts afresh in the new "nothing there" color, so old lines in the old colors do not linger
         self.tx_fall[:] = self.palettes["tx"][0]  # and so does the transmit waterfall
         self.save_settings()  # keep the choice
 
@@ -700,7 +705,7 @@ class Panel:  # the control panel window
         if (width, trace, room - trace) == (self.scope_w, self.trace_h, self.fall_h):  # nothing has changed
             return  # leave the picture alone
         self.scope_w, self.trace_h, self.fall_h = width, trace, max(8, room - trace)  # the new sizes
-        self.fall = np.full((self.fall_h, self.scope_w, 3), self.palettes["rx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" colour
+        self.fall = np.full((self.fall_h, self.scope_w, 3), self.palettes["rx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" color
         self.scale_khz = None  # the radio-frequency labels must be redrawn
         self.draw_scales()  # and the scales
 
@@ -710,7 +715,7 @@ class Panel:  # the control panel window
         if (width, trace, room - trace) == (self.tx_w, self.tx_trace_h, self.tx_fall_h):  # nothing has changed
             return  # leave the picture alone
         self.tx_w, self.tx_trace_h, self.tx_fall_h = width, trace, max(4, room - trace)  # the new sizes
-        self.tx_fall = np.full((self.tx_fall_h, self.tx_w, 3), self.palettes["tx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" colour
+        self.tx_fall = np.full((self.tx_fall_h, self.tx_w, 3), self.palettes["tx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" color
         self.draw_scales()  # and the scales
 
     def tx_y(self, db):  # where a level in dB below full scale falls on the transmit trace
@@ -721,7 +726,7 @@ class Panel:  # the control panel window
         span = self.top_hz - self.low_hz  # the width of the view
         step = next(size for size in (10, 20, 50, 100, 200, 500) if span / size <= 8 or size == 500)  # the spacing that gives at most eight frequency marks
         marks = sorted({step * n for n in range(int(np.ceil(self.low_hz / step)), int(self.top_hz // step) + 1)} | {hz for hz in (500, 2500) if self.low_hz <= hz <= self.top_hz})  # a mark at every step, and at the two edges of the Kestrel band
-        grey, faint = "#a8b0ba", "#3a414a"  # scale colours
+        gray, faint = "#a8b0ba", "#3a414a"  # scale colors
         for canvas, width, top, bottom in ((self.tx_canvas, self.tx_w, self.tx_top, self.tx_top + self.tx_trace_h + self.tx_fall_h), (self.scope, self.scope_w, self.above, self.above + self.trace_h + self.fall_h)):  # the transmit scope, then the receive scope
             canvas.delete("scale")  # remove the old scales
             for index, hz in enumerate(marks):  # each frequency mark
@@ -729,8 +734,8 @@ class Panel:  # the control panel window
                 edge = hz in (500, 2500)  # the two edges of the Kestrel band
                 canvas.create_line(x, top, x, bottom, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4), tags="scale")  # a dashed line for an edge, a faint dotted one otherwise
                 if width >= 46 * len(marks) or index % 2 == 0:  # room for every label, or else every other one
-                    canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=grey, font="KestrelTiny", tags="scale")  # its audio frequency underneath
-            canvas.create_text(self.left + width + self.right / 2, bottom + self.below / 2, text="Hz", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the frequency scale
+                    canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=gray, font="KestrelTiny", tags="scale")  # its audio frequency underneath
+            canvas.create_text(self.left + width + self.right / 2, bottom + self.below / 2, text="Hz", fill=gray, font="KestrelTiny", tags="scale")  # the unit of the frequency scale
         for which, canvas, y_of, height, name in (("tx", self.tx_canvas, self.tx_y, self.tx_trace_h, "dB below full scale"), ("rx", self.scope, self.y_for, self.trace_h, "dB above the noise")):  # the dB marks up each trace
             floor, span = self.scope_db[which, "floor"].get(), self.scope_db[which, "range"].get()  # what the trace covers
             room = max(1, height // 18)  # how many labels fit up the trace
@@ -739,8 +744,8 @@ class Panel:  # the control panel window
                 y = y_of(db)  # where it falls
                 if which == "rx":  # the receive scope also gets a faint line across
                     canvas.create_line(self.left, y, self.left + self.scope_w, y, fill=faint, dash=(1, 4), tags="scale")  # at that level
-                canvas.create_text(self.left - 4, y, text=("noise" if which == "rx" and db == 0 else f"{db:+d}" if which == "rx" else str(db)), anchor="e", fill=grey, font="KestrelTiny", tags="scale")  # its value
-        self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=grey, font="KestrelTiny", tags="scale")  # the unit of the left scale, in the top corner
+                canvas.create_text(self.left - 4, y, text=("noise" if which == "rx" and db == 0 else f"{db:+d}" if which == "rx" else str(db)), anchor="e", fill=gray, font="KestrelTiny", tags="scale")  # its value
+        self.scope.create_text(self.left / 2, self.above / 2, text="dB", fill=gray, font="KestrelTiny", tags="scale")  # the unit of the left scale, in the top corner
         self.tx_canvas.coords(self.tx_item, self.left, self.tx_top + self.tx_trace_h)  # the transmit waterfall sits under its trace
         self.tx_canvas.coords(self.tx_line, self.left, self.tx_y(-70), self.left + self.tx_w, self.tx_y(-70))  # and its trace lies flat until something is sent
         self.scope.coords(self.fall_item, self.left, self.above + self.trace_h)  # the receive waterfall sits under its trace
@@ -755,18 +760,18 @@ class Panel:  # the control panel window
         if levels is None:  # not transmitting
             if self.tx_was:  # a transmission has just ended
                 self.tx_was = False  # note it
-                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # the picture stays, labelled as the last transmission
+                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # the picture stays, labeled as the last transmission
             return  # nothing new to draw
         if not self.tx_was:  # a transmission has just begun
             self.tx_was = True  # note it
             dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
-            self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its centre lands on the air
+            self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its center lands on the air
         floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the transmit scope's Floor and Range sliders
         bright = np.clip((levels - floor) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
         points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
         self.tx_canvas.coords(self.tx_line, *points)  # move the trace
         self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
-        self.tx_fall[0] = self.palettes["tx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the transmit waterfall's colours
+        self.tx_fall[0] = self.palettes["tx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the transmit waterfall's colors
         self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.tx_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
         self.tx_canvas.itemconfigure(self.tx_item, image=self.tx_image)  # show it
 
@@ -794,7 +799,7 @@ class Panel:  # the control panel window
 
     def scope_click(self, event):  # a click on the receive scope
         hz = self.hz_at(event.x)  # the frequency clicked
-        for call, (at, width, when) in self.marks.items():  # each labelled station
+        for call, (at, width, when) in self.marks.items():  # each labeled station
             if abs(hz - at) <= width / 2:  # the click is on its signal
                 self.set_view(at, self.fit_span(width))  # center on it, at a width that suits it
                 return  # done
@@ -846,7 +851,7 @@ class Panel:  # the control panel window
                 points = np.column_stack((self.left + np.arange(self.scope_w), self.above + self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
                 self.scope.coords(self.trace, *points)  # move the trace
                 self.fall = np.roll(self.fall, 1, axis=0)  # push the waterfall down one line
-                self.fall[0] = self.palettes["rx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the receive waterfall's colours
+                self.fall[0] = self.palettes["rx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the receive waterfall's colors
                 self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
             self.scope.delete("time")  # the seconds scale is redrawn each time, since the line rate is measured
@@ -898,8 +903,8 @@ class Panel:  # the control panel window
         canvas = tk.Canvas(frame, width=self.meter_w + 28, height=self.meter_h, bg="#0b0e12", highlightthickness=0)  # the drawing area: the bar plus room for the scale
         canvas.grid(row=1, column=column, padx=(6, 2))  # place it
         x0, x1 = 26, 26 + self.meter_w  # the bar's left and right edges
-        for low, high, colour in ((-60, -30, "#20303a"), (-30, -15, "#16452a"), (-15, -6, "#4a4416"), (-6, 0, "#4a1c1c")):  # the zones: too low, aim here, getting loud, too loud
-            canvas.create_rectangle(x0, self.meter_y(high), x1, self.meter_y(low), fill=colour, outline="")  # each zone, dimly
+        for low, high, color in ((-60, -30, "#20303a"), (-30, -15, "#16452a"), (-15, -6, "#4a4416"), (-6, 0, "#4a1c1c")):  # the zones: too low, aim here, getting loud, too loud
+            canvas.create_rectangle(x0, self.meter_y(high), x1, self.meter_y(low), fill=color, outline="")  # each zone, dimly
         canvas.create_rectangle(x0, self.meter_y(-15), x1, self.meter_y(-30), outline="#3fbf6f", width=1)  # the target band outlined
         for db in (0, -6, -15, -30, -45, -60):  # the scale
             canvas.create_line(x0 - 4, self.meter_y(db), x0, self.meter_y(db), fill="#a8b0ba")  # a tick
@@ -913,13 +918,13 @@ class Panel:  # the control panel window
         return 4 + (min(0.0, max(-60.0, db)) / -60.0) * (self.meter_h - 8)  # 0 dBFS at the top, -60 at the bottom
 
     def show_level(self, canvas, rms_db, peak_db, dim=False, clip=False):  # move one meter's bar and peak mark
-        colour = "#3fbf6f" if rms_db < -15 else ("#e0c040" if rms_db < -6 else "#e05050")  # green while in or under the target band, yellow when getting loud, red when too loud
+        color = "#3fbf6f" if rms_db < -15 else ("#e0c040" if rms_db < -6 else "#e05050")  # green while in or under the target band, yellow when getting loud, red when too loud
         if rms_db < -45:  # hardly any signal
-            colour = "#5a7a8a"  # grey-blue: too low to be useful
+            color = "#5a7a8a"  # gray-blue: too low to be useful
         if dim:  # a setting, not a live reading
-            colour = "#4a5560"  # shown dimly
+            color = "#4a5560"  # shown dimly
         canvas.coords("bar", 29, self.meter_y(rms_db), 26 + self.meter_w - 3, self.meter_y(-60))  # the bar, from the bottom up to the RMS level
-        canvas.itemconfigure("bar", fill=colour)  # in its colour
+        canvas.itemconfigure("bar", fill=color)  # in its color
         canvas.coords("peak", 26, self.meter_y(peak_db), 26 + self.meter_w, self.meter_y(peak_db))  # the peak mark
         canvas.itemconfigure("clip", text="CLIP" if clip else "")  # the overload warning
 
@@ -966,7 +971,7 @@ class Panel:  # the control panel window
             self.rx_value.set(self.rx_level.get())  # the slider shows Windows' setting
             self.rx_slider.state(["!disabled"])  # and can be moved
         else:  # not available
-            self.rx_slider.state(["disabled"])  # the slider does nothing, so it is greyed out
+            self.rx_slider.state(["disabled"])  # the slider does nothing, so it is grayed out
 
     def rx_level_moved(self):  # the receive slider was moved
         if self.rx_level is not None:  # Windows' control is available
@@ -1066,25 +1071,25 @@ class Panel:  # the control panel window
         except (tk.TclError, KeyError, AttributeError):  # the window or its panels are gone
             pass  # nothing to keep
 
-    def colour_plain_widgets(self):  # colour the widgets the theme cannot reach
-        c = self.colours  # the palette
-        theme.colour_window(self.root, c)  # the window's background and title bar
-        self.plain_colour = c["bg"]  # the status band's ordinary background
+    def color_plain_widgets(self):  # color the widgets the theme cannot reach
+        c = self.colors  # the palette
+        theme.color_window(self.root, c)  # the window's background and title bar
+        self.plain_color = c["bg"]  # the status band's ordinary background
         self.log.configure(background=c["text_bg"], foreground=c["text_fg"], insertbackground=c["text_fg"])  # the log
-        self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colours it
+        self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colors it
         self.stations.tag_configure("calling", background="#5a4a12" if c["name"] == "dark" else "#fff0a8")  # stations beaconing now: amber in the dark look, pale yellow in the light
-        self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program colour)
-        theme.recolour_comboboxes(self.root, c)  # the open lists of the drop-downs
+        self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program color)
+        theme.recolor_comboboxes(self.root, c)  # the open lists of the drop-downs
         for window in self.windows.values():  # any extra windows that are open
             if window.winfo_exists():  # still open
-                theme.colour_window(window, c)  # colour them too
+                theme.color_window(window, c)  # color them too
 
     def set_theme(self, choice):  # View > Theme
         self.settings["theme"] = choice  # remember the choice
         self.theme_var.set(choice)  # tick it in the menu
-        self.colours = theme.apply(self.root, choice)  # restyle every themed widget
-        self.colour_plain_widgets()  # and the rest
-        self.show_status(self.status.cget("text"), "plain")  # redraw the status band in the new colours
+        self.colors = theme.apply(self.root, choice)  # restyle every themed widget
+        self.color_plain_widgets()  # and the rest
+        self.show_status(self.status.cget("text"), "plain")  # redraw the status band in the new colors
         self.save_settings()  # keep it for next time
 
     def window(self, name, title):  # a window of its own, one of a kind
@@ -1096,7 +1101,7 @@ class Panel:  # the control panel window
         top.title(title)  # its title
         top.transient(self.root)  # it belongs to the main window
         top.bind("<Escape>", lambda event: top.destroy())  # Esc closes it
-        theme.colour_window(top, self.colours)  # in the chosen look
+        theme.color_window(top, self.colors)  # in the chosen look
         self.windows[name] = top  # remember it
         return top  # ready to fill
 
@@ -1156,14 +1161,14 @@ class Panel:  # the control panel window
             self.say("NOT available: a station calling you by name gets one short 'not available' reply; your beacons say you are not taking contacts")  # say what that means
         self.logbook.write("run", station=self.settings["call"], text="available" if self.settings["available"] else "not available", dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
 
-    def show_status(self, words, colour):  # put the station's state on the band at the top
+    def show_status(self, words, color):  # put the station's state on the band at the top
         """Show `words`; a lock is a solid green band, trouble holding it amber or red, anything else plain."""
-        if colour == "dark green":  # locked with a partner
+        if color == "dark green":  # locked with a partner
             self.status.configure(text=words, bg="#1b7f3b", fg="white")  # white on solid green: unmistakable
-        elif colour in ("dark orange", "red"):  # the link is in trouble, or something failed
-            self.status.configure(text=words, bg="#c0392b" if colour == "red" else "#d98200", fg="white")  # white on red or amber
+        elif color in ("dark orange", "red"):  # the link is in trouble, or something failed
+            self.status.configure(text=words, bg="#c0392b" if color == "red" else "#d98200", fg="white")  # white on red or amber
         else:  # every other state
-            self.status.configure(text=words, bg=self.plain_colour, fg=self.colours["accent"] if colour == "dark blue" else self.colours["fg"])  # coloured words on the ordinary background
+            self.status.configure(text=words, bg=self.plain_color, fg=self.colors["accent"] if color == "dark blue" else self.colors["fg"])  # colored words on the ordinary background
 
     def say(self, text):  # add a line to the log (safe to call from any thread)
         self.lines.put(text)  # the window picks it up shortly
@@ -1195,7 +1200,7 @@ class Panel:  # the control panel window
             if state is not None and state[0].startswith("LISTENING") and time.monotonic() < getattr(self, "hold_status", 0.0):  # back to listening just after news the operator should see
                 pass  # leave the news on the band for a while
             elif state is not None and not (state[0] == "STOPPED" and self.next_mode is not None):  # yes (but a stop on the way to another mode is not worth showing)
-                self.show_status(state[0], state[1])  # show the new state in its colour
+                self.show_status(state[0], state[1])  # show the new state in its color
                 if state[0].startswith(("NOT AVAILABLE", "NO ANSWER")):  # news the operator should not miss
                     self.hold_status = time.monotonic() + 30.0  # keep it on the band for half a minute
             elif "monitoring" in line.lower():  # the receive-only monitor has started
@@ -1267,10 +1272,10 @@ class Panel:  # the control panel window
         return folder  # the folder
 
     def signal_log_report(self):  # File > Signal log report
-        """Summarise the signal logs (all of them, or from a date the operator gives) into a text file beside them, and open it."""
+        """Summarize the signal logs (all of them, or from a date the operator gives) into a text file beside them, and open it."""
         from tkinter import simpledialog  # a one-line question
         since = simpledialog.askstring("Kestrel - signal log report", "Report from which UTC date? (YYYY-MM-DD; leave blank for everything)", parent=self.root)  # the start date
-        if since is None:  # cancelled
+        if since is None:  # canceled
             return  # nothing to do
         since = since.strip() or None  # blank means everything
 
@@ -1532,8 +1537,8 @@ class Panel:  # the control panel window
         with self.actions_lock:  # one at a time
             waiting = [action for action in self.actions if getattr(action, "kind", "") == "call"]  # the calls
             self.actions = [action for action in self.actions if getattr(action, "kind", "") != "call"]  # everything else stays
-        for action in waiting:  # each cancelled call
-            self.say(f"call to {action.target} cancelled")  # say so
+        for action in waiting:  # each canceled call
+            self.say(f"call to {action.target} canceled")  # say so
 
     def ask_station(self, action, words):  # hand a request to the station's own thread
         with self.actions_lock:  # one at a time
@@ -1574,7 +1579,7 @@ class Panel:  # the control panel window
             self.mode_var.set(self.mode)  # put the buttons back
             return  # leave it running
         if mode != "listen":  # a call can only be made by a listening station
-            self.cancel_calls()  # so any call still waiting is cancelled
+            self.cancel_calls()  # so any call still waiting is canceled
         if mode != "listen" and self.beacon_wanted:  # the repeating beacon needs a listening station
             self.beacon_var.set(False)  # release its button
             self.beacon_off("repeating beacon stopped")  # and stop it
@@ -2499,7 +2504,7 @@ class Panel:  # the control panel window
             ttk.Label(top, text="A new contact. Nothing is saved until you click Save.", justify="left").grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 0))  # the note
         boxes = {}  # the text boxes, by field name
 
-        def box(frame, row, name, label, width=28, readonly=False):  # one labelled text box
+        def box(frame, row, name, label, width=28, readonly=False):  # one labeled text box
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=(4, 8), pady=3)  # its label
             entry = ttk.Entry(frame, width=width)  # the box
             entry.insert(0, str(record.get(name, "") or ""))  # what is known
@@ -2571,7 +2576,7 @@ class Panel:  # the control panel window
         notes = tk.Text(notes_row, height=3, width=60, wrap="word", font="TkDefaultFont")  # the notes box, in the panel's usual lettering
         notes.insert("1.0", record.get("notes", "") or "")  # what is known
         notes.grid(row=0, column=1, sticky="ew")  # place it
-        notes.configure(background=self.colours["text_bg"], foreground=self.colours["text_fg"], insertbackground=self.colours["text_fg"])  # in the chosen look, as the log is
+        notes.configure(background=self.colors["text_bg"], foreground=self.colors["text_fg"], insertbackground=self.colors["text_fg"])  # in the chosen look, as the log is
         history = record.get("history", [])  # the history, oldest first
         mode = MODE_NAMES.get(self.settings.get("contact_history_mode", "all"), "All traffic")  # what is recorded
         first_words = "starts with this reception once saved" if not history and heard is not None and self.settings.get("contact_history_mode", "all") == "all" else f"{len(history)} kept"  # how many entries
@@ -2759,7 +2764,7 @@ class Panel:  # the control panel window
             book.add(frame, text=title, underline=0)  # add it (Alt and its first letter opens it)
             return frame  # for its rows
 
-        def field(frame, row, name, label, choices=None, editable=False, width=30, names=None):  # one labelled setting
+        def field(frame, row, name, label, choices=None, editable=False, width=30, names=None):  # one labeled setting
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=3)  # the label
             value = str(self.settings[name])  # the present value, as text
             if names is not None:  # a choice shown in words
@@ -2857,7 +2862,7 @@ class Panel:  # the control panel window
         field(logging, 3, "record_rx", "Record received audio", names=RECORD_NAMES, width=56)  # save what the receiver hears
         note(logging, 4, f"Recordings go in {recordings_dir(data_dir())}, one WAV file per hour (about 86 MB an hour, kept 7 days).\nTurn this on for on-air tests: File > Decode a recording plays a file back through the receiver and lists every\nframe and every signal that was heard but could not be read. It takes effect the next time Listen or Monitor starts.")  # what it is for
         field(logging, 5, "signal_log", "Signal log (for analysis)", names=SIGNAL_NAMES, width=56)  # the detailed signal log
-        note(logging, 6, f"The signal log goes in {os.path.join(LOG_FOLDER, 'signal')}, one file per UTC day: every signal the receiver\nlooked at, every frame (SNR, fading, offset, which header copy was read), every transmission and the radio's meters.\ntools/signal_report.py summarises it. Off uses no disk space. It takes effect the next time Listen or Monitor starts.")  # what it is and what it costs
+        note(logging, 6, f"The signal log goes in {os.path.join(LOG_FOLDER, 'signal')}, one file per UTC day: every signal the receiver\nlooked at, every frame (SNR, fading, offset, which header copy was read), every transmission and the radio's meters.\ntools/signal_report.py summarizes it. Off uses no disk space. It takes effect the next time Listen or Monitor starts.")  # what it is and what it costs
         quick = page("Quick messages")  # the quick messages
         quick_items = [dict(item) for item in self.settings["quick"]]  # a working copy, kept only if Save is pressed
         quick.columnconfigure(0, weight=1)  # the list takes the width
@@ -2946,7 +2951,7 @@ class Panel:  # the control panel window
             index = chosen()  # the selected one
             if index is None or not 0 <= index + step < len(quick_items):  # none selected, or already at that end
                 return  # nothing to do
-            quick_items[index], quick_items[index + step] = quick_items[index + step], quick_items[index]  # swap it with its neighbour
+            quick_items[index], quick_items[index + step] = quick_items[index + step], quick_items[index]  # swap it with its neighbor
             show(index + step)  # the list again, with it still selected
 
         controls = ttk.Frame(quick)  # the buttons under the list
@@ -3122,7 +3127,7 @@ class Panel:  # the control panel window
         return self.entries[max(0, self.frequency.current())]  # by its position in the list
 
     def step_frequency(self, step):  # Ctrl+Up or Ctrl+Down: the previous or next frequency in the list
-        index = self.frequency.current() + step  # the neighbour
+        index = self.frequency.current() + step  # the neighbor
         if 0 <= index < len(self.entries):  # inside the list
             self.frequency.current(index)  # select it
             self.tune()  # and go there
@@ -3358,7 +3363,7 @@ def self_check():  # Kestrel.exe --check: is everything the program needs presen
     except Exception as problem:  # no sound library or no sound system
         note(False, f"sound system: {problem}")  # say so
     try:  # the tools the File menu uses (in the installed program they must have been packed in)
-        from tools import decode_wav, signal_report  # noqa: F401  # decoding recordings and summarising signal logs
+        from tools import decode_wav, signal_report  # noqa: F401  # decoding recordings and summarizing signal logs
         note(True, "tools: decode a recording, signal log report")  # present
     except Exception as problem:  # left out of the build
         note(False, f"tools: {problem}")  # say so

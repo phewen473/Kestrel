@@ -70,8 +70,8 @@ def detect_pattern(x, spec, tones):  # look for a tone pattern in a recording
     starts = count - HOPS * (len(tones) - 1)  # how many start positions leave room for the whole pattern
     shifts = np.arange(-reach, reach + 1)  # the frequency errors tried
     total = np.zeros((starts, len(shifts)))  # the energy total for every start and every frequency error
-    for k, centre in enumerate(bins):  # one tone of the pattern at a time
-        total += power[HOPS * k:HOPS * k + starts][:, centre + shifts]  # the energy where that tone should be, k tones after the start
+    for k, center in enumerate(bins):  # one tone of the pattern at a time
+        total += power[HOPS * k:HOPS * k + starts][:, center + shifts]  # the energy where that tone should be, k tones after the start
     found, work = [], total.copy()  # the candidates, and a scratch copy to cross them off
     for _ in range(KEEP):  # the strongest few
         row, col = np.unravel_index(int(np.argmax(work)), work.shape)  # the largest total left
@@ -104,7 +104,7 @@ def trial(spec, kind, length, snr_db, condition, rng):  # send one test frame an
     heard = run_channel(np.concatenate([np.zeros(lead), frame]), snr_db, rng, condition, offset_hz=offset)  # through the channel (which adds a second of silence each end)
     truth = FS + lead  # the sample where the frame really starts
     guesses = detect_chirp_pair(heard, keep=KEEP) if kind == "chirp" else detect_pattern(heard, spec, tones)  # the receiver's best guesses
-    spacing_hz = spec.step * spec.bin_hz  # the distance between neighbouring tones
+    spacing_hz = spec.step * spec.bin_hz  # the distance between neighboring tones
     for guess in guesses:  # any of the three will do: the header's check value picks the right one
         time_error = (guess["start"] - truth) / spec.samples  # how far out the timing is, in tones
         freq_error = (guess["offset_hz"] - offset) / spacing_hz  # how far out the frequency is, in tone spacings

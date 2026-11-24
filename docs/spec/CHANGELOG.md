@@ -13,7 +13,7 @@
 ## 0.31R4 (draft) - 23 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30.** Nothing in the specification changes either.
-- The reference program: colour controls on both scopes, so each operator can suit the waterfall to their eyesight. View > Waterfall colours offers seven colour sets (the classic black, blue, yellow and red; two sets made to be read with colour blindness; heat; grey; grey reversed; high contrast), and a third slider beside Floor and Range, **Colour**, shifts where the colours change (up: weaker signals already reach the bright colours; down: only strong ones do). Both are remembered with the other settings.
+- The reference program: color controls on both scopes, so each operator can suit the waterfall to their eyesight. View > Waterfall colors offers seven color sets (the classic black, blue, yellow and red; two sets made to be read with color blindness; heat; gray; gray reversed; high contrast), and a third slider beside Floor and Range, **Color**, shifts where the colors change (up: weaker signals already reach the bright colors; down: only strong ones do). Both are remembered with the other settings.
 - Test tools (no effect on the program): the channel simulator gained every ITU-R F.1487 condition, among them mid-latitude disturbed near vertical incidence (7 ms between the two paths, 1 Hz spread), and `tools/waveform_study.py` compares candidate transmit waveforms (smoothed tone changes, Gray-coded tones, other tone spacings) by spectrum and by decoding on the sky-wave conditions. Nothing from it is adopted yet.
 
 ## 0.31R3 (draft) - 22 November 2026
@@ -89,7 +89,7 @@
 - Fading limits re-measured (Section 5.2), 40 frames a point: L0 -8, L1 -2, L2 -8, L3 -1, L4 0 dB (were -12, -10, -9, -4, -1, measured with fewer frames a point). Frames are now lost mainly in light, slow fading, where a fade can cover a whole preamble; retries recover them.
 - 80 m meeting frequency 3590.0 kHz added (Section 6.9), with working frequencies 3594.0 and 3597.0 kHz; notes on choosing 80 m or 40 m by time of day; the reference program now refuses to transmit outside the U.S. amateur data segments.
 - Roadmap (new Section 10): prove the link; a WSPR-like bottom level; nets and mail; a VARA-like top level. Document history is now Section 11.
-- Reference program (not part of the signal): optional recording of received audio to WAV files; File > Decode a recording; reports of Kestrel signatures heard but too weak or faded to read; callsign confirmation; a warning when the radio's ALC reads high during a transmission; an optional signal log for analysis (every preamble candidate, frame, near miss, transmission and meter reading, on one sample timeline with the recordings) and tools/signal_report.py to summarise it.
+- Reference program (not part of the signal): optional recording of received audio to WAV files; File > Decode a recording; reports of Kestrel signatures heard but too weak or faded to read; callsign confirmation; a warning when the radio's ALC reads high during a transmission; an optional signal log for analysis (every preamble candidate, frame, near miss, transmission and meter reading, on one sample timeline with the recordings) and tools/signal_report.py to summarize it.
 
 ## 0.25 (draft) - 19 November 2026
 
@@ -151,14 +151,14 @@
 ## 0.16 (draft) - 18 November 2026
 
 - No frame format is changed from 0.15. One value is newly defined: in an acknowledgment with status 3, part number 3 means "move to a working frequency", with the offset in the message-number field (signed, 100 Hz steps).
-- Working frequencies (Section 6.10): once locked, a pair may agree to leave the meeting frequency, meet again by a probe on the working frequency, and return when the contact ends. Suggested working frequencies added for 40, 30 and 20 metres.
+- Working frequencies (Section 6.10): once locked, a pair may agree to leave the meeting frequency, meet again by a probe on the working frequency, and return when the contact ends. Suggested working frequencies added for 40, 30 and 20 meters.
 - Keeping the lock open, closing it on request, and taking the turn in an idle lock are now described (Section 6.3). A station without the turn in an idle lock still identifies every 9 minutes.
 - The description is now marked as in first on-air tests.
 
 ## 0.15 (draft) - 18 November 2026
 
 - The transmitted signal is unchanged from 0.14.
-- Suggested meeting frequencies added for 40, 30 and 20 metres (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband). Each keeps the whole signal inside a 97.221(b) segment.
+- Suggested meeting frequencies added for 40, 30 and 20 meters (dial 7101.5, 10144.0 and 14108.5 kHz, upper sideband). Each keeps the whole signal inside a 97.221(b) segment.
 
 ## 0.14 (draft) - 18 November 2026
 

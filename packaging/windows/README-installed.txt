@@ -5,8 +5,8 @@ Kestrel is an adaptive amateur HF digital mode for short messages (up to
 200 characters). Two stations call, lock on to each other, and send
 messages at the fastest speed the band allows.
 
-You need an amateur radio licence to transmit, and must use Kestrel only
-where your licence allows.
+You need an amateur radio license to transmit, and must use Kestrel only
+where your license allows.
 
 
 WHAT WAS INSTALLED
@@ -15,7 +15,7 @@ WHAT WAS INSTALLED
   library it uses. Nothing else needs to be installed.
 - hamlib\bin\rigctld.exe, Hamlib's rig control program, which Kestrel
   starts by itself to tune and key your radio over its CAT cable.
-- docs\ - the Kestrel specification and the licences.
+- docs\ - the Kestrel specification and the licenses.
 
 Your own settings, contacts, stations-heard record and logbook are kept
 for each Windows user in:
@@ -82,9 +82,9 @@ Uninstall Kestrel). Your own settings and logs in %LOCALAPPDATA%\Kestrel
 are kept; delete that folder too if you no longer want them.
 
 
-LICENCES
+LICENSES
 --------
 Kestrel's program is under the Apache License 2.0 and its specification
 under CC BY 4.0 (see docs\LICENSES.txt and docs\NOTICE.txt). Hamlib is
-free software under the GNU GPL and LGPL; its licences and the address of
+free software under the GNU GPL and LGPL; its licenses and the address of
 its source code are in hamlib\.

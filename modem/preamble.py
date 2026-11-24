@@ -89,8 +89,8 @@ def detect_preamble(x, spec, max_offset_hz=50.0, keep=3, whiten=False, fine=True
         power = power / (np.median(power, axis=0) + 1e-9 * float(power.max()) + 1e-30)  # each frequency in units of its own typical level (with a floor, so stretches of digital silence do not blow up)
     shifts = np.arange(-reach, reach + 1)  # the frequency errors tried
     total = np.zeros((starts, len(shifts)))  # the energy total for every start and every frequency error
-    for k, centre in enumerate(bins):  # one tone of the pattern at a time
-        total += power[HOPS * k:HOPS * k + starts][:, centre - low + shifts]  # the energy where that tone should be, k tones after the start
+    for k, center in enumerate(bins):  # one tone of the pattern at a time
+        total += power[HOPS * k:HOPS * k + starts][:, center - low + shifts]  # the energy where that tone should be, k tones after the start
     background = float(np.median(total)) + 1e-30  # the typical total when nothing is there
     block_energy = power.sum(axis=1)  # all the energy near the tone band in each block
     in_blocks = sum(block_energy[HOPS * k:HOPS * k + starts] for k in range(len(tones))) + 1e-30  # the energy in the twelve blocks each start would use
@@ -130,18 +130,18 @@ def fine_time(x, spec, found):  # refine a candidate's start and frequency
 
     if last < 0:  # too little audio to hold the pattern
         return dict(found)  # nothing to refine
-    centre, reach_samples = min(max(row * hop, 0), last), hop  # the search starts a quarter of a tone either side of the coarse answer (kept inside the audio)
+    center, reach_samples = min(max(row * hop, 0), last), hop  # the search starts a quarter of a tone either side of the coarse answer (kept inside the audio)
     for step in (max(n // 16, 1), max(n // 128, 1)):  # first a sixteenth of a tone at a time, then an eighth of that
-        span = reach_samples // step  # how many steps to look each side of the centre
-        trial = [centre + k * step for k in range(-span, span + 1) if 0 <= centre + k * step <= last]  # the start times to try, always including the centre itself
+        span = reach_samples // step  # how many steps to look each side of the center
+        trial = [center + k * step for k in range(-span, span + 1) if 0 <= center + k * step <= last]  # the start times to try, always including the center itself
         scores = [measure(t) for t in trial]  # the pattern's energy at each
         top = int(np.argmax([score[0] for score in scores]))  # the best of them
-        centre, reach_samples = trial[top], step  # look more finely around it next time
+        center, reach_samples = trial[top], step  # look more finely around it next time
     here, below, above = scores[top]  # the energy at the best start, and half a bin either side in frequency
     bend = below - 2 * here + above  # how sharply the energy peaks across frequency
     nudge = 0.5 * (below - above) / bend if bend < 0 else 0.0  # where the true peak lies between the half-bin steps
-    start = float(centre)  # the best start found
-    if 0 < top < len(trial) - 1:  # there is a neighbour on each side: place the start between steps
+    start = float(center)  # the best start found
+    if 0 < top < len(trial) - 1:  # there is a neighbor on each side: place the start between steps
         early, late = scores[top - 1][0], scores[top + 1][0]  # the energy one step earlier and one step later
         curve = early - 2 * here + late  # how sharply the energy peaks across time
         if curve < 0:  # a true peak

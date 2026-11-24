@@ -1,6 +1,6 @@
 """The tone waveform: 32 tones, one tone at a time (MFSK), used by every speed level.
 
-Tone signalling does not depend on the phase of the radio wave, which is
+Tone signaling does not depend on the phase of the radio wave, which is
 the first thing fading and multipath destroy. The receiver only asks
 "which tone has the most energy?", so it keeps working in rough conditions.
 """
@@ -10,7 +10,7 @@ import numpy as np  # numerical arrays
 from . import native  # the compiled library, used when present
 from .params import BITS_PER_SYMBOL, FS, M_TONES, RAMP_S  # waveform numbers shared by all levels
 
-GRAY = np.array([v ^ (v >> 1) for v in range(M_TONES)])  # Gray code (since signal version 0.32): the tone that carries each 5-bit value, so neighbouring tones differ in one bit only
+GRAY = np.array([v ^ (v >> 1) for v in range(M_TONES)])  # Gray code (since signal version 0.32): the tone that carries each 5-bit value, so neighboring tones differ in one bit only
 GRAY_VALUE = np.argsort(GRAY)  # the other way round: the 5-bit value each tone carries
 _TONE_BITS = np.array([[(GRAY_VALUE[m] >> (BITS_PER_SYMBOL - 1 - j)) & 1 for j in range(BITS_PER_SYMBOL)] for m in range(M_TONES)])  # the 5 bits each tone stands for
 _WEIGHTS = 1 << np.arange(BITS_PER_SYMBOL - 1, -1, -1)  # place values 16, 8, 4, 2, 1
@@ -31,7 +31,7 @@ def symbols_to_audio(symbols, level):  # tone numbers -> sound
 
     Each tone holds a whole number of cycles, so the phase never jumps. At
     a level with a glide (L3 and L4, since 0.32) the frequency moves from one
-    tone to the next smoothly, along a raised-cosine curve centred on the
+    tone to the next smoothly, along a raised-cosine curve centered on the
     boundary and `level.glide` of a tone long, which keeps the signal narrow.
     """
     freqs = level.tone_bins[np.asarray(symbols, dtype=np.int64)] * level.bin_hz  # frequency of every tone to send, in Hz
@@ -39,7 +39,7 @@ def symbols_to_audio(symbols, level):  # tone numbers -> sound
     glide = int(round(level.glide * level.samples))  # length of each glide, in samples
     if glide > 1 and len(f) > 0:  # a glide is wanted
         kernel = np.hanning(glide + 2)[1:-1]  # a smooth bump (raised cosine) without its zero end points
-        kernel /= kernel.sum()  # scaled so the average frequency, and so the phase at each tone's centre, is kept
+        kernel /= kernel.sum()  # scaled so the average frequency, and so the phase at each tone's center, is kept
         before = glide // 2  # padding needed before the start
         padded = np.concatenate([np.full(before, f[0]), f, np.full(glide - 1 - before, f[-1])])  # hold the first and last frequency at the ends
         f = np.convolve(padded, kernel, mode="valid")  # smooth the steps into glides (same length as before)
@@ -107,7 +107,7 @@ def known_tone_energies(band, tones, level):  # energy of tones we know were sen
     """Return, for each symbol, the energy at the tone that was sent plus the bin on each side of it.
 
     `tones` holds the tone number sent in each row of `band`. Adding the
-    two neighbouring bins collects the energy that fast fading or a small
+    two neighboring bins collects the energy that fast fading or a small
     frequency error moved off the tone itself.
     """
     first = np.asarray(tones) * level.step  # column of the bin just below each sent tone
@@ -152,7 +152,7 @@ def noise_profile(tone_e, span=NOISE_SPAN):  # how strong the background noise i
     Band noise is not steady: static builds and dies away, and a
     receiver's own gain control moves the noise up and down. Each symbol's
     level is the middle value of the energies in it and its `span`
-    neighbours each side (31 of every 32 positions hold only noise, so the
+    neighbors each side (31 of every 32 positions hold only noise, so the
     signal does not disturb it), never less than a tenth of the level of
     the whole frame.
     """
@@ -162,8 +162,8 @@ def noise_profile(tone_e, span=NOISE_SPAN):  # how strong the background noise i
     whole = noise_level(tone_e)  # the level over the whole frame
     if not NOISE_TRACKING or tone_e.shape[0] < 2 * span + 1:  # tracking is off, or the frame is too short to track within
         return np.full(tone_e.shape[0], whole)  # one level throughout
-    padded = np.concatenate([tone_e[span:0:-1], tone_e, tone_e[-2:-span - 2:-1]])  # mirrored at each end, so the first and last symbols have neighbours too
-    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * span + 1, axis=0)  # each symbol with its neighbours: symbols x 32 x (2 * span + 1)
+    padded = np.concatenate([tone_e[span:0:-1], tone_e, tone_e[-2:-span - 2:-1]])  # mirrored at each end, so the first and last symbols have neighbors too
+    windows = np.lib.stride_tricks.sliding_window_view(padded, 2 * span + 1, axis=0)  # each symbol with its neighbors: symbols x 32 x (2 * span + 1)
     local = np.median(windows.reshape(tone_e.shape[0], -1), axis=1) / np.log(2)  # the middle value of each group, as an average noise energy
     return np.maximum(local, 0.1 * whole)  # never wildly below the frame's own level
 
@@ -199,12 +199,12 @@ def pilot_frequency_fit(x, start, positions, tones, level, offset_hz):  # track 
         for pos, tone in zip(positions[idx], tones[idx]):  # look at every pilot in the stretch
             block = _mixed_blocks(x, start + pos * level.samples, 1, level, offset_hz + track, 0.0)[0]  # that pilot's audio, corrected by the best estimate so far
             spec = np.abs(np.fft.fft(block, PAD * level.samples)) ** 2  # fine-grained power spectrum
-            centre = level.tone_bins[tone] * PAD  # where the pilot should be on the fine grid
-            avg += spec[centre - FINE_SPAN:centre + FINE_SPAN + 1]  # add the few fine steps either side
+            center = level.tone_bins[tone] * PAD  # where the pilot should be on the fine grid
+            avg += spec[center - FINE_SPAN:center + FINE_SPAN + 1]  # add the few fine steps either side
         peak = int(np.argmax(avg))  # fine step with the most energy
         frac = 0.0  # fraction-of-a-step correction
-        if 0 < peak < len(avg) - 1:  # only if the peak has a neighbour on each side
-            a, b, c = avg[peak - 1], avg[peak], avg[peak + 1]  # the peak and its neighbours
+        if 0 < peak < len(avg) - 1:  # only if the peak has a neighbor on each side
+            a, b, c = avg[peak - 1], avg[peak], avg[peak + 1]  # the peak and its neighbors
             bend = a - 2 * b + c  # how sharply they curve
             if bend != 0:  # a flat line has no top
                 frac = 0.5 * (a - c) / bend  # top of the parabola through the three points

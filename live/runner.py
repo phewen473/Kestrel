@@ -20,7 +20,7 @@ LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the r
 
 
 def status_for(line):  # the station's state, as far as one log line shows it
-    """Return (words, colour) for a status display if `line` marks a change of state, else None.
+    """Return (words, color) for a status display if `line` marks a change of state, else None.
 
     The control panel shows the latest of these above its log, so the
     operator can see at a glance whether the station is listening, calling,

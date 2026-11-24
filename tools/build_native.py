@@ -74,7 +74,7 @@ def main():  # build and copy
         for name in files:  # each file
             if name in names:  # the library
                 found = os.path.join(folder, name)  # remember it
-    if found is None:  # the build made nothing recognisable
+    if found is None:  # the build made nothing recognizable
         print("The build finished but no library file was found.")  # explain
         return 1  # failure
     os.makedirs(TARGET, exist_ok=True)  # make sure the target folder exists

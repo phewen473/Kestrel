@@ -208,7 +208,7 @@ Json plan_at_level(const std::string &text, long level, bool addressed) {  /* mo
     return plan;  /* all the frames */
 }  /* end of plan_at_level */
 
-/* An ordered map with Python dict behaviour (a new key at the end, an old one keeps its place). */
+/* An ordered map with Python dict behavior (a new key at the end, an old one keeps its place). */
 template <typename T>
 struct Dict {  /* the map */
     std::vector<std::pair<std::string, T>> items;  /* in order */

@@ -12,7 +12,7 @@ Run from the repository root:
 radio through Hamlib's rigctld; --port and --baud are for the serial methods.
 --stay-on keeps a listening station running for further contacts.
 
-Only transmit where your licence allows, with the published specification matching this program.
+Only transmit where your license allows, with the published specification matching this program.
 """
 
 import time  # the clock, for --end-after
