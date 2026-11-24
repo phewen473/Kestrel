@@ -9,10 +9,10 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))  # the repository roo
 NATIVE = os.path.join(ROOT, "modem", "_native", "kestrel.dll")  # the compiled modem library, built by build_windows.ps1 before this runs
 analysis = Analysis(  # find everything the panel imports
     [os.path.join(ROOT, "tools", "kestrel_panel.py")],  # the program to build
-    pathex=[ROOT],  # so the link, live, modem and sim packages are found
+    pathex=[ROOT, os.path.join(ROOT, "tools")],  # so the link, live, modem and sim packages are found, and the panel's own modules beside it in tools (theme_editor, frame_strip; since 0.37)
     datas=[(os.path.join(ROOT, "VERSION"), "."), (os.path.join(ROOT, "live", "data", "sunspots.json"), os.path.join("live", "data"))],  # the commit stamp, for Help > About; the shipped sunspot predictions, where live/sunspots.py looks for them (since 0.32)
     binaries=[(NATIVE, os.path.join("modem", "_native"))] if os.path.isfile(NATIVE) else [],  # the compiled modem library, where modem/native.py looks for it (left out if it was not built: the modem then runs in pure Python)
-    hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports", "tools.decode_wav", "tools.signal_report"],  # imported inside functions, so the search may not see them (the two tools serve File > Decode a recording and File > Signal log report)
+    hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports", "tools.decode_wav", "tools.signal_report", "theme_editor", "frame_strip"],  # imported inside functions, so the search may not see them (the two tools serve File > Decode a recording and File > Signal log report); theme_editor and frame_strip named as well, as the panel's own modules beside it (a 0.37 build left them out and the program could not start; since 0.37)
     excludes=["matplotlib", "pytest", "IPython", "PyQt5", "PyQt6", "PySide6", "notebook"],  # used only by the study tools and tests, not by the panel
     noarchive=False,  # keep the Python files packed in one archive
 )
