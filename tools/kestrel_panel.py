@@ -54,6 +54,7 @@ from theme_editor import open_theme_editor  # View > Edit themes: the operator's
 import frame_strip  # drawing the frame strip under the receive scope (since 0.37)  # noqa: E402
 from live.framestrip import FrameStrip  # what the frame strip shows (since 0.37)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
+from live import antennas  # the antenna types offered in Settings > Station (since 0.39R2)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
@@ -83,6 +84,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "scope_time_marks": True, "scope_time_zone": "utc",  # (continued: time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, in UTC or local time, since 0.33)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
+DEFAULTS.update({"location": "", "antenna": ""})  # this station's location and antenna (one of the fixed list in live/antennas.py) (since 0.39R2)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
 QUICK_MOST = 10  # the most quick messages an operator may keep
 QUICK_NAME_MOST = 40  # the longest name a quick message may have
@@ -142,6 +144,7 @@ def load_settings():  # read the remembered settings
     for number in (1, 2, 3):  # the old slots
         settings.pop(f"quick{number}", None)  # are no longer used
     settings["quick"] = [{"name": str(item.get("name", "")), "text": str(item.get("text", ""))} for item in settings["quick"] if isinstance(item, dict)][:QUICK_MOST]  # a fresh copy, so the defaults are never changed by editing
+    settings["antenna"] = antennas.known(settings.get("antenna"))  # one of the fixed antenna types, or none (since 0.39R2)
     return settings  # the settings to use
 
 
@@ -2574,10 +2577,11 @@ class Panel:  # the control panel window
         return telemetry.build(self.settings["grid"], self.power_w(), heard, prefix=prefix)  # the message
 
     def expand(self, template):  # fill in a quick message
-        """Return `template` with {call}, {name}, {grid}, {rig}, {power}, {to} and {telemetry} filled in."""
+        """Return `template` with {call}, {name}, {grid}, {rig}, {power}, {to}, {telemetry}, {location} and {antenna} filled in."""
         power = self.power_w()  # the transmit power, if known
         values = {"call": self.settings["call"], "name": self.settings["name"], "grid": self.settings["grid"], "rig": self.rig_name(),  # (continued)
-                  "power": f"{power:.0f}" if power is not None else "?", "to": self.to.get().strip().upper(), "telemetry": ""}  # the values
+                  "power": f"{power:.0f}" if power is not None else "?", "to": self.to.get().strip().upper(), "telemetry": "",  # (continued)
+                  "location": self.settings.get("location", ""), "antenna": self.settings.get("antenna", "")}  # the values (location and antenna since 0.39R2)
         if "{telemetry}" in template:  # telemetry wanted
             values["telemetry"] = self.telemetry_text()  # built now, from the latest receptions
         try:  # the template may have a mistake in it
@@ -3570,9 +3574,13 @@ class Panel:  # the control panel window
         field(station, 0, "call", "Callsign", width=14)  # callsign
         field(station, 1, "grid", "Grid locator", width=10)  # grid locator
         field(station, 2, "name", "Your name (for quick messages)", width=20)  # the operator's name
-        field(station, 3, "rig_text", "Rig description (for quick messages and the log)", width=30)  # the radio and antenna, as the operator wants them described
-        field(station, 4, "max_power_w", "Radio's full power, watts", width=8)  # to turn the radio's power setting into watts
-        note(station, 5, "The power shown and logged is read from the radio through rig control, when the radio and Hamlib allow it.")  # where the power comes from
+        field(station, 3, "location", "Location (city, state; for quick messages)", width=30)  # where the station is, in words (since 0.39R2)
+        field(station, 4, "rig_text", "Rig description (for quick messages and the log)", width=30)  # the radio, as the operator wants it described
+        antenna_box = field(station, 5, "antenna", "Antenna", list(antennas.TYPES), width=30)  # this station's antenna, from the fixed list (Homebuilt for a homemade one; since 0.39R2)
+        if not self.settings["antenna"]:  # none chosen yet
+            antenna_box.set("")  # nothing chosen
+        field(station, 6, "max_power_w", "Radio's full power, watts", width=8)  # to turn the radio's power setting into watts
+        note(station, 7, "The power shown and logged is read from the radio through rig control, when the radio and Hamlib allow it.\nLocation and antenna go into quick messages as {location} and {antenna}.")  # where the power comes from, and where location and antenna are used
         radio = page("Radio")  # the radio and how the computer reaches it
         rig_box = field(radio, 0, "rig_model", "Rig type", [NO_RIG] + models, editable=True, width=44)  # the radio type, from the rig control program's own list
         if not self.settings["rig_model"]:  # none chosen yet
@@ -3690,7 +3698,7 @@ class Panel:  # the control panel window
             text_box = ttk.Entry(top, width=80)  # the message, with fill-ins
             text_box.grid(row=1, column=1, sticky="ew", padx=8, pady=2)  # place it
             text_box.insert(0, item["text"])  # as it is now
-            ttk.Label(top, text="These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry}", font="KestrelSmall").grid(row=2, column=1, sticky="w", padx=8)  # the fill-ins
+            ttk.Label(top, text="These fill in when used: {call} {name} {grid} {rig} {power} {to} {telemetry} {location} {antenna}", font="KestrelSmall").grid(row=2, column=1, sticky="w", padx=8)  # the fill-ins
             preview = ttk.Label(top, text="", font="KestrelSmall", wraplength=560, justify="left")  # what it would say right now
             preview.grid(row=3, column=1, sticky="w", padx=8, pady=(2, 4))  # place it
             text_box.bind("<KeyRelease>", lambda event: preview.configure(text="Now it would read: " + self.expand(text_box.get())))  # follow the typing
