@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.34R1 (draft) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.34). Tested first: a sky-wave study (tools/skywave_study.py) of the recommendations of the sky-wave research, on the F.1487 conditions plus two new realistic ones in the simulator: "nvis_real" (0.3 Hz spread, 0.8 ms, second path 4 dB weaker and 0.2 Hz off) and "dawn" (0.5 Hz, 1 ms, paths 0.3 Hz apart, 3 dB apart). The simulator's two-path model takes an unequal, shifted second path.
+- Receiver (Section 5.9): a long beacon or long-note frame that fails from each tone's own bin is decoded again from each tone's bin plus its two neighbors, alone and when adding copies. Nine-in-ten threshold: 2 dB better at 1 Hz of Doppler spread, 4 dB at 2 Hz, 8 dB or more at 3 to 4 Hz; unchanged on a steady path. The reported SNR is still read from the tones' own bins.
+- Propagation (Section 6.15): Update online also fetches KC2G's effective sunspot number and NOAA's space-weather scales and K index. For the current month the 24-hour eSSN replaces the predicted monthly number while under six hours old (on November 24 it was 34 against a predicted 86 or so); the Propagation window and the contact's "Best band now" use it. Warnings for radio blackouts (R1+), geomagnetic storms (Kp 5+) and a falling ionosphere.
+- Found not needed: re-centering copies before adding (each copy is already measured at its own frequency and drift; copies 1.2 and 2 Hz apart add as well as copies on frequency), and barring L3/L4 on short paths (95 to 100 % at +10 dB in every condition, 7 ms near-vertical echo included).
+
 ## 0.34 (draft) - November 24, 2026
 
 - **SIGNAL VERSION 0.34: long notes** (new Section 6.16). A short message of up to 28 characters sent in long-beacon frames (Section 5.9), for paths too weak for any speed level. A long-note frame is a long-beacon frame whose spare bit is 1; its other 65 field bits are a note header (sender's callsign, 12-bit code of the station addressed or 0 for ALL, number of text frames), a text frame (sender's code, frame number, seven 7-bit characters) or a receipt (receiver's callsign, the sender's code). A note is a header and one to four text frames, one minute each; the station addressed answers with a one-minute receipt; with no receipt within 150 s the note is sent again, up to three times, and the receiver adds the copies together. A note to ALL is sent once, with no receipt.

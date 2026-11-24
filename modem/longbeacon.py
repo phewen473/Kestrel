@@ -35,6 +35,7 @@ from .levels import Level  # one level's numbers
 from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, tone_energies, transmission  # the tone waveform
 from . import longnote  # long notes, sent in the same frame (since 0.34)
 from . import native  # the compiled library, used when present
+from .params import M_TONES  # 32 tones (for the three-bin sums, since 0.34R1)
 from .params import BODY_CRC_BITS, CALL_BITS, CENTER_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
 from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
 
@@ -146,6 +147,15 @@ class Soft:  # what the receiver measured of one long-beacon candidate, kept so 
     pilot_snr_db: float  # SNR read from the three pilots alone (rough)
     sample: int = -1  # where the candidate began in a continuous stream (set by live.Listener)
     when: float = 0.0  # when it was heard, in seconds (set by whoever keeps the copies)
+    wide: np.ndarray = None  # the same, with each tone's bin and the bin either side of it added (since 0.34R1): what a tone smeared by Doppler spread leaves
+
+
+def _normalized(tone_e):  # tone energies -> units of the noise
+    """Return `tone_e` divided by the noise of each tone and by each tone position's own level where something else occupies it."""
+    noise = noise_level(tone_e)  # noise energy per tone position
+    own = np.median(tone_e, axis=0) / np.log(2) / noise  # each tone position's own typical level, against the whole band's (about 1 in plain noise; a beacon's tone visits a position too briefly to raise it)
+    weight = np.where(own > BUSY_TONE, own, 1.0)  # positions with a steady carrier or other signal on them are counted in units of their own level, so they cannot outvote the beacon
+    return tone_e / noise_profile(tone_e)[:, None] / weight  # energies in units of the noise
 
 
 def soft_at(x, found):  # measure one candidate's body
@@ -157,12 +167,12 @@ def soft_at(x, found):  # measure one candidate's body
     offset = found["offset_hz"] + extra  # best estimate of the offset
     band = band_energies(x, body_start, LAYOUT["total"], LONG, offset, drift)  # every bin of the tone band, every body tone
     tone_e = tone_energies(band, LONG)  # the 32 tone positions
+    span = M_TONES * LONG.step  # the bins the 32 tones and their neighbors cover
+    wide_e = tone_e + band[:, 0:span:LONG.step][:, :M_TONES] + band[:, 2:span + 2:LONG.step][:, :M_TONES]  # each tone's bin with the bin below and above it (the long frame's tones are 3 bins apart, so no bin is counted twice)
     noise = noise_level(tone_e)  # noise energy per tone position
-    own = np.median(tone_e, axis=0) / np.log(2) / noise  # each tone position's own typical level, against the whole band's (about 1 in plain noise; a beacon's tone visits a position too briefly to raise it)
-    weight = np.where(own > BUSY_TONE, own, 1.0)  # positions with a steady carrier or other signal on them are counted in units of their own level, so they cannot outvote the beacon
     ratio, _ = signal_report(known_tone_energies(band[LAYOUT["pilot_pos"]], LAYOUT["pilot_tones"], LONG), noise)  # a first reading from the pilots
     pilot_snr = 10 * np.log10(max(ratio, 1e-12) / (LONG.seconds * REF_BANDWIDTH_HZ))  # in 2.5 kHz
-    return Soft(tone_e / noise_profile(tone_e)[:, None] / weight, float(offset), float(drift), float(found["quality"]), float(pilot_snr))  # energies in units of the noise
+    return Soft(_normalized(tone_e), float(offset), float(drift), float(found["quality"]), float(pilot_snr), wide=_normalized(wide_e))  # energies in units of the noise, center bins and three-bin sums
 
 
 def body_tones(data):  # the tones a body's bits are sent as
@@ -175,7 +185,23 @@ def body_tones(data):  # the tones a body's bits are sent as
     return tones  # pilots and data tones, in sending order
 
 
-def decode_energies(energies):  # energies -> fields
+def decode_soft(center, wide=None):  # center bins first, then three-bin sums (since 0.34R1)
+    """Decode from the center-bin energies; if that fails and `wide` (three-bin sums) is given, try those.
+
+    The three-bin sums read tones that Doppler spread has smeared into
+    their neighboring bins: in simulation they gain about 2 dB at 1 Hz of
+    spread, 4 dB at 2 Hz and 8 dB or more at 3 to 4 Hz, while the center
+    bin stays about 2 dB better on a steady signal. Trying both keeps the
+    better of each. The margin is always measured on the center bins, so
+    reports do not depend on which reading decoded.
+    """
+    fields, margin = decode_energies(center)  # the steady-signal reading
+    if fields is None and wide is not None:  # failed, and a smeared reading is available
+        fields, margin = decode_energies(wide, measure=center)  # try it
+    return fields, margin  # the result
+
+
+def decode_energies(energies, measure=None):  # energies -> fields
     """Decode a body from its tone energies (one copy's, or several copies' added together).
 
     Returns (fields, margin_db): the fields as a dict, or None when the
@@ -196,9 +222,10 @@ def decode_energies(energies):  # energies -> fields
         return None, -99.0  # give up on it
     if fields["origin"] and not CALL_SHAPE.match(fields["origin"]):  # a callsign carried must have the shape of one (a note's text frame carries only a code)
         return None, -99.0  # noise that happened to pass the check
+    measure = energies if measure is None else measure  # the energies the margin is read from (the center bins, since 0.34R1)
     tones = body_tones(data)  # every tone the beacon used
-    used = energies[np.arange(LAYOUT["total"]), tones]  # the energy found in each of them (signal plus noise, in units of the noise)
-    copies = float(np.median(energies)) / np.log(2)  # how many copies were added (the noise floor of the sum)
+    used = measure[np.arange(LAYOUT["total"]), tones]  # the energy found in each of them (signal plus noise, in units of the noise)
+    copies = float(np.median(measure)) / np.log(2)  # how many copies were added (the noise floor of the sum)
     margin = 10 * np.log10(max(float(np.mean(used)) / copies - 1.0, 1e-6))  # signal energy per tone against the noise, per copy
     return fields, margin  # the beacon, and how clearly it stood out
 
@@ -216,7 +243,7 @@ def decode_at(x, found, result, failed=None):  # read one candidate's body
         result.reason = "frame incomplete"  # say why
         return result  # look again later
     result.offset_hz, result.drift_hz_s, result.snr_db = soft.offset_hz, soft.drift_hz_s, soft.pilot_snr_db  # what is known so far
-    fields, margin = decode_energies(soft.energies)  # try to read it
+    fields, margin = decode_soft(soft.energies, soft.wide)  # try to read it (center bins, then three-bin sums)
     if fields is None:  # the check failed
         result.reason = "body check failed"  # say why
         if failed is not None:  # the caller combines copies
@@ -262,7 +289,8 @@ class LongCombiner:  # adds up copies of the same long beacon heard minutes apar
             for group in combinations(partners, count):  # every choice of that many
                 if any(abs(a.when - b.when) < COMBINE_APART_S for a, b in combinations(group, 2)):  # two of them are the same transmission found twice
                     continue  # not a real pair
-                fields, margin = decode_energies(soft.energies + sum(old.energies for old in group))  # add the energies and try
+                wides = [s.wide for s in (soft,) + group]  # every copy's three-bin sums (a copy kept by an older version may have none)
+                fields, margin = decode_soft(soft.energies + sum(old.energies for old in group), None if any(w is None for w in wides) else sum(wides))  # add the energies and try, center bins then three-bin sums
                 if fields is not None and (best is None or margin > best[1]):  # it decodes
                     best = (fields, margin, (soft,) + group)  # keep the clearest
             if best is not None:  # decoded with this many: no need for more

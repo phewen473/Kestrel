@@ -1,0 +1,45 @@
+part,case,detail,value 1,value 2
+A,noise only,center,-26.0,-26.0
+A,noise only,three bins,-24.0,-26.0
+A,noise only,either,-26.0,-26.0
+A,"spread 0.25 Hz, 1 ms",center,-22.0,-24.0
+A,"spread 0.25 Hz, 1 ms",three bins,-22.0,-24.0
+A,"spread 0.25 Hz, 1 ms",either,-22.0,-24.0
+A,"spread 0.5 Hz, 1 ms",center,-22.0,-24.0
+A,"spread 0.5 Hz, 1 ms",three bins,-22.0,-24.0
+A,"spread 0.5 Hz, 1 ms",either,-22.0,-24.0
+A,"spread 1.0 Hz, 1 ms",center,-20.0,-22.0
+A,"spread 1.0 Hz, 1 ms",three bins,-22.0,-24.0
+A,"spread 1.0 Hz, 1 ms",either,-22.0,-24.0
+A,"spread 2.0 Hz, 1 ms",center,-18.0,-20.0
+A,"spread 2.0 Hz, 1 ms",three bins,-22.0,-24.0
+A,"spread 2.0 Hz, 1 ms",either,-22.0,-24.0
+A,"spread 3.0 Hz, 1 ms",center,,-16.0
+A,"spread 3.0 Hz, 1 ms",three bins,-20.0,-22.0
+A,"spread 3.0 Hz, 1 ms",either,-20.0,-22.0
+A,"spread 4.0 Hz, 1 ms",center,,
+A,"spread 4.0 Hz, 1 ms",three bins,-14.0,-20.0
+A,"spread 4.0 Hz, 1 ms",either,-14.0,-20.0
+A,nvis,center,-20.0,-22.0
+A,nvis,three bins,-22.0,-24.0
+A,nvis,either,-22.0,-24.0
+A,nvis_real,center,-22.0,-24.0
+A,nvis_real,three bins,-22.0,-24.0
+A,nvis_real,either,-22.0,-24.0
+A,dawn,center,-20.0,-24.0
+A,dawn,three bins,-22.0,-24.0
+A,dawn,either,-22.0,-24.0
+B,shift 0.0 Hz,-28.5,0.1,0.825
+B,shift 0.0 Hz,-27.5,0.425,0.95
+B,shift 1.2 Hz,-28.5,0.05,0.925
+B,shift 1.2 Hz,-27.5,0.325,0.975
+B,shift 2.0 Hz,-28.5,0.025,0.75
+B,shift 2.0 Hz,-27.5,0.55,0.95
+C,good,L2/L3/L4,1.0,1.0,1.0
+C,moderate,L2/L3/L4,1.0,1.0,0.95
+C,poor,L2/L3/L4,1.0,1.0,1.0
+C,nvis,L2/L3/L4,1.0,0.95,1.0
+C,nvis_real,L2/L3/L4,1.0,1.0,1.0
+C,dawn,L2/L3/L4,1.0,1.0,1.0
+D,"offset 4 Hz, drift 0.01 Hz/s",-24.0,1.0,
+D,"dawn, 1 Hz offset, drifting",-18.0,1.0,

@@ -209,6 +209,10 @@ The steady column is where every test frame decoded. The fading columns are wher
 
 A fifth, faster level (L5, which needs a different waveform). The link rules that use these frames are in `link/`. Nets and store-and-forward are not built yet.
 
+## Smeared long-frame tones (`longbeacon.py`, since 0.34R1)
+
+`soft_at` keeps two readings of a long frame's body: each tone's own bin (`energies`) and each tone's bin plus the bin either side (`wide`). `decode_soft(center, wide)` decodes from the first and, only if that fails, from the second; `decode_at` and `LongCombiner` use it, so copies are added both ways. Doppler spread smears a 1.17 s tone into its neighbors: the three-bin reading gains about 2 dB at 1 Hz of spread, 4 dB at 2 Hz and 8 dB or more at 3 to 4 Hz, and trying the own bin first keeps its 2 dB advantage on a steady path. The margin (and so the SNR reported) is always read from the own bins. Measured with `tools/skywave_study.py`.
+
 ## Long notes (`longnote.py`, since 0.34)
 
 A long note is a short message, up to 28 characters, sent in long-beacon frames (`longbeacon.py`) for paths too weak for any speed level: heard down to about -26 dB, about 5 dB below L0. A long-note frame is a long-beacon frame whose last field bit (the long beacon's spare, always 0 in a beacon) is 1; its other 65 bits are a note header (sender's callsign, a 12-bit code for the station addressed or 0 for ALL, how many text frames follow), a text frame (the sender's code, the frame's number, seven characters) or a receipt (the receiving station's callsign and the sender's code). A note is a header and one to four text frames, a minute each. `build_note(origin, dest, text)` gives the audio of each frame, `build_receipt(origin, dest)` the receipt's; the receiver reads them with the long beacon's decoder, which now tells the two apart by that bit, and adds failed copies together in the same way. Sending, receipts and resends are in `live/notes.py`. Spec Section 6.16.

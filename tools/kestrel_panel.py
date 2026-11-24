@@ -47,6 +47,7 @@ from modem import call_hash  # the short code a mail notice uses for a callsign 
 from modem import native  # the compiled modem library, to say in About and --check whether it is in use  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
+from live import spaceweather  # today's measured sunspot number and space-weather warnings (since 0.34R1)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -2451,10 +2452,13 @@ class Panel:  # the control panel window
         state = {"busy": False}  # whether a prediction is running
 
         def show_set():  # the prediction set line and the month's sunspot number
-            set_line.configure(text=sunspots.describe())  # the set in use and its issue date
+            warned = spaceweather.warnings()  # flares, storms, a falling ionosphere (since 0.34R1)
+            set_line.configure(text=sunspots.describe() + "\n" + spaceweather.describe() + "".join("\nWARNING: " + w for w in warned), foreground="#b00000" if warned else "")  # the set in use, today's space weather and any warning
             year, mon = (int(part) for part in month.get().split("-"))  # the month chosen
-            value, how = sunspots.ssn_for(year, mon)  # its predicted number
-            ssn_note.configure(text=f"blank = predicted {value:.0f} for {month.get()} ({how})" if value is not None else "no prediction set: type a number")  # say so
+            value, how = spaceweather.ssn_for(year, mon)  # today's measured number for this month, else the prediction
+            predicted = sunspots.ssn_for(year, mon)[0]  # the month's prediction, for comparison
+            extra = f"; the month's prediction is {predicted:.0f}" if value is not None and predicted is not None and how.startswith("measured") else ""  # both, when they differ in kind
+            ssn_note.configure(text=f"blank = {value:.0f} for {month.get()} ({how}{extra})" if value is not None else "no prediction set: type a number")  # say so
 
         def predict():  # the Predict button
             if state["busy"]:  # one already running
@@ -2466,7 +2470,7 @@ class Panel:  # the control panel window
             year, mon = (int(part) for part in month.get().split("-"))  # the month
             try:  # the typed numbers may be nonsense
                 watts = float(power.get() or 100)  # transmitter power
-                ssn = float(ssn_box.get()) if ssn_box.get().strip() else sunspots.ssn_for(year, mon)[0]  # the sunspot number: typed, or predicted
+                ssn = float(ssn_box.get()) if ssn_box.get().strip() else spaceweather.ssn_for(year, mon)[0]  # the sunspot number: typed, measured today (current month) or predicted
             except ValueError:  # not numbers
                 messagebox.showerror("Kestrel", "Power and sunspot number must be numbers.", parent=top)  # say so
                 return  # nothing to do
@@ -2523,7 +2527,12 @@ class Panel:  # the control panel window
             def job():  # in the background (the internet may be slow)
                 try:  # it may fail
                     data = sunspots.update_online()  # fetch NOAA's prediction
-                    top.after(0, lambda: (show_set(), messagebox.showinfo("Kestrel", f"Sunspot predictions updated from NOAA (issued {data['issued']}).", parent=top)))  # say so
+                    try:  # today's measured ionosphere and space weather (since 0.34R1); the prediction is still useful without them
+                        spaceweather.update_online()  # fetch and keep them
+                        extra = "Today's measured sunspot number and space weather updated too."  # said
+                    except OSError as error:  # none of those sources answered
+                        extra = f"Today's space weather could not be fetched ({error})."  # said
+                    top.after(0, lambda: (show_set(), messagebox.showinfo("Kestrel", f"Sunspot predictions updated from NOAA (issued {data['issued']}). {extra}", parent=top)))  # say so
                 except Exception as error:  # no internet, or NOAA's file changed
                     top.after(0, lambda: messagebox.showerror("Kestrel", f"Could not update online: {error}\n\nThe predictions already here are still used. An update file can also be placed in:\n{sunspots.updates_folder()}", parent=top))  # say why
             threading.Thread(target=job, daemon=True).start()  # run it
@@ -2541,7 +2550,7 @@ class Panel:  # the control panel window
             messagebox.showinfo("Kestrel", f"Update file loaded (issued {data['issued']}). The prediction set with the latest issue date is used.", parent=top)  # say so
 
         ttk.Button(buttons, text="Predict", command=predict).pack(side="left")  # run it
-        ttk.Button(buttons, text="Update sunspot predictions online", command=update_online).pack(side="left", padx=(8, 0))  # fetch from NOAA
+        ttk.Button(buttons, text="Update online", command=update_online).pack(side="left", padx=(8, 0))  # fetch NOAA's predictions, and today's eSSN and space weather
         ttk.Button(buttons, text="Load update file...", command=load_file).pack(side="left", padx=(8, 0))  # a file sent by hand
         ttk.Button(buttons, text="Open updates folder", command=lambda: self.open_path(sunspots.updates_folder())).pack(side="left", padx=(8, 0))  # where update files go
         ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
@@ -2734,7 +2743,7 @@ class Panel:  # the control panel window
                 hint.configure(text="(needs both grid locators)" if not (far and own) else "(propagation program not installed)")  # say why
                 return  # nothing more
             now = time.gmtime()  # this hour and month
-            ssn = sunspots.ssn_for(now.tm_year, now.tm_mon)[0]  # the predicted sunspot number
+            ssn = spaceweather.ssn_for(now.tm_year, now.tm_mon)[0]  # today's measured sunspot number if fresh, else the predicted one
             if ssn is None:  # no prediction set at all
                 hint.configure(text="(no sunspot prediction)")  # say so
                 return  # nothing more

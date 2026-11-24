@@ -27,9 +27,16 @@ CONDITIONS = {  # named channel conditions: (Doppler spread in Hz, delay between
     "high_quiet": (0.5, 1.0),  # high latitude, quiet (for paths across the auroral zone)
     "high_moderate": (10.0, 3.0),  # high latitude, moderate
     "high_disturbed": (30.0, 7.0),  # high latitude, disturbed
+    "nvis_real": (0.3, 0.8),  # realistic near vertical incidence (since 0.34R1, not in F.1487): measured NVIS delay spreads are about 0.3 ms with peaks near 3 ms, and quiet mid-latitude Doppler spreads 0.03-0.3 Hz; second path weaker and shifted, see PATH_EXTRAS
+    "dawn": (0.5, 1.0),  # mid-latitude moderate at sunrise or sunset (since 0.34R1): the two paths' frequencies move apart as the layers rise or fall, see PATH_EXTRAS
 }  # end of the table
 
-SKYWAVE = ("good", "moderate", "poor", "nvis")  # the sky-wave conditions a mid-latitude station (the south-eastern United States) meets on its own paths, mildest first
+PATH_EXTRAS = {  # what F.1487 leaves out (since 0.34R1): condition -> (second path's power in dB against the first, second path's frequency shift in Hz against the first)
+    "nvis_real": (-4.0, 0.2),  # the second path (another hop or magneto-ionic mode) 4 dB weaker and 0.2 Hz away
+    "dawn": (-3.0, 0.3),  # the paths 0.3 Hz apart while the layers move
+}  # end of the table (every other condition: equal paths, no shift between them, as F.1487)
+
+SKYWAVE = ("good", "moderate", "poor", "nvis")  # the sky-wave conditions a mid-latitude station (the south-eastern United States) meets on its own paths, mildest first (the F.1487 set; "nvis_real" and "dawn" are the realistic additions of 0.34R1)
 
 
 def _analytic(x):  # real signal -> complex signal
@@ -50,13 +57,19 @@ def _fading_tap(n, spread_hz, rng, fs):  # one path's slowly wandering gain
     return tap * nfast / np.sqrt(2 * np.sum(shape ** 2))  # scale so the long-run average power is exactly 1
 
 
-def watterson(a, spread_hz, delay_ms, rng, fs=FS):  # two-path fading
-    """Pass complex signal `a` through two independently fading paths, the second one delayed."""
+def watterson(a, spread_hz, delay_ms, rng, fs=FS, second_db=0.0, shift2_hz=0.0):  # two-path fading
+    """Pass complex signal `a` through two independently fading paths, the second one delayed.
+
+    `second_db` is the second path's average power against the first (0: equal, as in F.1487);
+    `shift2_hz` moves the second path's frequency (0: none, as in F.1487). Both since 0.34R1.
+    """
     delay = int(round(delay_ms * fs / 1000))  # the delay in samples
     late = np.concatenate([np.zeros(delay, dtype=complex), a[:len(a) - delay]])  # the delayed copy
     first = _fading_tap(len(a), spread_hz, rng, fs)  # wandering gain of the first path
-    second = _fading_tap(len(a), spread_hz, rng, fs)  # wandering gain of the second path
-    return (first * a + second * late) / np.sqrt(2)  # sum the paths, keeping the average power unchanged
+    second = _fading_tap(len(a), spread_hz, rng, fs) * 10 ** (second_db / 20)  # wandering gain of the second path, at its own strength
+    if shift2_hz:  # the second path is on a slightly different frequency
+        second = second * np.exp(2j * np.pi * shift2_hz * np.arange(len(a)) / fs)  # turn it steadily
+    return (first * a + second * late) / np.sqrt(1 + 10 ** (second_db / 10))  # sum the paths, keeping the average power unchanged
 
 
 def add_noise(x, snr_db, signal_power, rng, fs=FS):  # background noise
@@ -92,7 +105,8 @@ def run_channel(x, snr_db, rng, condition="awgn", offset_hz=0.0, drift_hz_s=0.0,
     if fading is not None or offset_hz != 0.0 or drift_hz_s != 0.0:  # fading or a frequency shift is wanted
         a = _analytic(y)  # switch to the complex form
         if fading is not None:  # fading is wanted
-            a = watterson(a, fading[0], fading[1], rng, fs)  # apply the two-path model
+            second_db, shift2_hz = PATH_EXTRAS.get(condition, (0.0, 0.0))  # the second path's strength and shift (F.1487 conditions: equal, none)
+            a = watterson(a, fading[0], fading[1], rng, fs, second_db, shift2_hz)  # apply the two-path model
         t = np.arange(len(a)) / fs  # time of every sample
         a = a * np.exp(2j * np.pi * (offset_hz * t + 0.5 * drift_hz_s * t * t))  # apply offset and drift
         y = a.real  # back to an ordinary real signal
