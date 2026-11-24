@@ -336,7 +336,10 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             if on_transmit is not None:  # someone wants to know it is off again
                 on_transmit(tx, False)  # tell them
         last_sent[0] = now()  # remember when this transmission ended
-        source.flush()  # throw away whatever was received meanwhile (it was this station's own signal)
+        gaps = getattr(source, "gaps", 0)  # how often the sample count has had to be made good so far (since 0.40R1)
+        source.flush()  # throw away whatever was received meanwhile (it was this station's own signal); a counting source also brings its count back in step with the clock
+        if isinstance(gaps, int) and getattr(source, "gaps", 0) > gaps and logging:  # the sound card delivered less audio than time passed during this transmission
+            signal_log.note("input timeline made good after transmitting", seconds=round(source.last_gap_s, 3), total_s=round(source.gap_s, 3))  # kept in the signal log, to show how much each transmission loses
         listener.clear()  # and forget it
         if watch is not None:  # listening before transmitting
             watch.clear()  # what was heard just before this transmission is not "now" any more

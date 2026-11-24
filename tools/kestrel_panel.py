@@ -55,6 +55,7 @@ import frame_strip  # drawing the frame strip under the receive scope (since 0.3
 from live.framestrip import FrameStrip  # what the frame strip shows (since 0.37)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import antennas  # the antenna types offered in Settings > Station (since 0.39R2)  # noqa: E402
+from live import power_hold  # holding the output power by the drive, and spotting a sag (since 0.40R1)  # noqa: E402
 from modem.control import beacon_rig, beacon_watts  # the rig type and watts as a beacon carries them (since 0.40)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -85,6 +86,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "scope_time_marks": True, "scope_time_zone": "utc",  # (continued: time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, in UTC or local time, since 0.33)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
+DEFAULTS.update({"hold_power_w": ""})  # the output power to hold, in watts, by adjusting the drive between transmissions; blank = off (since 0.40R1)
 DEFAULTS.update({"location": "", "antenna": ""})  # this station's location and antenna (one of the fixed list in live/antennas.py) (since 0.39R2)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
 QUICK_MOST = 10  # the most quick messages an operator may keep
@@ -401,6 +403,7 @@ class Panel:  # the control panel window
         self.frames = FrameStrip()  # the Kestrel frame arriving or last heard, and its message's parts, for the frame strip (since 0.37)
         self.steps_heard = {}  # callsign -> (time, powersteps.Reading): the last power steps read before each station's beacon (since 0.38)
         self.gap_said = {}  # callsign -> the UTC hour its prediction check was last told in the Activity log (since 0.39)
+        self.tx_readings = []  # (watts, ALC) read during the transmission under way (since 0.40R1)
         self.rig_names = {}  # Hamlib model number -> "Maker Model", to name the rig a beacon carries (filled in the background; since 0.40)
         self.strip_at = 0.0  # when the frame strip was last drawn
         self.watch_at = 0.0  # when the watcher last looked
@@ -505,11 +508,11 @@ class Panel:  # the control panel window
         self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "Signal", 58), ("time", "Last heard", 140), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
         keep = ttk.Frame(self.stations.master)  # buttons under that list
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
-        ttk.Button(keep, text="Respond  Ctrl+Y", command=self.respond).pack(side="left", padx=(0, 8))  # call the selected station by name (answer its beacon by hand)
-        ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
-        ttk.Button(keep, text="Remove from list", command=self.remove_from_list).pack(side="left", padx=4)  # off this list; a contact record is kept (since 0.39; was Remove contact)
-        ttk.Button(keep, text="Contacts...  Ctrl+K", command=self.contacts_window).pack(side="left", padx=4)  # the contact records: view, search, change, delete (since 0.39)
-        ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
+        ttk.Button(keep, text="Respond", command=self.respond).pack(side="left", padx=(0, 4))  # call the selected station by name (answer its beacon by hand)
+        ttk.Button(keep, text="Save", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
+        ttk.Button(keep, text="Remove", command=self.remove_from_list).pack(side="left", padx=2)  # off this list; a contact record is kept (since 0.39; was Remove contact)
+        ttk.Button(keep, text="Contacts", command=self.contacts_window).pack(side="left", padx=2)  # the contact records: view, search, change, delete (since 0.39)
+        ttk.Button(keep, text="48 hours", command=self.heard_window).pack(side="left", padx=2)  # the longer record
         self.stations.bind("<Double-1>", lambda event: self.station_detail_window())  # a double-click opens a window with everything shown about the station, in full (since 0.40; its Contact record button opens the record, as a double-click did before)
         self.received.bind("<Double-1>", lambda event: self.message_detail_window())  # a double-click opens the message in a window of its own, to read in full (since 0.40)
         self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
@@ -1895,7 +1898,9 @@ class Panel:  # the control panel window
         self.tx_active, self.tx_kind = keyed, (f"{tx.kind} {tx.note}" if tx.kind.startswith("long") else tx.kind) if keyed else ""  # note it, for the meters and the transmit scope's words (a long note says which try and frame, since 0.34)
         if keyed:  # a new transmission
             self.alc_warned = False  # it may be warned about once
+            self.tx_readings = []  # the power and ALC read during it, for holding the power and spotting a sag (since 0.40R1)
         if not keyed:  # it has just gone off
+            self.after_transmission(tx)  # hold the power for the next one, and say if it sagged (since 0.40R1)
             self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=self.meters["watts"], alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
             return  # nothing more
         event = {"beacon": "beacon", "long beacon": "beacon", "call": "call", "broadcast": "broadcast"}.get(tx.kind, "sent")  # beacons, calls and broadcasts are logged from advanced up; other frames only in verbose
@@ -1903,6 +1908,27 @@ class Panel:  # the control panel window
         to = "ALL" if tx.kind in ("beacon", "long beacon", "broadcast") else (station.partner if station is not None else "")  # who it was for
         self.logbook.write(event, direction="TX", station=self.settings["call"], **{"from": self.settings["call"]}, to=to, text=f"{tx.kind} {tx.note}".strip(), dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=level_name(tx.level), rig=self.rig_name(), power_w=self.power_w(), tx_audio=round(20.0 * np.log10(max(float(self.settings["gain"] or 0.25), 1e-4)), 1))  # what went out
+
+    def after_transmission(self, tx):  # a transmission has ended: hold the power, and report a sag (called from the working thread; since 0.40R1)
+        """From the power read during the transmission: warn if it fell with the drive unchanged, and, when Settings > Station names a power to hold, set the drive for the next transmission."""
+        readings = [(watts, alc) for watts, alc in getattr(self, "tx_readings", []) if watts >= 1.0]  # the readings with the transmitter up (the first and last are often 0)
+        self.tx_readings = []  # used
+        if len(readings) < 3 or self.sink is None:  # too short to judge, or nothing to adjust
+            return  # left alone
+        watts = sorted(w for w, _ in readings)  # the powers, in order
+        middle = watts[len(watts) // 2]  # the median power of the transmission
+        alc_most = max((a for _, a in readings if a is not None), default=0.0)  # the highest ALC seen
+        change = power_hold.sag(readings)  # how the power moved from its first third to its last
+        if change is not None:  # it fell a good deal
+            self.say(f"warning: output power fell from {change[0]:.0f} W to {change[1]:.0f} W during that {tx.kind} with the drive unchanged; check the radio (its power setting, heat, supply voltage)")  # tell the operator
+        gain = float(self.sink.gain)  # the drive it was sent at
+        new, why = power_hold.next_gain(gain, middle, alc_most, self.settings.get("hold_power_w", ""), ALC_HIGH)  # the drive for the next one
+        if new is None:  # holding is off, or the power is close enough
+            return  # nothing to change
+        self.sink.gain = new  # the next transmission uses it
+        self.settings["gain"] = f"{new:.3f}"  # remembered with the settings
+        self.root.after(0, lambda: self.tx_value.set(new))  # the transmit slider follows (from the window's own thread)
+        self.say(f"power hold: {middle:.0f} W out, {why}; drive {gain:.3f} -> {new:.3f}")  # say what was done
 
     def poll_radio(self, address):  # read the radio's power setting and meters (a thread of its own while a station runs)
         try:  # rig control may refuse
@@ -1929,6 +1955,8 @@ class Panel:  # the control panel window
                     log = self.signal_log  # the run's signal log (read once: the run may end meanwhile)
                     if log is not None:  # one is kept
                         log.meters(self.meters["watts"], alc, self.meters["swr"])  # every reading during the transmission
+                    if self.meters["watts"] is not None:  # the radio gave its power
+                        self.tx_readings.append((float(self.meters["watts"]), alc))  # kept for after_transmission (since 0.40R1)
                     if alc is not None and alc >= ALC_HIGH and not self.alc_warned:  # the audio is driving the radio too hard
                         self.alc_warned = True  # once per transmission is enough
                         self.say(f"warning: the radio's ALC reads {alc:.2f} of full scale; lower the transmit slider (Ctrl+J) until ALC barely moves, or the tones will be distorted")  # tell the operator what to do
@@ -3733,6 +3761,8 @@ class Panel:  # the control panel window
         if not self.settings["antenna"]:  # none chosen yet
             antenna_box.set("")  # nothing chosen
         field(station, 6, "max_power_w", "Radio's full power, watts", width=8)  # to turn the radio's power setting into watts
+        field(station, 8, "hold_power_w", "Hold output power at, watts (blank = off)", width=8)  # the drive is adjusted between transmissions to keep it (since 0.40R1)
+        note(station, 9, "Hold output power: after each transmission Kestrel compares the power the radio measured with this figure and nudges the\ntransmit level (the slider) for the next one, by at most 2 dB a step, and never upward while ALC is high. Needs rig control.")  # what it does
         note(station, 7, "The power shown and logged is read from the radio through rig control, when the radio and Hamlib allow it.\nLocation and antenna go into quick messages as {location} and {antenna}.")  # where the power comes from, and where location and antenna are used
         radio = page("Radio")  # the radio and how the computer reaches it
         rig_box = field(radio, 0, "rig_model", "Rig type", [NO_RIG] + models, editable=True, width=44)  # the radio type, from the rig control program's own list

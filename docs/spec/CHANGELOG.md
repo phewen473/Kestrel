@@ -1,5 +1,14 @@
 # Kestrel specification changelog
 
+## 0.40R1 (draft) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.40); reference program only.
+- **Sample count kept in step with the clock** (live/recorder.py TimedSource.resync): on the air, the sound card delivered a fraction of a second less audio than time passed during each transmission (no overflow reported), and the count fell 5.9 s behind the clock in 90 minutes, so decode times, recording positions and time marks ran late. After each transmission, when what was received is thrown away and the listener starts afresh, a count more than 0.05 s behind the clock is made good with silence (in the recording too); the signal log notes each time and how much ("input timeline made good after transmitting").
+- **Hold output power** (live/power_hold.py; Settings > Station > Hold output power at, watts): on the air a radio's output fell from 22 W to 10 W over five one-minute frames at constant audio drive. With a power named, after each transmission the median power the radio measured is compared with it and the transmit level is changed for the next one by the square root of wanted over measured, at most 2 dB a step, within 10 % left alone, and never upward while ALC is at or above the warning level (then 1 dB down, with advice to raise the radio's power setting). Needs rig control that reads the power meter. Off when blank (the default).
+- **Sag warning**: when the power in the last third of a transmission is below 70 % of the first third's, the Activity log says so, whether or not holding is on.
+- Stations heard buttons shortened (Respond, Save, Remove, Contacts, 48 hours) so all five fit a narrow panel; the keys (Ctrl+Y, Ctrl+K, F8) are unchanged.
+- Tests: tests/test_power_hold.py.
+
 ## 0.40 (draft) - November 24, 2026
 
 - **Signal version 0.40: rig type and watts in every beacon** (Section 5.8, modem/control.py, cpp/src/packing.cpp): the beacon adds the station's Hamlib model number (16 bits) and transmit power in whole watts (10 bits, at most 1023), 0 for either when not said: 101 field bits (was 75), 54 body tones (was 42), 36 s at L0 (was 31 s), 12 s at L1, 8.1 s at L2 (was 7.0 s), 4.0 s at L3, 2.0 s at L4; reply slots follow. The reference program sends the rig type chosen in Settings > Radio and the radio's power setting (else the full power in Settings > Station). Library interface 17 (KesFields.rig_model and watts). **Stations following 0.39 or earlier cannot read 0.40 beacons, nor 0.40 stations theirs;** long beacons are unchanged (they have no room).

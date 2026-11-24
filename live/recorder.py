@@ -23,6 +23,7 @@ from modem.params import FS  # the modem's sample rate (12,000)
 
 FILE_SECONDS = 3600  # a new file is started every hour
 KEEP_DAYS = 7  # recordings older than this are deleted when a new file starts
+RESYNC_S = 0.05  # after a transmission, a sample count more than this far behind the clock is made good with silence (since 0.40R1)
 
 
 def recordings_dir(base):  # where the recordings go
@@ -116,6 +117,9 @@ class TimedSource:  # an audio source that keeps count of the samples read throu
         self.clock = clock  # where the time comes from (a test can supply its own)
         self.samples = 0  # samples read so far: the number the next sample will get
         self.t0 = None  # the UTC time of sample 0, set by the first audio to arrive
+        self.gaps = 0  # how many times the count was brought back in step with the clock (since 0.40R1)
+        self.gap_s = 0.0  # seconds of audio that never arrived, in all (since 0.40R1)
+        self.last_gap_s = 0.0  # the latest such stretch, in seconds (since 0.40R1)
 
     def _count(self, chunk):  # note audio that has passed through
         """Count `chunk` and, the first time, fix the time of sample 0."""
@@ -137,6 +141,28 @@ class TimedSource:  # an audio source that keeps count of the samples read throu
         """Discard what the real source has collected, counting it so the numbers keep step with the clock."""
         self._count(self.source.read())  # take what has piled up and count it
         self.source.flush()  # and let the real source drop anything left
+        self.resync()  # some sound cards deliver less audio than time passed while the transmitter was on: make the count good (since 0.40R1)
+
+    def resync(self):  # bring the sample count back in step with the clock (since 0.40R1)
+        """If the clock is more than RESYNC_S ahead of the samples counted, count the missing stretch as silence; return the seconds added (0.0 when in step).
+
+        Called after a transmission, when what was received is thrown away
+        and the listener starts afresh, so no frame is being followed
+        across the join. Without it every transmission on some sound cards
+        left the count a fraction of a second further behind the clock
+        (5.9 s after 90 minutes in the November 24, 2026 on-air logs).
+        """
+        if self.t0 is None:  # no audio yet: nothing to compare
+            return 0.0  # in step
+        behind = (self.clock() - self.t0) - self.samples / FS  # how far the count is behind the clock, in seconds
+        if behind <= RESYNC_S:  # within the usual wobble of blocks arriving
+            return 0.0  # left alone
+        missing = int(round(behind * FS))  # the samples that never came
+        self._count(np.zeros(missing))  # counted (and recorded) as silence, so numbers, recording and clock agree again
+        self.gaps += 1  # how many times this has been needed
+        self.gap_s += behind  # and how much audio in all
+        self.last_gap_s = behind  # the latest, for whoever reports it
+        return behind  # the seconds made good
 
     def __getattr__(self, name):  # anything else (lost, level, spectrum, close ...) comes from the real source
         return getattr(self.source, name)  # look it up there
