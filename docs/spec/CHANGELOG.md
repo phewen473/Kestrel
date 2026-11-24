@@ -7,7 +7,8 @@
 - **Radio and power learned over the air**: when a saved station sends its "Rig and power" quick message ("RIG <radio> <n>W") or telemetry (its power), the contact's Radio and Power fields are updated, a "details" row is logged, and the Activity log says so.
 - **Contact window**: the history is two tabs, Traffic (each beacon and message) and Sessions; both have a Local time column beside UTC (headed with the zone, such as "Local (UTC-5)") and sort by any column when its heading is clicked (again to reverse). The Stations heard window (48 hours) also gains Local columns.
 - **Sorting the main lists**: Messages to send, Messages received, and Stations heard and saved contacts sort by any column when its heading is clicked (again to reverse).
-- Tests: tests/test_contact_log.py.
+- **Rig control no longer outlives a crash** (live/rig.py): before, the rigctld Kestrel started kept running after Kestrel crashed and held the radio's serial port, so the next start failed with "the radio did not answer on COMn". Now, on Windows, every rigctld Kestrel starts is put in a job object that Windows closes when Kestrel ends in any way, ending rigctld with it. Kestrel also notes the rigctld's process number (_rigctld.pid in the data folder) and, before starting rig control, ends a rigctld still running under that number, and any rigctld started by a Kestrel (any version) for the same serial port; a rigctld started by hand or by another program is left alone. The Activity log says when one was ended.
+- Tests: tests/test_contact_log.py, tests/test_rig_leftover.py (a stand-in Kestrel killed outright takes its stand-in rigctld with it).
 
 ## 0.38R1 (draft) - November 24, 2026
 

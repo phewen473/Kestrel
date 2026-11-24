@@ -3780,7 +3780,11 @@ class Panel:  # the control panel window
                 raise RuntimeError("the rig control program (rigctld) was not found; choose it under Settings > Radio")  # say what to do
             if not settings["rig_model"].split()[0].isdigit():  # the rig type is not an entry of the list (entries begin with Hamlib's number)
                 raise RuntimeError(f"the rig type in Settings ('{settings['rig_model']}') is not one from the list: open Settings > Radio and pick your radio")  # say what to do, in plain words
-            return self.rigs.ensure(program, settings["rig_model"].split()[0], settings["cat_port"], settings["cat_baud"] or 38400, settings["cat_handshake"])  # start it if it is not already running
+            try:  # start it if it is not already running
+                return self.rigs.ensure(program, settings["rig_model"].split()[0], settings["cat_port"], settings["cat_baud"] or 38400, settings["cat_handshake"])  # its address
+            finally:  # whether or not it started
+                while self.rigs.news:  # a leftover rigctld from a crash was ended (since 0.38R2)
+                    self.say(self.rigs.news.pop(0))  # say so in the Activity log
         return settings["rig"]  # an outside rigctld, or nothing
 
     def save_settings(self):  # remember the current settings

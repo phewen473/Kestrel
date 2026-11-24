@@ -102,6 +102,134 @@ def models_for(saved):  # the radio list for the Settings window
     return saved or found, [], reason  # no list
 
 
+_JOB = None  # Windows: the job object every rigctld Kestrel starts is put in; it closes, and ends them, when Kestrel ends in any way, a crash included (since 0.38R2)
+
+
+def _tie_to_kestrel(process):  # make a started rigctld end when Kestrel ends, however it ends (since 0.38R2)
+    """On Windows, put `process` in a job object that kills its members when Kestrel's last handle to it closes (Windows closes it when Kestrel exits or crashes). Return True if tied."""
+    global _JOB  # one job for the whole program
+    if sys.platform != "win32":  # elsewhere the pid file below does the work
+        return False  # not tied
+    try:  # the Windows calls may be refused
+        import ctypes  # Windows' own functions
+        from ctypes import wintypes  # their types
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # the kernel's functions
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE  # returns a handle
+        kernel.OpenProcess.restype = wintypes.HANDLE  # returns a handle
+        if _JOB is None:  # the first rigctld: make the job
+            job = kernel.CreateJobObjectW(None, None)  # an unnamed job
+            if not job:  # refused
+                return False  # not tied
+
+            class Limits(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION, as Windows lays it out
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),  # (continued: the basic limits)
+                            ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),  # (continued)
+                            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),  # (continued: end of the basic limits)
+                            ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),  # (continued: the extended part)
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]  # (continued)
+
+            limits = Limits()  # all zero
+            limits.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: members are ended when the job's last handle closes
+            if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):  # 9 = JobObjectExtendedLimitInformation
+                kernel.CloseHandle(job)  # give it back
+                return False  # not tied
+            _JOB = job  # kept open for Kestrel's whole life (never closed by hand: Windows closes it when Kestrel goes)
+        handle = kernel.OpenProcess(0x0101, False, process.pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE on the new rigctld
+        if not handle:  # refused
+            return False  # not tied
+        tied = bool(kernel.AssignProcessToJobObject(_JOB, handle))  # into the job
+        kernel.CloseHandle(handle)  # the job holds it now
+        return tied  # whether it worked
+    except (OSError, AttributeError, ValueError):  # anything at all from the Windows calls
+        return False  # not tied; the pid file still catches it next time
+
+
+def _pid_file():  # where the running rigctld's process number is noted (since 0.38R2)
+    """Return the path of the file that names the rigctld Kestrel last started (in the data folder)."""
+    from live.paths import data_dir  # the operator's data folder
+    return os.path.join(data_dir(), "_rigctld.pid")  # beside the settings
+
+
+def _image_name(pid):  # the program name of a running process, or "" if there is none
+    """Return the program file name of process `pid` (lower case), or "" if no such process is running."""
+    if sys.platform == "win32":  # ask Windows
+        try:  # tasklist may be missing or refuse
+            listing = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10, **HIDDEN).stdout  # the process, if running
+        except (OSError, subprocess.SubprocessError, ValueError):  # could not ask
+            return ""  # treat as gone
+        first = listing.strip().splitlines()[:1]  # its line, if any
+        return first[0].split('","')[0].strip('"').lower() if first and first[0].startswith('"') else ""  # the image name, or nothing
+    try:  # elsewhere, /proc or a signal 0
+        os.kill(int(pid), 0)  # is it there?
+    except (OSError, ValueError):  # no
+        return ""  # gone
+    try:  # its name, where /proc has it
+        with open(f"/proc/{int(pid)}/comm", encoding="utf-8") as handle:  # Linux
+            return handle.read().strip().lower()  # the name
+    except OSError:  # no /proc
+        return "rigctld"  # assume it is ours: the pid file named it
+
+
+def end_leftover():  # a rigctld left running when Kestrel last ended badly (since 0.38R2)
+    """End the rigctld that Kestrel started last time if it is still running (it would hold the radio's serial port). Return a sentence saying what was done, or ""."""
+    path = _pid_file()  # the note
+    try:  # it may not be there
+        with open(path, encoding="utf-8") as handle:  # read it
+            pid = int(handle.read().split()[0])  # the process number
+    except (OSError, ValueError, IndexError):  # no note, or a damaged one
+        return ""  # nothing to do
+    said = ""  # nothing done yet
+    name = _image_name(pid)  # what is running under that number now
+    if name.startswith("rigctld"):  # still rigctld (a number reused by another program is left alone)
+        try:  # end it
+            if sys.platform == "win32":  # Windows
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10, **HIDDEN)  # forced
+            else:  # elsewhere
+                os.kill(pid, 9)  # forced
+            time.sleep(0.5)  # let Windows give the serial port back
+            said = f"ended a rig control program (rigctld, process {pid}) left running from an earlier session; it was holding the radio's port"  # what was done
+        except (OSError, subprocess.SubprocessError):  # could not
+            said = f"a rig control program (rigctld, process {pid}) from an earlier session is still running and could not be ended; end it in Task Manager"  # what to do
+    try:  # the note is done with
+        os.remove(path)  # gone
+    except OSError:  # already gone
+        pass  # fine
+    return said  # for the Activity log
+
+
+def end_kestrel_holders(port, keep=None):  # rigctlds started by any Kestrel for this serial port, left running (since 0.38R2)
+    """On Windows, end every rigctld whose command line is the one Kestrel uses (listening on 127.0.0.1) for serial port `port`, except process `keep`.
+
+    This catches one left by an older Kestrel that kept no note of its
+    process number. A rigctld started by hand or by another program
+    (which does not listen with Kestrel's "-T 127.0.0.1 -t" pattern) is left
+    alone. Return a sentence saying what was done, or "".
+    """
+    if sys.platform != "win32" or not port:  # Windows only (elsewhere the pid file is enough)
+        return ""  # nothing done
+    query = "Get-CimInstance Win32_Process -Filter \"Name like 'rigctld%'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"  # every rigctld and how it was started
+    try:  # PowerShell may be slow or missing
+        listing = subprocess.run(["powershell", "-NoProfile", "-Command", query], capture_output=True, text=True, timeout=20, **HIDDEN).stdout  # the list
+    except (OSError, subprocess.SubprocessError):  # could not ask
+        return ""  # nothing done
+    ended = []  # process numbers ended
+    for line in listing.splitlines():  # each rigctld
+        pid, _, command = line.partition("\t")  # its number and command line
+        words = command.split()  # the command line, word by word
+        try:  # the serial port it was given
+            given = words[words.index("-r") + 1].strip('"')  # after -r
+        except (ValueError, IndexError):  # none
+            continue  # not one of Kestrel's
+        if given.upper() != port.upper() or "-T" not in words or "127.0.0.1" not in words or not pid.strip().isdigit() or int(pid) == keep:  # another port, not Kestrel's pattern, or the one running now
+            continue  # left alone
+        subprocess.run(["taskkill", "/PID", pid.strip(), "/F"], capture_output=True, timeout=10, **HIDDEN)  # ended
+        ended.append(pid.strip())  # counted
+    if not ended:  # none
+        return ""  # nothing done
+    time.sleep(0.5)  # let Windows give the serial port back
+    return f"ended {len(ended)} rig control program{'s' if len(ended) > 1 else ''} (rigctld, process {', '.join(ended)}) left running on {port} from an earlier session"  # what was done
+
+
 class RigServer:  # a rigctld started and stopped by Kestrel
     """Runs rigctld for one radio, so the operator only has to choose the radio type and its serial port."""
 
@@ -110,6 +238,7 @@ class RigServer:  # a rigctld started and stopped by Kestrel
         self.config = None  # the settings it was started with
         self.address = ""  # where it is listening, as host:port
         self.notes = None  # a scratch file that collects rigctld's own messages
+        self.news = []  # sentences for the Activity log (a leftover rigctld ended, since 0.38R2)
 
     def ensure(self, program, model, port, baud, handshake="none"):  # make sure rigctld is running with these settings
         """Start rigctld if needed and return its address. Raise RuntimeError with the reason if it will not start."""
@@ -117,6 +246,9 @@ class RigServer:  # a rigctld started and stopped by Kestrel
         if self.process is not None and self.process.poll() is None and config == self.config:  # already running with the same settings
             return self.address  # use it as it is
         self.stop()  # stop any rigctld running with other settings
+        for said in (end_leftover(), end_kestrel_holders(port)):  # one left from a crash would hold the serial port: the one noted last time, then any other started by a Kestrel for this port (since 0.38R2)
+            if said:  # something was done
+                self.news.append(said)  # tell the operator
         with socket.socket() as probe:  # find a free network port on this computer
             probe.bind(("127.0.0.1", 0))  # let the system choose one
             tcp = probe.getsockname()[1]  # the port it chose
@@ -128,6 +260,12 @@ class RigServer:  # a rigctld started and stopped by Kestrel
             self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=self.notes, text=True, cwd=os.path.dirname(program) or None, **HIDDEN)  # start rigctld
         except OSError as problem:  # it could not be started
             raise RuntimeError(f"could not start the rig control program: {problem}")  # say why
+        _tie_to_kestrel(self.process)  # it ends when Kestrel ends, even in a crash (since 0.38R2)
+        try:  # note its number, so the next start can end it if it is somehow left running
+            with open(_pid_file(), "w", encoding="utf-8") as handle:  # the note
+                handle.write(f"{self.process.pid}\n")  # its process number
+        except OSError:  # the folder may refuse
+            pass  # the job object still ends it
         self.config, self.address = config, f"127.0.0.1:{tcp}"  # remember what is running and where
         for _ in range(60):  # give it up to six seconds to open the radio
             if self.process.poll() is not None:  # it has already given up
@@ -160,6 +298,10 @@ class RigServer:  # a rigctld started and stopped by Kestrel
                 self.process.wait(timeout=3)  # wait for it to go
             except subprocess.TimeoutExpired:  # it did not
                 self.process.kill()  # insist
+            try:  # it is gone: so is the note of its number (since 0.38R2)
+                os.remove(_pid_file())  # no leftover to look for next time
+            except OSError:  # not there
+                pass  # fine
         self.process = None  # nothing is running now
         if self.notes is not None:  # its messages are no longer needed
             self.notes.close()  # delete the scratch file
