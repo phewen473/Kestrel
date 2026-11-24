@@ -152,6 +152,8 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.log = []  # plain-English notes on what happened, for the operator and for tests
         self.reply_margin = REPLY_MARGIN_S  # extra time to wait for a reply beyond its own length (a live station allows more)
         self.power_steps = False  # send power steps just before each beacon (since 0.38; the caller allows for their 5 s in reply_margin)
+        self.rig = 0  # this station's rig type, the Hamlib model number, carried in each beacon (0: not said; since 0.40)
+        self.watts = 0  # this station's transmit power in watts, carried in each beacon (0: not said; since 0.40)
         self.quiet = False  # True while the lock is idle and the partner holds the turn (this station may then take the turn if it gets something to send)
         self.idle_told = False  # True once the partner has been offered the turn since the last message went either way (so it knows the lock is idle)
         self.can_move = False  # True when whoever runs the radio can retune it, so a move to a working frequency is possible
@@ -1036,12 +1038,12 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.candidates = []  # a new reply window starts empty
         if not self.available:  # the operator is not available: a presence beacon, taking no answers
             self.beacon_sent_at = self.callup  # at the middle level (nobody will answer, so there is no L0 retry)
-            audio = build_beacon(self.call, self.grid, self.levels, listening=False, level=self.beacon_sent_at, steps=self.power_steps)  # "here I am, not taking contacts" (with power steps before it, if wanted)
+            audio = build_beacon(self.call, self.grid, self.levels, listening=False, level=self.beacon_sent_at, steps=self.power_steps, rig=self.rig, watts=self.watts)  # "here I am, not taking contacts" (with power steps before it, if wanted)
             tx = _with_lead(self._send(now, audio, "beacon", self.beacon_sent_at, None, 0.0, "not available: presence only"), self.power_steps)  # no reply window
             self._release(now, "presence beacon sent; not taking contacts")  # the round is over
             return tx  # send it
         self.beacon_sent_at = self.callup  # the middle level first; L0 after that brings no answer
-        audio = build_beacon(self.call, self.grid, self.levels, listening=True, mail_check=True, holds_mail=bool(self.mail.bag), level=self.beacon_sent_at, wide=self.wide, steps=self.power_steps)  # the beacon: asking for any mail held for this station, and saying whether it holds mail for others (and power steps before it, if wanted)
+        audio = build_beacon(self.call, self.grid, self.levels, listening=True, mail_check=True, holds_mail=bool(self.mail.bag), level=self.beacon_sent_at, wide=self.wide, steps=self.power_steps, rig=self.rig, watts=self.watts)  # the beacon: asking for any mail held for this station, and saying whether it holds mail for others (and power steps before it, if wanted)
         window = (WIDE_SLOTS if self.wide else 1) * reply_slot(self.beacon_sent_at)  # how long to listen for answers: slots sized for this level
         return _with_lead(self._send(now, audio, "beacon", self.beacon_sent_at, "answer", window - REPLY_MARGIN_S, "wide window" if self.wide else ""), self.power_steps)  # then listen for the whole window (plus any extra margin a live station allows)
 
@@ -1160,7 +1162,7 @@ def _build(frame):  # a frame description from the library -> its audio
     if kind == "answer":  # an answer or a directed call
         return build_answer(frame["dest"], frame["origin"], ChannelReport(**frame["report"]), tuple(frame["levels"]), mail_check=frame["mail_check"], level=frame["level"], directed=frame["directed"], grid=frame.get("grid", ""))  # built, with the sender's locator (since 0.33)
     if kind == "beacon":  # a beacon
-        return build_beacon(frame["call"], frame["grid"], tuple(frame["levels"]), listening=frame["listening"], mail_check=frame["mail_check"], holds_mail=frame["holds_mail"], level=frame["level"], wide=frame["wide"], steps=bool(frame.get("steps")))  # built (with the power-steps flag, since 0.38)
+        return build_beacon(frame["call"], frame["grid"], tuple(frame["levels"]), listening=frame["listening"], mail_check=frame["mail_check"], holds_mail=frame["holds_mail"], level=frame["level"], wide=frame["wide"], steps=bool(frame.get("steps")), rig=frame.get("rig", 0), watts=frame.get("watts", 0))  # built (with the power-steps flag, since 0.38, and the rig type and watts, since 0.40)
     if kind == "notice":  # a mail notice
         return build_notice(frame["call"], frame["held"], frame["receipts"], frame["heard"], level=frame["level"])  # built
     if kind == "message":  # a link message frame
@@ -1173,7 +1175,7 @@ def _build(frame):  # a frame description from the library -> its audio
 
 _AS_TUPLES = ("history", "bulletins", "broadcasts")  # attributes whose items Python keeps as tuples
 _AS_SETS = ("worked", "refused", "done_ids", "bulletin_done")  # attributes Python keeps as sets
-_OWN = ("core", "mail", "busy", "stored", "stored_sig", "_busy_error", "power_steps")  # attributes kept here in Python, not in the library (power steps since 0.38: the library's beacon is built here with them)
+_OWN = ("core", "mail", "busy", "stored", "stored_sig", "_busy_error", "power_steps", "rig", "watts")  # attributes kept here in Python, not in the library (power steps since 0.38, rig type and watts since 0.40: the library's beacon is built here with them)
 
 
 class CompiledStation:  # one station, its rules in the compiled library (cpp/src/station.cpp)
@@ -1186,6 +1188,8 @@ class CompiledStation:  # one station, its rules in the compiled library (cpp/sr
         object.__setattr__(self, "stored_sig", None)  # which frame that was
         object.__setattr__(self, "_busy_error", None)  # an error raised inside the check, to pass on
         object.__setattr__(self, "power_steps", False)  # power steps before each beacon (since 0.38; added here, the library's timing allowed for in reply_margin by the caller)
+        object.__setattr__(self, "rig", 0)  # the rig type carried in each beacon (since 0.40)
+        object.__setattr__(self, "watts", 0)  # the watts carried in each beacon (since 0.40)
         self._ask("init", call, grid, None if levels is None else list(levels), close_when_done)  # set up (refuses a bad callsign as Python does)
         self.mail = Mailroom(clean_call(call))  # the mail kept between contacts
 
@@ -1205,7 +1209,8 @@ class CompiledStation:  # one station, its rules in the compiled library (cpp/sr
         if data is None:  # nothing to send
             return None  # nothing
         steps = self.power_steps and data["frame"]["type"] == "beacon"  # power steps before this beacon (since 0.38)
-        audio = _build(dict(data["frame"], steps=steps))  # the audio (a beacon's header saying whether steps came first)
+        extra = {"rig": self.rig, "watts": self.watts} if data["frame"]["type"] == "beacon" else {}  # a beacon carries the rig type and watts kept here (since 0.40)
+        audio = _build(dict(data["frame"], steps=steps, **extra))  # the audio (a beacon's header saying whether steps came first)
         if len(audio) != round(data["seconds"] * FS):  # the library's idea of its length must match
             raise RuntimeError(f"frame length mismatch: {len(audio)} samples built, {data['seconds'] * FS:.0f} expected")  # a fault, never ignored
         return _with_lead(Transmission(audio, data["kind"], data["level"], data["note"], data["delay"]), steps)  # the transmission, with its power steps if wanted

@@ -55,7 +55,7 @@ const int kHeaderTones = 24;  /* both header copies (HEADER_SYMBOLS) */
 const long kLongSamples = 714000;  /* a whole long beacon, in samples (51 tones of 14000; modem/longbeacon.py) */
 const int kLongLevel = 7;  /* the long beacon's level number (LONG_LEVEL) */
 const int kTypeLink = 0, kTypeAddressed = 1, kTypeBeacon = 2, kTypeAnswer = 3, kTypeAck = 4, kTypeIdent = 5, kTypeNotice = 7;  /* frame types */
-const int kControlBits[8] = {0, 0, 75, 139, 48, 61, 0, 192};  /* control frame bodies (CONTROL_BITS; the answer grew by its sender's locator in 0.33) */
+const int kControlBits[8] = {0, 0, 101, 139, 48, 61, 0, 192};  /* control frame bodies (CONTROL_BITS; the answer grew by its sender's locator in 0.33, the beacon by the rig type and watts in 0.40) */
 const int kAddressBits[2] = {28, 120};  /* address blocks (ADDRESS_BITS) */
 const int kAckOk = 0, kAckResend = 1, kAckHaveIt = 2, kAckLink = 3;  /* acknowledgment verdicts (control.py) */
 const double kSnrFloor = -30.0;  /* SNR_FLOOR_DB */

@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 16  /* the interface described in this file (16: the header reader accepts a beacon whose spare bit is set, meaning power steps came just before it (signal version 0.38); 15: kes_listener_candidates, the frames being received, for the panel's frame strip; 14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
+#define KES_ABI_VERSION 17  /* the interface described in this file (17: a beacon carries the rig type and watts, KesFields.rig_model and watts; 16: the header reader accepts a beacon whose spare bit is set, meaning power steps came just before it (signal version 0.38); 15: kes_listener_candidates, the frames being received, for the panel's frame strip; 14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -272,6 +272,8 @@ typedef struct KesFields {
     int nheld;  /* entries in held */
     int nreceipts;  /* entries in receipts */
     int nheard;  /* entries in heard */
+    long rig_model;  /* beacon: the rig type, a Hamlib model number (0: not said; since interface 17) */
+    long watts;  /* beacon: transmit power in whole watts (0: not said; since interface 17) */
 } KesFields;
 
 KES_API int kes_compress_length(int character);  /* modem/compress.py LENGTHS: the code length of a character 0..127 (-1 outside) */

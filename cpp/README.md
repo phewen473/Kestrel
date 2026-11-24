@@ -29,6 +29,7 @@ Interface 11 (0.31R2): the listener hands back every signature whose frame passe
 | `kes_tone_spread` (ABI 14, since 0.35) | `modem/mfsk.py` `tone_spread` (the sums behind the Doppler-spread reading) | to rounding | - |
 | `kes_listener_candidates` (ABI 15, since 0.37) | `live/listener.py` `Listener.progress` (the candidates the Python listener follows, for the frame strip) | exact | - |
 | `kes_read_header` spare bit (ABI 16, since 0.38) | `modem/frame.py` `_check_header`: a beacon's header may set the spare bit (power steps came first); any other frame's may not | exact | - |
+| `kes_pack_control` / `kes_unpack_control` beacon rig type and watts (ABI 17, since 0.40) | `modem/control.py` `pack_beacon`, `unpack`: the beacon's 101 bits, ending with the Hamlib model number (16) and watts (10) | exact | - |
 | `kes_pilot_fit` | `modem/mfsk.py` `pilot_frequency_fit` | to rounding (about 1e-13 Hz) | - |
 | `kes_viterbi_decode_known` | `modem/fec.py` `viterbi_decode(llrs, known)` | bit for bit | (expected-callsign decoding, 0.31R1) |
 | `kes_remove_steady` | `modem/notch.py` `remove_steady` | to rounding | (steady-signal notch, 0.31R1) |

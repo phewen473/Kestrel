@@ -54,6 +54,7 @@ RANKS = {"heard": 0, "called": 1, "contact": 2, "ended": 3}  # how far a stretch
 HEARD_EVENTS = ("heard", "message", "broadcast", "telemetry")  # received events that come from a named station
 LOG_MOST = 500  # each contact's traffic log keeps at most this many rows, oldest dropped first (since 0.38R2)
 LOG_HEARD = ("beacon", "long beacon", "answer", "mail notice")  # frames heard that get a row of their own in the traffic log (acknowledgments and identifications inside a contact would only crowd it)
+ANTENNA = re.compile(r"^\s*(?:[A-Z0-9/]+\s+)?ANT\s+(\S.*?)\s*$", re.IGNORECASE)  # "ANT End-fed half-wave (EFHW)", sent after a contact by itself (since 0.40)
 RIG_POWER = re.compile(r"\bRIG\s+(.+?)\s+(\?|\d+(?:\.\d+)?)\s*W\b", re.IGNORECASE)  # "... RIG FT-991A 50W": the quick message "Rig and power" (since 0.38R2)
 
 
@@ -65,6 +66,11 @@ def rig_power_from(text):  # a received message's radio and power, if it says
     radio = found.group(1).strip()  # the radio, as written
     power = "" if found.group(2) == "?" else f"{float(found.group(2)):g}"  # the watts ("?" means not known)
     return ("" if radio == "?" else radio), power  # both
+
+
+def describe_field(name, value):  # one learned field in words (since 0.40)
+    """Return "radio X", "power N W" or "antenna X" for a learned field."""
+    return {"radio": f"radio {value}", "power_w": f"power {value} W", "antenna": f"antenna {value}"}.get(name, f"{name} {value}")  # the words
 
 
 def grid_center(grid):  # where a Maidenhead grid locator is
@@ -107,7 +113,7 @@ def blank_record(call):  # a new contact with nothing known yet
     now = time.time()  # the moment it is made
     record = {"call": call, "band": ""}  # the callsign, and the band it was last heard on
     record.update({name: "" for name in FIELDS})  # the operator's fields, empty
-    record.update({"created": now, "updated": now, "last_heard": {}, "history": [], "log": []})  # when, and nothing heard yet (the traffic log since 0.38R2)
+    record.update({"created": now, "updated": now, "last_heard": {}, "history": [], "log": [], "antenna_sent": ""})  # when, and nothing heard yet (the traffic log since 0.38R2; antenna_sent, this station's antenna as last sent to it, since 0.40)
     return record  # the record
 
 
@@ -270,19 +276,56 @@ class ContactBook(dict):  # callsign -> record, with the file and the history ru
 
     def _learn_from(self, record, when, text):  # a received message's radio and power, into the contact (the book is locked) (since 0.38R2)
         """Set `record`'s radio and power from a "RIG <radio> <n>W" message or a telemetry message's power, and log a row saying what changed."""
+        antenna = ANTENNA.match(text or "")  # the antenna message sent after a contact (since 0.40)
+        if antenna:  # it is one
+            self._learn(record, when, {"antenna": antenna.group(1)[:40]}, "after the contact")  # its antenna
+            return  # nothing else in it
         radio, power = rig_power_from(text)  # the quick message "Rig and power"
         if radio is None:  # not that message: perhaps telemetry
             info = telemetry_parse(text)  # read it as telemetry
             radio, power = "", ("" if not info or info.get("power_w") is None else f"{info['power_w']:g}")  # telemetry gives the power only
-        changes = {name: value for name, value in (("radio", radio), ("power_w", power)) if value and str(record.get(name, "")) != value}  # what is new
+        self._learn(record, when, {"radio": radio, "power_w": power}, "updated from its message")  # what it said
+
+    def _learn(self, record, when, fields, how):  # fields a station sent about itself, into its record (the book is locked) (since 0.40)
+        """Set the non-empty `fields` (radio, power_w, antenna) of `record` that differ from what it holds, log a "details" row saying `how`, and queue the news for the panel."""
+        changes = {name: str(value) for name, value in fields.items() if value and str(record.get(name, "")) != str(value)}  # what is new
         if not changes:  # nothing new
             return  # leave it
         record.update(changes)  # into the contact
         record["updated"] = when  # changed now
-        said = ", ".join(f"radio {changes['radio']}" if name == "radio" else f"power {changes['power_w']} W" for name in changes)  # what it said, in words
-        record["log"].append({"t": when, "dir": "RX", "what": "details", "band": "", "dial_khz": 0.0, "level": "", "snr_db": None, "text": f"updated from its message: {said}"})  # a row saying so
+        said = ", ".join(describe_field(name, value) for name, value in changes.items())  # what it said, in words
+        record["log"].append({"t": when, "dir": "RX", "what": "details", "band": "", "dial_khz": 0.0, "level": "", "snr_db": None, "text": f"{how}: {said}"})  # a row saying so
         del record["log"][:-LOG_MOST]  # no more than the most kept
-        self.learned.append((record["call"], changes))  # for the panel to tell the operator
+        self.learned.append((record["call"], changes, how))  # for the panel to tell the operator
+
+    def from_beacon(self, call, radio, watts, when=None):  # a beacon said what radio and power the station runs (since 0.40)
+        """Set saved contact `call`'s radio (a name) and power (watts, a number) from its beacon, where given and different; return the fields changed."""
+        with self.lock:  # one change at a time
+            record = self.get(call)  # the contact
+            if record is None:  # not saved
+                return {}  # nothing to do
+            before = dict(record)  # as it was
+            self._learn(record, time.time() if when is None else when, {"radio": radio, "power_w": f"{watts:g}" if watts else ""}, "from its beacon")  # learned
+            changes = {name: record[name] for name in ("radio", "power_w") if record[name] != before.get(name)}  # what changed
+        if changes:  # something did
+            self.save()  # write the file
+        return changes  # what changed
+
+    def antenna_to_send(self, call, antenna):  # whether this station's antenna is still to be sent to `call` (since 0.40)
+        """Return True when `antenna` is set and differs from what was last sent to `call` (any station: saved or not; unsaved ones are asked every contact)."""
+        if not antenna:  # none chosen in Settings
+            return False  # nothing to send
+        record = self.get(call)  # its record, if saved
+        return record is None or record.get("antenna_sent", "") != antenna  # not saved, or not sent this antenna yet
+
+    def antenna_sent(self, call, antenna):  # this station's antenna went to `call` (since 0.40)
+        """Note that `antenna` was sent to saved contact `call`, so it is not sent again until it changes."""
+        with self.lock:  # one change at a time
+            record = self.get(call)  # its record
+            if record is None:  # not saved
+                return  # nothing kept
+            record["antenna_sent"] = antenna  # remembered
+        self.save()  # write the file
 
     def add_log(self, call, rows):  # rows made elsewhere (receptions from the 48-hour heard log, when a station is first saved)
         """Add `rows` (traffic-log rows) to `call`'s traffic log, oldest first, skipping any already there at the same time and of the same kind; return how many were added."""

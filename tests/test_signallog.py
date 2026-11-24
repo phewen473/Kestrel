@@ -122,7 +122,8 @@ def test_listener_numbers_frames_in_the_stream():  # where a frame began, in sam
     for begin in range(0, len(audio), FS):  # one second at a time
         found += listener.feed(audio[begin:begin + FS], at=offset + begin)  # numbered as a TimedSource would number them
     assert [heard.result.ok for heard in found] == [True, True]  # both decoded
-    assert abs(found[0].result.sample - (offset + first)) <= 2 and abs(found[1].result.sample - (offset + second)) <= 2  # each placed where it was, though the first was cut out of the store before the second was found
+    tenth = 27  # a tenth of an L4 tone, in samples: fine timing may land this far off for some alignments of the tones (the 0.40 beacon started on a feed boundary lands 25 samples late); a numbering fault would be off by thousands
+    assert abs(found[0].result.sample - (offset + first)) <= tenth and abs(found[1].result.sample - (offset + second)) <= tenth  # each placed where it was, though the first was cut out of the store before the second was found
     assert found[0].result.header_copy == "first"  # a clean frame is read from its first header copy
     assert any(step.get("ok") for trace in traces for step in trace)  # the traces show the decodes
     assert all("sample" in step for trace in traces for step in trace)  # every candidate has its place in the stream

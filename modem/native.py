@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 16  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 17  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
@@ -36,7 +36,8 @@ class _Fields(ctypes.Structure):  # KesFields in kestrel.h: the named fields of 
                 ("hops", ctypes.c_long), ("life_hours", ctypes.c_long),  # an addressed message's counters
                 ("snr_db", ctypes.c_double), ("fade_index", ctypes.c_double), ("offset_hz", ctypes.c_double), ("want_level", ctypes.c_int),  # a channel report
                 ("held", ctypes.c_long * 3), ("receipts", ctypes.c_long * 3), ("heard", ctypes.c_long * 3),  # a mail notice's three lists
-                ("nheld", ctypes.c_int), ("nreceipts", ctypes.c_int), ("nheard", ctypes.c_int)]  # and their lengths
+                ("nheld", ctypes.c_int), ("nreceipts", ctypes.c_int), ("nheard", ctypes.c_int),  # and their lengths
+                ("rig_model", ctypes.c_long), ("watts", ctypes.c_long)]  # a beacon's rig type and power (since interface 17)
 
 
 _FIELDS_P = ctypes.POINTER(_Fields)  # a pointer to the fields

@@ -210,9 +210,9 @@ def build_control(frame_type, fields, level=0, steps=False):  # the transmitter 
     return transmission(np.concatenate([pattern_tones(level), header_syms, body_syms, header_syms]), LEVELS[level])  # the level's preamble, the header, the body, then the header again: one waveform with faded ends (since 0.32)
 
 
-def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False, steps=False):  # "here I am"
+def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False, steps=False, rig=0, watts=0):  # "here I am" (with the rig type and watts since 0.40)
     """Return the audio of a beacon from `call` at grid locator `grid`; `wide` asks answering stations to spread over four reply slots; `steps` says power steps were sent just before it (since 0.38; the caller sends them)."""
-    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide), level, steps=steps)  # pack the fields and send
+    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide, rig, watts), level, steps=steps)  # pack the fields and send
 
 
 def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0, directed=False, grid=""):  # "I hear you" (or, with directed, "I am calling you")

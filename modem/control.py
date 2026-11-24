@@ -12,6 +12,7 @@ import numpy as np  # numerical arrays
 from . import native  # the compiled library, when it is in use
 from .address import bits_to_call, call_to_bits  # callsign <-> 48 bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
+from .params import RIG_BITS, WATT_BITS  # a beacon's rig type and watts (since 0.40)
 from .params import (  # frame format numbers
     ACK_STATUS_BITS, CALL_BITS, CONTROL_BITS, FADE_BITS, FADE_STEPS_PER_UNIT, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER,  # (continued)
     FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_NOTICE, GRID_BITS, HASH_BITS, NO_GRID, NOTICE_SLOTS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
@@ -96,13 +97,32 @@ def bits_to_levels(bits):  # 8 bits -> tuple of speed levels
     return tuple(level for level in range(LEVEL_MASK_BITS) if mask & (1 << level))  # every level whose bit is set
 
 
-def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail=False, wide=False):  # beacon fields -> 75 bits
-    """Return the body bits of a beacon: who is calling, where from, what it can do and what it wants."""
-    done = native.pack_control(FRAME_TYPE_BEACON, origin=call, grid=grid, levels=levels, listening=listening, mail_check=mail_check, holds_mail=holds_mail, wide=wide)  # compiled, when the library is in use
+def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail=False, wide=False, rig=0, watts=0):  # beacon fields -> 101 bits
+    """Return the body bits of a beacon: who is calling, where from, what it can do, what it wants, and (since 0.40) its rig type (Hamlib model number) and power in watts, 0 for either when not known."""
+    rig, watts = beacon_rig(rig), beacon_watts(watts)  # held to what the fields carry
+    done = native.pack_control(FRAME_TYPE_BEACON, origin=call, grid=grid, levels=levels, listening=listening, mail_check=mail_check, holds_mail=holds_mail, wide=wide, rig_model=rig, watts=watts)  # compiled, when the library is in use
     if done is not None:  # it was
         return done  # the same bits
     flags = [int(listening), int(mail_check), int(holds_mail), int(wide)]  # will take answers / wants its mail / holds mail for others / wide reply window (four slots instead of one)
-    return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # callsign, locator, levels, flags
+    return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8), int_to_bits(rig, RIG_BITS), int_to_bits(watts, WATT_BITS)])  # callsign, locator, levels, flags, rig type, watts
+
+
+def beacon_rig(rig):  # a rig type as a beacon carries it (since 0.40)
+    """Return `rig` (a Hamlib model number, or text starting with one, such as "1035  Yaesu FT-991") as a whole number 0 to 65535; 0 when it is not one."""
+    try:  # it may be text
+        number = int(str(rig).split()[0]) if str(rig).strip() else 0  # the number at its start
+    except (ValueError, IndexError):  # not a number
+        return 0  # not known
+    return number if 0 <= number < (1 << RIG_BITS) else 0  # in range, or not known
+
+
+def beacon_watts(watts):  # a power as a beacon carries it (since 0.40)
+    """Return `watts` rounded to whole watts and held to 0 to 1023; 0 when it is not a number."""
+    try:  # it may be missing
+        number = int(round(float(watts or 0)))  # whole watts
+    except (TypeError, ValueError, OverflowError):  # not a number
+        return 0  # not known
+    return max(0, min((1 << WATT_BITS) - 1, number))  # held to what the field carries
 
 
 def answer_grid_bits(grid):  # the sender's locator in an answer -> 15 bits
@@ -172,9 +192,11 @@ def unpack(frame_type, bits):  # body bits -> named fields
         raise ValueError("wrong length for this control frame")  # refuse
     if frame_type == FRAME_TYPE_BEACON:  # a beacon
         rest = bits[CALL_BITS:]  # what follows the callsign
-        flags = rest[GRID_BITS + LEVEL_MASK_BITS:]  # the four flag bits
+        flags = rest[GRID_BITS + LEVEL_MASK_BITS:GRID_BITS + LEVEL_MASK_BITS + 4]  # the four flag bits
+        rig = rest[GRID_BITS + LEVEL_MASK_BITS + 4:]  # the rig type and watts (since 0.40)
         return {"origin": bits_to_call(bits[:CALL_BITS]), "grid": bits_to_grid(rest[:GRID_BITS]), "levels": bits_to_levels(rest[GRID_BITS:GRID_BITS + LEVEL_MASK_BITS]),  # (continued)
-                "listening": bool(flags[0]), "mail_check": bool(flags[1]), "holds_mail": bool(flags[2]), "wide": bool(flags[3])}  # who, where, what it can do, what it wants
+                "listening": bool(flags[0]), "mail_check": bool(flags[1]), "holds_mail": bool(flags[2]), "wide": bool(flags[3]),  # who, where, what it can do, what it wants
+                "rig": bits_to_int(rig[:RIG_BITS]), "watts": bits_to_int(rig[RIG_BITS:RIG_BITS + WATT_BITS])}  # what it runs (0: not said)
     if frame_type == FRAME_TYPE_ANSWER:  # an answer to a beacon
         grid = answer_bits_grid(bits[2 * CALL_BITS:2 * CALL_BITS + GRID_BITS])  # the sender's locator, after the two callsigns
         rest = bits[2 * CALL_BITS + GRID_BITS:]  # what follows the callsigns and the locator
@@ -200,7 +222,8 @@ def _named(frame_type, f):  # the library's fields -> the same named fields unpa
     report = ChannelReport(f.snr_db, f.fade_index, f.offset_hz, f.want_level)  # the channel report
     if frame_type == FRAME_TYPE_BEACON:  # a beacon
         return {"origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "levels": levels,  # (continued)
-                "listening": bool(f.listening), "mail_check": bool(f.mail_check), "holds_mail": bool(f.holds_mail), "wide": bool(f.wide)}  # who, where, what it can do, what it wants
+                "listening": bool(f.listening), "mail_check": bool(f.mail_check), "holds_mail": bool(f.holds_mail), "wide": bool(f.wide),  # who, where, what it can do, what it wants
+                "rig": int(f.rig_model), "watts": int(f.watts)}  # what it runs (0: not said; since 0.40)
     if frame_type == FRAME_TYPE_ANSWER:  # an answer
         return {"dest": f.dest.decode("ascii"), "origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "report": report, "levels": levels,  # (continued)
                 "mail_check": bool(f.mail_check), "directed": bool(f.directed)}  # who to whom, the report, the levels, the two flags

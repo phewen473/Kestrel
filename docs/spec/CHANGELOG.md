@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.40 (draft) - November 24, 2026
+
+- **Signal version 0.40: rig type and watts in every beacon** (Section 5.8, modem/control.py, cpp/src/packing.cpp): the beacon adds the station's Hamlib model number (16 bits) and transmit power in whole watts (10 bits, at most 1023), 0 for either when not said: 101 field bits (was 75), 54 body tones (was 42), 36 s at L0 (was 31 s), 12 s at L1, 8.1 s at L2 (was 7.0 s), 4.0 s at L3, 2.0 s at L4; reply slots follow. The reference program sends the rig type chosen in Settings > Radio and the radio's power setting (else the full power in Settings > Station). Library interface 17 (KesFields.rig_model and watts). **Stations following 0.39 or earlier cannot read 0.40 beacons, nor 0.40 stations theirs;** long beacons are unchanged (they have no room).
+- **Station details** (Section 6.17, live/contacts.py): a saved contact's radio (named from Hamlib's list, "Yaesu FT-991 (Hamlib 1035)") and power fill in from its beacons; once a contact locks the panel sends its antenna type ("ANT <type>", once per antenna to a saved contact) and fills in the other station's from its message. Each change is logged as a "details" row and told in the Activity log.
+- **Reference program:** Settings > Station gains Location and Antenna (a fixed list of common HF antennas, with Homebuilt and Other; both fill into quick messages as {location} and {antenna}); a double-click on Messages received or Stations heard opens the message or station in full in a window of its own; Clear under Queue message; Stop calling moved under Broadcast to ALL; Stations heard and Messages received show the date with the time; a sorted column's heading shows an arrow and the main lists keep the chosen order as rows arrive.
+- Tests: tests/test_beacon_rig.py.
+
 ## 0.39R1 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.39); reference program only.

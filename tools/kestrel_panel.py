@@ -46,7 +46,7 @@ from link.params import HOP_LIMIT, MAIL_LIFE_HOURS  # how far and how long mail 
 from modem import call_hash  # the short code a mail notice uses for a callsign  # noqa: E402
 from modem import native  # the compiled modem library, to say in About and --check whether it is in use  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
-from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
+from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, describe_field, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
 from live import spaceweather  # today's measured sunspot number and space-weather warnings (since 0.34R1)  # noqa: E402
 from live import propcheck, pskspot, skywatch  # the prediction check, PSK Reporter spotting, and the bands now from ionosondes and spots (since 0.35)  # noqa: E402
 from live import signalwatch  # recognizing the signals in the passband: type, frequency, how long (since 0.37)  # noqa: E402
@@ -55,6 +55,7 @@ import frame_strip  # drawing the frame strip under the receive scope (since 0.3
 from live.framestrip import FrameStrip  # what the frame strip shows (since 0.37)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import antennas  # the antenna types offered in Settings > Station (since 0.39R2)  # noqa: E402
+from modem.control import beacon_rig, beacon_watts  # the rig type and watts as a beacon carries them (since 0.40)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
@@ -67,7 +68,7 @@ from modem.levels import LEVELS, level_name  # the speed levels, for how wide ea
 from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
 from modem.longnote import CHARS as LONG_NOTE_FRAME_CHARS, MOST_CHARS as LONG_NOTE_CHARS, note_fields  # long notes: characters per frame, the most in a note, and the check that a note can be sent (since 0.34)  # noqa: E402
 from live.notes import MOST_TRIES as LONG_NOTE_TRIES, LongNotes  # how many tries a long note gets, and sending long notes, receipts and resends, and putting received ones together (since 0.34)  # noqa: E402
-from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
+from modem.params import FRAME_TYPE_BEACON, LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # (the beacon's frame type, since 0.40) tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
 SETTINGS_FILE = os.path.join(data_dir(), "panel.json")  # where the panel remembers its settings (local/ from the source folder; the user's profile when installed)
@@ -400,6 +401,7 @@ class Panel:  # the control panel window
         self.frames = FrameStrip()  # the Kestrel frame arriving or last heard, and its message's parts, for the frame strip (since 0.37)
         self.steps_heard = {}  # callsign -> (time, powersteps.Reading): the last power steps read before each station's beacon (since 0.38)
         self.gap_said = {}  # callsign -> the UTC hour its prediction check was last told in the Activity log (since 0.39)
+        self.rig_names = {}  # Hamlib model number -> "Maker Model", to name the rig a beacon carries (filled in the background; since 0.40)
         self.strip_at = 0.0  # when the frame strip was last drawn
         self.watch_at = 0.0  # when the watcher last looked
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
@@ -571,6 +573,7 @@ class Panel:  # the control panel window
         root.after(200, self.draw_meters)  # start drawing the level meters
         root.after(300, lambda: theme.color_window(root, self.colors))  # the title bar again, now the window is on screen
         root.after(700, self.autostart)  # start listening, once the window is up
+        root.after(1500, self.load_rig_names)  # the Hamlib names, to name the rig a beacon carries (since 0.40)
 
     # ---- building blocks ----
 
@@ -1771,6 +1774,34 @@ class Panel:  # the control panel window
             if self.spotter.due():  # time to send
                 threading.Thread(target=self.spotter.tick, daemon=True).start()  # off the window's thread
 
+    def send_antenna(self, partner):  # a contact has locked: this station's antenna goes to the other, once per antenna (since 0.40)
+        """Queue the message "ANT <antenna>" to `partner` when an antenna is chosen in Settings and it was not sent to `partner` before (a saved contact remembers; others get it every contact)."""
+        antenna = self.settings.get("antenna", "")  # the antenna chosen in Settings > Station
+        if not partner or not self.contacts.antenna_to_send(partner, antenna):  # nobody, nothing chosen, or already sent
+            return  # nothing to send
+        words = f"ANT {antenna}"  # the message the other station's contact book reads
+        self.ask_station(lambda station: station.queue(words, to=partner) or True, f"sending {partner} this station's antenna: {antenna}")  # queued in the contact, in the station's own thread
+        self.contacts.antenna_sent(partner, antenna)  # remembered, so it goes once
+
+    def load_rig_names(self):  # the Hamlib model numbers and names, to name the rig a beacon carries (since 0.40)
+        """Fill self.rig_names (number -> "Maker Model") from the rig control program's list, in the background."""
+        program = self.settings.get("rigctld") or find_rigctld()  # the rig control program
+        if not program:  # none on this computer
+            return  # beacons' rigs are named by number
+        def job():  # the list can take a while the first time
+            try:  # it may fail
+                self.rig_names = {number: name for number, name in list_models(program)}  # kept
+            except Exception:  # noqa: BLE001 - anything: names by number only
+                pass  # left empty
+        threading.Thread(target=job, daemon=True).start()  # in the background
+
+    def rig_called(self, number):  # a beacon's rig type in words (since 0.40)
+        """Return the rig a beacon's Hamlib model `number` stands for, such as "Yaesu FT-991 (Hamlib 1035)", or "" for 0."""
+        if not number:  # not said
+            return ""  # nothing
+        name = self.rig_names.get(int(number), "")  # from the list, when it has arrived
+        return f"{name} (Hamlib {number})" if name else f"Hamlib rig {number}"  # named, or by number
+
     def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
         call = (result.fields or {}).get("origin") or (result.origin if result.frame_type == 1 else "")  # the callsign it carries: in a beacon, an answer, an identification or a fully addressed message
         station = self.station  # the running station, if any
@@ -1788,6 +1819,8 @@ class Panel:  # the control panel window
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.after_heard(call, grid, result)  # PSK Reporter and the prediction check (since 0.35)
+        if result.frame_type == FRAME_TYPE_BEACON and ((result.fields or {}).get("rig") or (result.fields or {}).get("watts")):  # a beacon saying what it runs (since 0.40)
+            self.contacts.from_beacon(call, self.rig_called(result.fields.get("rig")), result.fields.get("watts") or 0)  # into its contact record, when it is saved
         self.watch.kestrel_heard(1500.0 + result.offset_hz, signal_width_hz(result.level), f"{level_name(result.level)} {call}")  # the recognized signal there is a Kestrel frame (since 0.37)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(),  # (continued)
@@ -2015,6 +2048,7 @@ class Panel:  # the control panel window
             grid = self.contacts.get(station.partner, {}).get("grid", "") or (self.stations.set(self.heard_rows[station.partner], "grid") if station.partner in self.heard_rows else "")  # its grid locator, if known
             self.contact = {"call": station.partner, "start": time.time(), "end": time.time(), "dial_khz": self.dial_hz() / 1000.0, "grid": grid, "sent": 0, "received": 0, "best_level": 0, "snr": None}  # the contact so far
             self.logbook.write("contact start", direction="--", station=self.settings["call"], **{"from": self.settings["call"]}, to=station.partner, text=f"locked; role {station.role}", dial_khz=round(self.dial_hz() / 1000.0, 1), rig=self.rig_name(), power_w=self.power_w())  # the logbook
+            self.send_antenna(station.partner)  # this station's antenna to the other, once (since 0.40)
         if in_contact:  # under way
             self.contact["end"] = time.time()  # it lasts at least until now
             self.contact["best_level"] = max(self.contact["best_level"], station.tx_level, station.want)  # the fastest level used
@@ -2056,6 +2090,8 @@ class Panel:  # the control panel window
     def tick(self, station, now):  # called by the live loop once every tenth of a second, in the station's own thread
         self.station_now = now  # the station's clock, for requests that write to its log
         station.power_steps = self.settings.get("beacon_type") == "stepped"  # power steps before each short beacon, when chosen (since 0.38; kept in Python by both stations)
+        station.rig = beacon_rig(self.settings.get("rig_model", ""))  # this station's rig type, the Hamlib model number, for each beacon (0 with no rig chosen; since 0.40)
+        station.watts = beacon_watts(self.meters["set_w"] or self.settings.get("max_power_w") or 0)  # its power: the radio's setting when rig control reads it, else the full power from Settings (since 0.40)
         with self.actions_lock:  # take the waiting requests
             waiting, self.actions = self.actions, []  # all of them
         left = [action for action in waiting if not action(station)]  # do each; keep any that cannot be done yet
@@ -2567,10 +2603,10 @@ class Panel:  # the control panel window
                 row = self.note_rows.get((dest, text))  # its row in Messages to send
                 if row is not None and self.to_send.exists(row):  # still listed
                     self.to_send.set(row, "state", "long note: " + words)  # shown, twice a second
-        while self.contacts.learned:  # a saved station said what radio and power it runs (since 0.38R2)
-            who, changes = self.contacts.learned.pop(0)  # the oldest news
-            said = ", ".join(f"radio {value}" if name == "radio" else f"power {value} W" for name, value in changes.items())  # in words
-            self.say(f"{who}'s contact record updated from its message: {said}")  # tell the operator
+        while self.contacts.learned:  # a saved station said what radio, power or antenna it runs (since 0.38R2; from beacons and after contacts since 0.40)
+            who, changes, how = self.contacts.learned.pop(0)  # the oldest news
+            said = ", ".join(describe_field(name, value) for name, value in changes.items())  # in words
+            self.say(f"{who}'s contact record updated {how}: {said}")  # tell the operator
         while not self.note_events.empty():  # each event since the last look
             kind, *rest = self.note_events.get()  # what happened
             if kind == "received":  # a note arrived for this station, or for everyone
@@ -3446,7 +3482,7 @@ class Panel:  # the control panel window
         checked = propcheck.describe_station(call) if call else ""  # heard and reported SNR against the P.533 prediction, both ways (since 0.39)
         ttk.Label(rig, text="Against prediction").grid(row=4, column=0, sticky="nw", padx=(4, 8), pady=3)  # label
         ttk.Label(rig, text=checked or "nothing checked yet (needs a grid locator and a decoded frame; reports from the station show the other way)", wraplength=380, justify="left").grid(row=4, column=1, sticky="w", pady=3)  # the comparison
-        ttk.Label(rig, text="Radio and power fill in by themselves when the station sends them (its \"Rig and power\" quick message, or telemetry); the antenna you fill in.", font="KestrelSmall", wraplength=400, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # where they come from (since 0.38R2)
+        ttk.Label(rig, text="Radio and power fill in by themselves from the station's beacons (and its \"Rig and power\" message or telemetry); the antenna after a contact with it.", font="KestrelSmall", wraplength=400, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # where they come from (since 0.38R2)
         notes_row = ttk.Frame(top)  # the notes
         notes_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))  # under both halves
         notes_row.columnconfigure(1, weight=1)  # the box takes the width

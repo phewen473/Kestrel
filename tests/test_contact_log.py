@@ -62,7 +62,7 @@ class TrafficLogTest(unittest.TestCase):  # each beacon and message gets a row
         self.book.observe("message", 1000.0, {"direction": "RX", "from": "Q1AA", "to": "Q2BB", "text": "Q1AA HANK FM05 RIG FT-991A 50W"})  # it says what it runs
         self.assertEqual(self.book["Q1AA"]["radio"], "FT-991A")  # the radio
         self.assertEqual(self.book["Q1AA"]["power_w"], "50")  # the watts
-        self.assertEqual(self.book.learned, [("Q1AA", {"radio": "FT-991A", "power_w": "50"})])  # news for the panel
+        self.assertEqual(self.book.learned, [("Q1AA", {"radio": "FT-991A", "power_w": "50"}, "updated from its message")])  # news for the panel, with where it came from (since 0.40)
         self.assertEqual(self.what()[-1], "details")  # and a row saying so
 
     def test_learns_power_from_telemetry(self):  # telemetry carries the power

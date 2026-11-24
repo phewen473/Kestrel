@@ -36,6 +36,8 @@ const int kLifeBits = 5;  /* lifetime (LIFE_BITS) */
 const int kLifeUnit = 2;  /* hours per lifetime step (LIFE_UNIT_HOURS) */
 const int kLevelBits = 3;  /* a level number (LEVEL_BITS) */
 const int kMaskBits = 8;  /* the list of levels (LEVEL_MASK_BITS) */
+const int kRigBits = 16;  /* a beacon's rig type, the Hamlib model number (RIG_BITS, since interface 17) */
+const int kWattBits = 10;  /* a beacon's power in whole watts (WATT_BITS, since interface 17) */
 const int kGridBits = 15;  /* a grid locator (GRID_BITS) */
 const int kPartBits = 3;  /* a part number (PART_BITS) */
 const int kStatusBits = 2;  /* an acknowledgment's verdict (ACK_STATUS_BITS) */
@@ -53,7 +55,7 @@ const int kLengthBits = 8;  /* the character count (LENGTH_BITS) */
 const size_t kMaxChars = 200;  /* longest message (MAX_CHARS) */
 const int kSizes[4] = {50, 100, 150, 200};  /* the four size classes, in plain characters (SIZE_CLASSES) */
 const int kAddressBits[2] = {kLinkBits + kLevelBits + kMsgBits, 2 * kCallBits + kMsgBits + kHopBits + kLifeBits};  /* address block of a link frame (28) and an addressed frame (120) (ADDRESS_BITS) */
-const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4, 2 * kCallBits + kGridBits + kReportBits + kMaskBits + 2,  /* beacon 75, answer 139 (with its sender's locator since 0.33) (CONTROL_BITS)... */
+const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4 + kRigBits + kWattBits, 2 * kCallBits + kGridBits + kReportBits + kMaskBits + 2,  /* beacon 101 (75 before interface 17), answer 139 (with its sender's locator since 0.33) (CONTROL_BITS)... */
                              kLinkBits + kMsgBits + kPartBits + kStatusBits + kReportBits, kCallBits + kLinkBits + 4, 0, kCallBits + 3 * kSlots * kHashBits};  /* ...ack 48, ident 61, notice 192 (types 0, 1 and 6 have none) */
 const char kFields[] = "ABCDEFGHIJKLMNOPQR";  /* grid locator field letters (control.py FIELDS) */
 const unsigned long long kNoGrid = (1ULL << kGridBits) - 1;  /* an answer's "no locator set" (NO_GRID: all ones; real locators run 0 to 32399) */
@@ -556,6 +558,11 @@ KES_API long kes_pack_control(int frame_type, const KesFields *f, uint8_t *out) 
         v.push_back(static_cast<uint8_t>(f->mail_check));  /* wants its mail */
         v.push_back(static_cast<uint8_t>(f->holds_mail));  /* holds mail for others */
         v.push_back(static_cast<uint8_t>(f->wide));  /* wide reply window */
+        if (f->rig_model < 0 || f->rig_model >= (1L << kRigBits) || f->watts < 0 || f->watts >= (1L << kWattBits)) {  /* out of range */
+            return -1;  /* refuse (the Python reference holds them in range first) */
+        }  /* end of the check */
+        put(v, static_cast<unsigned long long>(f->rig_model), kRigBits);  /* the rig type (since interface 17) */
+        put(v, static_cast<unsigned long long>(f->watts), kWattBits);  /* the watts (since interface 17) */
         break;  /* done */
     case 3: {  /* an answer: two callsigns, the sender's locator, a report, levels, two flags */
         if (!clean_call(f->dest, a) || !clean_call(f->origin, b)) {  /* not addresses */
@@ -648,6 +655,8 @@ KES_API int kes_unpack_control(int frame_type, const uint8_t *bits, size_t n, Ke
         f->mail_check = flags[1];  /* wants its mail */
         f->holds_mail = flags[2];  /* holds mail */
         f->wide = flags[3];  /* wide reply window */
+        f->rig_model = static_cast<long>(get(flags + 4, kRigBits));  /* the rig type (since interface 17) */
+        f->watts = static_cast<long>(get(flags + 4 + kRigBits, kWattBits));  /* the watts (since interface 17) */
         return 0;  /* done */
     }  /* end of the beacon */
     case 3: {  /* an answer */
