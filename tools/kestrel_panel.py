@@ -498,7 +498,8 @@ class Panel:  # the control panel window
         ttk.Button(keep, text="Remove from list", command=self.remove_from_list).pack(side="left", padx=4)  # off this list; a contact record is kept (since 0.39; was Remove contact)
         ttk.Button(keep, text="Contacts...  Ctrl+K", command=self.contacts_window).pack(side="left", padx=4)  # the contact records: view, search, change, delete (since 0.39)
         ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
-        self.stations.bind("<Double-1>", lambda event: self.open_station_record())  # a double-click opens the station's contact record (a new one, filled in from what was heard, if it is not saved yet), and puts its callsign in the To box
+        self.stations.bind("<Double-1>", lambda event: self.station_detail_window())  # a double-click opens a window with everything shown about the station, in full (since 0.40; its Contact record button opens the record, as a double-click did before)
+        self.received.bind("<Double-1>", lambda event: self.message_detail_window())  # a double-click opens the message in a window of its own, to read in full (since 0.40)
         self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
         self.station_menu.add_command(label="Respond (call this station)", accelerator="Ctrl+Y", command=self.respond)  # call it by name
         self.station_menu.add_command(label="Contact record...", command=self.open_station_record)  # its record (as a double-click)
@@ -3203,6 +3204,88 @@ class Panel:  # the control panel window
                 self.contact_window(call)  # a new record for it
             return  # done
         self.contacts_window()  # no callsign: the contacts list, to search and pick one (since 0.39)
+
+    def big_text(self, parent, words, height):  # a read-only text area in larger letters, for reading a message in full (since 0.40)
+        """Return a Text widget in `parent` holding `words`, wrapped, read-only, in the panel's font four points larger."""
+        size = int(self.settings.get("font_size") or 9) + 4  # larger than the lists
+        box = tk.Text(parent, height=height, width=60, wrap="word", font=(self.settings.get("font_family") or "Segoe UI", size))  # the area
+        box.configure(background=self.colors["text_bg"], foreground=self.colors["text_fg"], insertbackground=self.colors["text_fg"], padx=8, pady=6)  # in the chosen look
+        box.insert("1.0", words)  # the words
+        box.configure(state="disabled")  # read only (it can still be selected and copied)
+        return box  # for placing
+
+    def copy_text(self, words):  # put words on the clipboard (since 0.40)
+        self.root.clipboard_clear()  # empty it
+        self.root.clipboard_append(words)  # the words
+        self.say("copied to the clipboard")  # confirm
+
+    def message_detail_window(self):  # a double-click on Messages received: the message in full, in a window of its own (since 0.40)
+        rows = self.received.selection()  # the chosen row
+        if not rows:  # none
+            return  # nothing to show
+        clock, who, text = (self.received.set(rows[0], name) for name in ("time", "who", "text"))  # what the list shows
+        sender = who.split()[0] if who.split() else ""  # the sender's callsign (the list may add "to ALL" or "(long note)")
+        kind = "long note" if "(long note)" in who else ("broadcast to ALL" if "ALL" in who.split() else "message")  # what it was
+        found = next((row for row in reversed((self.contacts.get(sender) or {}).get("log", [])) if row.get("dir") == "RX" and row.get("text", "").strip() == text.strip()), None)  # its row in the sender's traffic log, when the sender is a saved contact
+        top = self.window("message", f"Kestrel - message from {sender or 'unknown'}")  # the window
+        head = ttk.Frame(top, padding=(10, 10, 10, 4))  # the facts about it
+        head.pack(fill="x")  # at the top
+        facts = [("From", sender), ("What", kind), ("Received", f"{clock} (local)" + (f"  ·  {utc(found['t'])} UTC" if found else ""))]  # always known
+        if found:  # more from the traffic log
+            facts.append(("Heard", "  ·  ".join(part for part in (found.get("band", ""), f"{found['dial_khz']:.1f} kHz" if found.get("dial_khz") else "", found.get("level", ""), f"{found['snr_db']:+.0f} dB" if found.get("snr_db") is not None else "") if part)))  # band, frequency, level, signal
+        facts.append(("Length", f"{len(text)} characters"))  # how long it is
+        for row, (label, value) in enumerate(facts):  # each fact
+            ttk.Label(head, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12))  # its label
+            ttk.Label(head, text=value).grid(row=row, column=1, sticky="w")  # its value
+        self.big_text(top, text, height=6).pack(fill="both", expand=True, padx=10, pady=6)  # the message, large and wrapped
+        buttons = ttk.Frame(top, padding=(10, 4, 10, 10))  # the buttons
+        buttons.pack(fill="x")  # at the bottom
+
+        def reply():  # answer it
+            self.to.set(sender)  # the sender into To
+            top.destroy()  # close
+            self.message.focus_set()  # ready to type
+
+        ttk.Button(buttons, text="Reply", command=reply).pack(side="left")  # write back to the sender
+        ttk.Button(buttons, text="Copy", command=lambda: self.copy_text(text)).pack(side="left", padx=4)  # the text to the clipboard
+        if sender:  # a station to look up
+            ttk.Button(buttons, text="Contact record...", command=lambda: self.contact_window(sender)).pack(side="left", padx=4)  # its record
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close
+
+    def station_detail_window(self):  # a double-click on Stations heard: everything shown about the station, in full (since 0.40)
+        rows = self.stations.selection()  # the chosen row
+        if not rows:  # none
+            return  # nothing to show
+        values = {name: self.stations.set(rows[0], name) for name in ("saved", "who", "grid", "band", "snr", "time", "text", "mail")}  # what the list shows
+        call = values["who"]  # its callsign
+        self.to.set(call)  # into the To box, as a double-click did before
+        record = self.contacts.get(call) or {}  # its contact record, if saved
+        top = self.window("station detail", f"Kestrel - {call}")  # the window
+        head = ttk.Frame(top, padding=(10, 10, 10, 4))  # the facts
+        head.pack(fill="x")  # at the top
+        apart = distance_bearing(self.settings["grid"], values["grid"]) if values["grid"] else None  # how far, which way
+        heard = [r for r in self.heardlog.snapshot() if r.get("call") == call]  # its receptions in the last 48 hours
+        facts = [("Callsign", call + ("   (saved contact)" if values["saved"] else "")),  # who
+                 ("Name, location", ", ".join(part for part in (record.get("name", ""), record.get("location", "")) if part) or "—"),  # from its record
+                 ("Grid", values["grid"] + (f"   {apart[0]:.0f} mi, bearing {apart[1]:.0f}°" if apart else "")),  # where
+                 ("Rig", "  ·  ".join(part for part in (record.get("radio", ""), f"{record['power_w']} W" if record.get("power_w") else "", record.get("antenna", "")) if part) or "—"),  # what it runs
+                 ("Last heard", "  ·  ".join(part for part in (values["time"], values["band"], values["snr"], values["text"]) if part)),  # how it was last heard
+                 ("Last 48 hours", f"heard {len(heard)} time{'s' if len(heard) != 1 else ''}" + (f", best {max(r.get('snr', -99) for r in heard):+.0f} dB" if heard else ""))]  # the longer record
+        checked = propcheck.describe_station(call)  # against the prediction
+        if checked:  # something recorded
+            facts.append(("Against prediction", checked))  # shown
+        for row, (label, value) in enumerate(facts):  # each fact
+            ttk.Label(head, text=label).grid(row=row, column=0, sticky="nw", padx=(0, 12), pady=1)  # its label
+            ttk.Label(head, text=value, wraplength=520, justify="left").grid(row=row, column=1, sticky="w", pady=1)  # its value
+        ttk.Label(top, text="Status and messages", padding=(10, 6, 10, 0)).pack(anchor="w")  # the long column, in full
+        self.big_text(top, values["mail"] or "(nothing)", height=4).pack(fill="both", expand=True, padx=10, pady=4)  # large and wrapped
+        buttons = ttk.Frame(top, padding=(10, 4, 10, 10))  # the buttons
+        buttons.pack(fill="x")  # at the bottom
+        ttk.Button(buttons, text="Respond  Ctrl+Y", command=lambda: (top.destroy(), self.respond())).pack(side="left")  # call it
+        ttk.Button(buttons, text="Contact record...", command=lambda: self.contact_window(call)).pack(side="left", padx=4)  # its record (saved, or new from what was heard)
+        ttk.Button(buttons, text="Last 48 hours", command=lambda: self.heard_window(call)).pack(side="left", padx=4)  # every reception
+        ttk.Button(buttons, text="Propagation...", command=lambda: self.propagation_window(call)).pack(side="left", padx=4)  # best band by hour
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close
 
     def open_station_record(self):  # a double-click on a station heard (since 0.31R3)
         for row in self.stations.selection()[:1]:  # the row chosen
