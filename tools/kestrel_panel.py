@@ -72,6 +72,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
             "scope_rx_color": 50.0, "scope_tx_color": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colors change, and the set of colors used)  # (continued: logging, recording and looks)
+            "scope_time_marks": True,  # (continued: UTC time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, since 0.33)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
@@ -107,6 +108,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
     ("Ctrl+P", "propagation: best band by hour to the station in To (ITU-R P.533)"),  # (continued: since 0.32)
+    ("Ctrl+T", "time marks on the scopes on or off (UTC marks across both waterfalls, and the seconds scale)"),  # (continued: since 0.33)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
     ("Esc", "in the main window: stop calling (a call started with Respond or Call station, a beacon round, a long beacon, broadcasts waiting) and cut such a transmission short; in other windows: close the window"))  # the rest
 
@@ -216,7 +218,8 @@ def utc(seconds):  # a time for display
 
 
 FONT_MIN, FONT_MAX = 7, 16  # the smallest and largest font sizes offered
-SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. It keeps the last transmission.\n\n"  # the transmit scope
+SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. Its waterfall scrolls with the receive waterfall, empty while nothing is sent, so a transmission lines up with what was received at the same moment.\n\n"  # the transmit scope
+              "Time marks (View > Time marks on the scopes, or Ctrl+T, to turn them on or off): a dotted line across both waterfalls every 5, 10, 15, 30 or 60 seconds (whichever suits the waterfall's height), labeled with the time in UTC, and a seconds-ago scale to the right.\n\n"  # the time marks
               "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
               "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labeled.\n\n"  # the scales
               "Floor and Range (the sliders beside each scope): Floor sets the level at the bottom of the trace and the black of the waterfall; raise it to hide noise, lower it to see weaker signals. Range sets how many dB lie between the bottom and the top; fewer dB gives more contrast. Double-click a slider to reset it.\n\n"  # the sliders
@@ -549,6 +552,8 @@ class Panel:  # the control panel window
         for name in PALETTES:  # every color set offered
             colors.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
         view.add_cascade(label="Waterfall colors", underline=0, menu=colors)  # put it in the View menu
+        self.time_marks_var = tk.BooleanVar(value=bool(self.settings.get("scope_time_marks", True)))  # whether the waterfalls show time marks
+        view.add_checkbutton(label="Time marks on the scopes", underline=1, accelerator="Ctrl+T", variable=self.time_marks_var, command=self.time_marks_chosen)  # UTC marks and the seconds scale, on or off
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -571,7 +576,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Escape>": self.stop_calling}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -601,6 +606,9 @@ class Panel:  # the control panel window
         self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # the transmit waterfall picture
         self.line_s = 0.10  # seconds between waterfall lines, measured as the scope runs
         self.last_line = None  # when the last waterfall line was drawn
+        self.line_count = 0  # waterfall lines drawn so far (both waterfalls move together, a line each, since 0.33)
+        self.time_marks = []  # UTC time marks on the waterfalls: (the line count when the mark was made, the UTC second it marks), newest last
+        self.mark_slot = None  # the five-second UTC slot the newest line fell in, to notice when a new one begins
         self.scale_khz = None  # the radio frequency the top scale was last drawn for
         self.tx_was = False  # whether a transmission was under way at the last look
         self.scope_db = {}  # each scope's Floor and Range slider settings, as Tk variables: ("rx" or "tx", "floor" or "range") -> DoubleVar
@@ -754,26 +762,95 @@ class Panel:  # the control panel window
             canvas.tag_lower("scale")  # the scales go behind the trace and the labels
             canvas.tag_lower(item)  # and the waterfall behind the scales
 
-    def draw_tx_scope(self):  # redraw the transmit scope (called from draw_scope)
-        sink = self.sink  # the sound-card output, when a station is running
-        levels = sink.spectrum(self.top_hz, self.tx_w, self.low_hz) if sink is not None else None  # what is going out at this moment, if anything
+    def draw_tx_scope(self, levels, advance):  # redraw the transmit scope (called from draw_scope)
+        """Draw the transmit scope. `levels` is the spectrum going out now (None when nothing is being sent); `advance` says the waterfalls move on a line this time.
+
+        Since 0.33 the transmit waterfall moves on whenever the receive waterfall does, with an empty line while nothing is
+        being sent, so the two scroll together and a transmission sits at the same height as the receive lines of that moment.
+        """
         if levels is None:  # not transmitting
             if self.tx_was:  # a transmission has just ended
                 self.tx_was = False  # note it
-                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # the picture stays, labeled as the last transmission
-            return  # nothing new to draw
-        if not self.tx_was:  # a transmission has just begun
-            self.tx_was = True  # note it
-            dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
-            self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its center lands on the air
-        floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the transmit scope's Floor and Range sliders
-        bright = np.clip((levels - floor) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
-        points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
-        self.tx_canvas.coords(self.tx_line, *points)  # move the trace
+                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # labeled as the last transmission
+                self.tx_canvas.coords(self.tx_line, self.left, self.tx_y(-70), self.left + self.tx_w, self.tx_y(-70))  # the trace lies flat again
+            if not advance:  # the waterfalls are standing still (nothing running)
+                return  # nothing new to draw
+            row = np.full((self.tx_w, 3), self.palettes["tx"][0], dtype="uint8")  # an empty line, in the "nothing there" color
+        else:  # something is going out
+            if not self.tx_was:  # a transmission has just begun
+                self.tx_was = True  # note it
+                dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
+                self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its center lands on the air
+            floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the transmit scope's Floor and Range sliders
+            bright = np.clip((levels - floor) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
+            points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
+            self.tx_canvas.coords(self.tx_line, *points)  # move the trace
+            row = self.palettes["tx"][(bright * 255).astype(int)]  # the newest line, in the transmit waterfall's colors
         self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
-        self.tx_fall[0] = self.palettes["tx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the transmit waterfall's colors
+        self.tx_fall[0] = row  # and paint the newest line at the top
         self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.tx_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
         self.tx_canvas.itemconfigure(self.tx_item, image=self.tx_image)  # show it
+
+    # ---- time marks on the waterfalls (since 0.33) ----
+
+    def time_marks_chosen(self):  # View > Time marks on the scopes was ticked or cleared
+        """Remember the choice and show or hide the marks at once."""
+        self.settings["scope_time_marks"] = bool(self.time_marks_var.get())  # remembered with the other settings
+        self.save_settings()  # kept
+        self.draw_time_marks()  # shown or cleared now, not at the next line
+
+    def toggle_time_marks(self):  # Ctrl+T
+        self.time_marks_var.set(not self.time_marks_var.get())  # the other way
+        self.time_marks_chosen()  # and act on it
+
+    def tick_line(self):  # both waterfalls have just moved on one line
+        """Count the line, measure the time between lines, and note a UTC time mark when a new five-second slot begins."""
+        now = time.monotonic()  # the time of this line
+        if self.last_line is not None:  # not the first line
+            self.line_s = 0.9 * self.line_s + 0.1 * min(1.0, now - self.last_line)  # a running average of the time between lines (a pause does not count for more than a second)
+        self.last_line = now  # remember it
+        self.line_count += 1  # one more line
+        utc = time.time()  # the time of day, for the marks
+        slot = int(utc // 5)  # which five-second slot of UTC this line is in
+        if self.mark_slot is not None and slot != self.mark_slot:  # a new slot began since the last line
+            self.time_marks.append((self.line_count, slot * 5))  # mark this line with the slot's first second
+        self.mark_slot = slot  # remember the slot
+        longest = max(self.fall_h, self.tx_fall_h) + 2  # the most lines either waterfall shows
+        self.time_marks = [(line, second) for line, second in self.time_marks if self.line_count - line < longest]  # marks scrolled off the bottom go
+
+    def mark_every(self, lines):  # the spacing of UTC marks that suits a waterfall `lines` lines tall
+        """Return the seconds between labeled marks: the shortest of 5, 10, 15, 30 and 60 seconds that puts at most four marks on the waterfall."""
+        shown = lines * max(self.line_s, 0.02)  # how many seconds the waterfall covers
+        return next((every for every in (5, 10, 15, 30, 60) if shown / every <= 4.0), 60)  # the spacing
+
+    def draw_time_marks(self):  # the UTC marks and the seconds scale on both waterfalls
+        """Draw, on each waterfall, a dotted line at each UTC mark with the time (HH:MM:SS UTC) beside it, and the seconds-ago scale to the right; nothing when the marks are turned off."""
+        for canvas in (self.scope, self.tx_canvas):  # both scopes
+            canvas.delete("time")  # the old marks
+        if not self.time_marks_var.get():  # turned off
+            return  # nothing to draw
+        for canvas, top, height, width in ((self.scope, self.above + self.trace_h, self.fall_h, self.scope_w), (self.tx_canvas, self.tx_top + self.tx_trace_h, self.tx_fall_h, self.tx_w)):  # the receive waterfall, then the transmit one
+            every = self.mark_every(height)  # the spacing that suits its height
+            for line, second in self.time_marks:  # each mark
+                age = self.line_count - line  # how many lines down it is now
+                if age >= height or second % every:  # off the bottom, or not one of the marks shown at this spacing
+                    continue  # skip it
+                y = top + age  # its height on the canvas
+                canvas.create_line(self.left, y, self.left + width, y, fill="#e8e8e8", dash=(2, 4), tags="time")  # a dotted line across the waterfall
+                label = time.strftime("%H:%M:%S", time.gmtime(second))  # the time it marks, UTC
+                if height >= 12:  # room for words on this waterfall
+                    words = canvas.create_text(self.left + 3, y + 1, text=label, anchor="nw" if age < height - 10 else "sw", fill="#ffffff", font="KestrelTiny", tags="time")  # the time beside it, kept on the waterfall
+                    box = canvas.bbox(words)  # its size
+                    canvas.tag_lower(canvas.create_rectangle(box[0] - 1, box[1], box[2] + 1, box[3], fill="#000000", outline="", tags="time"), words)  # a dark patch behind it, so it reads on any color
+            x = self.left + width + 4  # just right of the waterfall
+            for seconds in (0, 5, 10, 15, 20, 30, 45, 60):  # the seconds-ago scale
+                y = top + seconds / max(self.line_s, 0.02)  # how far down that is
+                if y > top + height - 16:  # too near the bottom, where the word UTC goes
+                    break  # no more
+                if seconds and height < 12:  # a short waterfall
+                    continue  # only "now" fits
+                canvas.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font="KestrelTiny", tags="time")  # label it
+            canvas.create_text(self.left + width + self.right / 2, top + height - 1, text="UTC", anchor="s", fill="#a8b0ba", font="KestrelTiny", tags="time")  # what the marks' times are in
 
     def x_for(self, hz, width=None):  # where an audio frequency falls across a scope `width` points wide (the receive scope unless told otherwise)
         return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * ((self.scope_w if width is None else width) - 1)  # left margin plus the share of the width shown
@@ -827,8 +904,15 @@ class Panel:  # the control panel window
 
     def draw_scope(self):  # redraw the scope from the newest audio
         source = self.audio  # the sound-card input, if one is open
+        try:  # what is going out at this moment, if anything
+            tx_levels = self.sink.spectrum(self.top_hz, self.tx_w, self.low_hz) if self.sink is not None else None  # the transmit spectrum, or None
+        except Exception:  # a hiccup in reading it
+            tx_levels = None  # treat it as nothing sent
+        advance = source is not None or tx_levels is not None  # both waterfalls move on a line whenever either has something to show (since 0.33)
+        if advance:  # they move
+            self.tick_line()  # count the line, time it and note any UTC mark
         try:  # the transmit scope first; a hiccup in drawing must never stop the station
-            self.draw_tx_scope()  # what is being sent, on top
+            self.draw_tx_scope(tx_levels, advance)  # what is being sent, on top, scrolling with the receive scope
         except Exception:  # anything at all
             pass  # try again next time
         try:  # a hiccup in drawing must never stop the station
@@ -840,10 +924,6 @@ class Panel:  # the control panel window
                     self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
                 self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the unit
             if source is not None:  # there is audio to show
-                now = time.monotonic()  # the time of this line
-                if self.last_line is not None:  # not the first line
-                    self.line_s = 0.9 * self.line_s + 0.1 * (now - self.last_line)  # keep a running average of the time between lines
-                self.last_line = now  # remember it
                 levels = source.spectrum(self.top_hz, self.scope_w, self.low_hz)  # the spectrum of the newest audio, in decibels
                 floor = float(np.median(levels))  # the noise level, taken as the middle value
                 low, span = floor + self.scope_db["rx", "floor"].get(), self.scope_db["rx", "range"].get()  # the receive scope's Floor and Range sliders, the floor counted from the noise
@@ -854,12 +934,13 @@ class Panel:  # the control panel window
                 self.fall[0] = self.palettes["rx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the receive waterfall's colors
                 self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
-            self.scope.delete("time")  # the seconds scale is redrawn each time, since the line rate is measured
-            x = self.left + self.scope_w + 4  # just right of the waterfall
-            for seconds in (0, 5, 10, 15, 20, 30):  # a mark every five seconds at first
-                y = self.above + self.trace_h + seconds / max(self.line_s, 0.05)  # how far down that is
-                if y <= self.above + self.trace_h + self.fall_h:  # it is on the waterfall
-                    self.scope.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font="KestrelTiny", tags="time")  # label it
+            elif advance:  # nothing received, but something is being sent: keep the receive waterfall in step
+                self.fall = np.roll(self.fall, 1, axis=0)  # push it down one line
+                self.fall[0] = self.palettes["rx"][0]  # an empty line, in the "nothing there" color
+                self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
+                self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
+            if advance:  # the waterfalls moved
+                self.draw_time_marks()  # the UTC marks and the seconds scale move with them (redrawn each line, since the line rate is measured)
             self.scope.delete("mark")  # the station labels are redrawn each time
             now = time.monotonic()  # for their age
             for call, (hz, width, when) in list(self.marks.items()):  # each station decoded recently

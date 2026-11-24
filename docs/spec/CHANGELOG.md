@@ -5,6 +5,7 @@
 - **SIGNAL VERSION 0.33. Stations following 0.32 or earlier cannot read 0.33 answers and directed calls, nor 0.33 stations theirs.**
 - **The answer frame carries its sender's grid locator** (Section 5.8): 15 bits after the two callsigns, coded as in the beacon; all ones means the sender has no locator set. The answer grows from 124 to 139 field bits (70 body tones, interleaver step 201): 9.5 s at L2 (was 8.9 s), 42 s at L0 (was 40 s). Reply slots grow to match: 44.8 s after an L0 beacon, 16.7 s after L1, 11.9 s after L2 (Section 6.2). Directed calls are answer frames, so they carry it too. Why: a station heard only through an answer or a directed call had no known location, and the reference program's propagation predictions (Section 6.15) work from the locator.
 - The reference program: a saved contact's locator is brought up to date whenever that station sends one (beacon, long beacon, answer or directed call), and the operator is told when it changes. Compiled library interface 13.
+- The reference program's scopes: the transmit waterfall scrolls with the receive waterfall all the time, and both carry UTC time marks (View > Time marks on the scopes, Ctrl+T, on or off). Nothing sent changes.
 - U.S. spelling throughout the specification, the program's labels and its documentation; dates written month first.
 
 ## 0.32 (draft) - November 23, 2026
