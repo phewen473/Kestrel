@@ -58,6 +58,8 @@ from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
 from modem.levels import LEVELS, level_name  # the speed levels, for how wide each signal is on the scope, and their names (L0 to L4, LB)  # noqa: E402
 from modem.longbeacon import LONG  # the long beacon's tone length and spacing  # noqa: E402
+from modem.longnote import CHARS as LONG_NOTE_FRAME_CHARS, MOST_CHARS as LONG_NOTE_CHARS, note_fields  # long notes: characters per frame, the most in a note, and the check that a note can be sent (since 0.34)  # noqa: E402
+from live.notes import LongNotes  # sending long notes, receipts and resends, and putting received ones together (since 0.34)  # noqa: E402
 from modem.params import LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
@@ -108,6 +110,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
     ("Ctrl+P", "propagation: best band by hour to the station in To (ITU-R P.533)"),  # (continued: since 0.32)
+    ("Ctrl+N", "send the message as a long note (up to 28 characters in minute-long frames, for weak paths; a receipt comes back)"),  # (continued: since 0.34)
     ("Ctrl+T", "time marks on the scopes on or off (UTC marks across both waterfalls, and the seconds scale)"),  # (continued: since 0.33)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
     ("Esc", "in the main window: stop calling (a call started with Respond or Call station, a beacon round, a long beacon, broadcasts waiting) and cut such a transmission short; in other windows: close the window"))  # the rest
@@ -287,6 +290,9 @@ class Panel:  # the control panel window
         self.shown = 0  # how many of the tracked station's received messages are already in the list
         self.history = []  # every log line so far, as (time of day, line), so the log can be redrawn plain or in detail
         self.heard = queue.Queue()  # reports of stations heard, waiting to go into the list (filled by the working thread)
+        self.long_notes = None  # this station's long notes (live.notes.LongNotes, since 0.34), made for its callsign when first needed and kept between runs
+        self.note_events = queue.Queue()  # long-note events from the working thread, waiting to be shown
+        self.note_rows = {}  # (to, text) -> the row of a long note in Messages to send
         self.heard_rows = {}  # callsign -> its row in the stations-heard list
         self.notice = None  # the warning window about an idle working frequency, while one is showing
         self.contacts = ContactBook(CONTACTS_FILE, self.settings.get("contact_history", HISTORY_DEFAULT), self.settings.get("contact_history_mode", "all"))  # the contact book: callsign -> record with name, rig, notes and history (live/contacts.py; since 0.31R3)
@@ -397,6 +403,7 @@ class Panel:  # the control panel window
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
         ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=5, padx=(6, 0))  # add the message to the list to send
         ttk.Button(typing, text="Broadcast to ALL  F11", command=self.broadcast_message).grid(row=0, column=6, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
+        ttk.Button(typing, text="Long note (reach)  Ctrl+N", command=self.long_note_message).grid(row=0, column=7, padx=(4, 0))  # send a short message in long frames, for weak paths (since 0.34)
         self.panes["split"] = split = ttk.PanedWindow(root, orient="vertical")  # everything below the controls, in two rows with a divider the operator can drag between them
         split.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # it takes the rest of the window
         self.panes["lists"] = lists = ttk.PanedWindow(split, orient="horizontal")  # the three lists, side by side, with dividers between them
@@ -531,6 +538,7 @@ class Panel:  # the control panel window
         messages.add_command(label="Go to the Message box", underline=10, accelerator="Ctrl+M", command=lambda: self.message.focus_set())  # the message
         messages.add_command(label="Queue the message", underline=0, accelerator="Enter", command=self.queue_message)  # into the list to send
         messages.add_command(label="Broadcast the message to ALL", underline=0, accelerator="F11", command=self.broadcast_message)  # to everyone
+        messages.add_command(label="Send the message as a long note (reach)...", underline=21, accelerator="Ctrl+N", command=self.long_note_message)  # up to 28 characters in long frames, with a receipt (since 0.34)
         messages.add_separator()  # a divider
         self.quick_submenu = tk.Menu(messages, tearoff=False)  # the quick messages, by name (filled by refresh_quick)
         messages.add_cascade(label="Quick messages", underline=0, menu=self.quick_submenu)  # put it in the Messages menu
@@ -589,7 +597,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Escape>": self.stop_calling}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -1348,6 +1356,8 @@ class Panel:  # the control panel window
             return  # nothing to note
         grid = (result.fields or {}).get("grid", "")  # its grid locator, if it carries one
         kind = KIND.get(result.frame_type, "frame")  # what it was
+        if (result.fields or {}).get("note"):  # a long-note frame (since 0.34), not a long beacon
+            kind = "long " + ("receipt" if result.fields["note"] == "receipt" else "note")  # named for what it is
         self.heard.put((call, grid, result.snr_db, kind, dict(result.fields or {}), band_of(self.dial_hz() / 1000.0)))  # pass it to the window, with the frame's flags and the band it was heard on
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
@@ -1473,6 +1483,7 @@ class Panel:  # the control panel window
     # ---- keeping the window in step with the station ----
 
     def follow_station(self):  # keep the message lists, the readings, the beacon and the logbook in step with the station
+        self.show_note_events()  # long notes received, delivered, resent or failed (since 0.34)
         while not self.heard.empty():  # every station heard since the last look
             call, grid, snr, kind, fields, band = self.heard.get()  # who, where, how strong, what it sent, its flags, and the band it was heard on
             if call in self.contacts and band and self.contacts[call].get("band") != band:  # a saved contact heard on another band
@@ -1898,7 +1909,7 @@ class Panel:  # the control panel window
 
     def clear_finished(self):  # Clear finished messages
         """Take delivered, sent and failed messages off the list; messages still waiting (or being sent) stay."""
-        done = [row for row in self.to_send.get_children() if not self.to_send.set(row, "state").startswith(("waiting", "sending", "broadcast"))]  # finished
+        done = [row for row in self.to_send.get_children() if not self.to_send.set(row, "state").startswith(("waiting", "sending", "broadcast")) and row not in self.note_rows.values()]  # finished (a long note still under way stays)
         self.to_send.delete(*done)  # off the list
         self.save_outbox()  # the saved queue is unchanged in content, but kept in step
         self.say(f"cleared {len(done)} finished message(s) from the list")  # confirm
@@ -2007,6 +2018,10 @@ class Panel:  # the control panel window
             if state == "sending":  # it is going out now
                 self.say(f"not removed, it is being sent: {text}")  # leave it alone
                 continue  # next row
+            if state.startswith("long note") and self.note_rows.get((to, text)) == row:  # a long note not yet finished (since 0.34)
+                notes = self.notes_for()  # this station's long notes
+                self.ask_station(lambda station, to=to, text=text: notes.cancel(to, text) or True, f"long note to {to} taken back: {text}")  # dropped in the station's own thread (a frame already on the air finishes)
+                self.note_rows.pop((to, text), None)  # no longer followed
             if state.startswith("waiting"):  # not yet started (it may also be with carriers, who will still deliver their copies)
                 address = "" if to == "partner" else to  # the address as the queue holds it
                 if self.station is not None:  # a station is running and holds the queue
@@ -2035,6 +2050,64 @@ class Panel:  # the control panel window
         self.to_send.yview_moveto(1.0)  # keep the newest row in view
         self.ask_station(lambda station: station.broadcast(text) or True, f"broadcast queued: {text}")  # the station sends it as soon as no contact is in progress
         return True  # on its way
+
+    # ---- long notes (since 0.34) ----
+
+    def notes_for(self):  # this station's long notes
+        """Return the LongNotes for this station's callsign (made afresh if the callsign has changed)."""
+        call = self.settings["call"].strip().upper()  # this station
+        if self.long_notes is None or self.long_notes.call != call:  # none yet, or for another callsign
+            self.long_notes = LongNotes(call)  # a fresh set
+        return self.long_notes  # kept between runs, so a note waiting for its receipt survives a change of mode
+
+    def long_note_message(self):  # Ctrl+N: send the typed message as a long note
+        """Queue the typed message as a long note to the station in To (or ALL if To is empty), after the operator confirms."""
+        text, to = self.message.get().strip(), self.to.get().strip().upper() or "ALL"  # what was typed, and to whom
+        own = self.settings["call"].strip().upper()  # this station
+        if not text:  # nothing was typed
+            messagebox.showinfo("Kestrel", f"Type the note first (Ctrl+M): up to {LONG_NOTE_CHARS} characters.", parent=self.root)  # say so
+            return  # nothing to do
+        if to == own:  # addressed to this station itself
+            messagebox.showinfo("Kestrel", "A long note cannot be sent to this station's own callsign.", parent=self.root)  # say so
+            return  # nothing to do
+        try:  # can it be sent as it is?
+            note_fields(own or "Q0AA", to, text)  # the frames it would make (raises if too long or not plain text)
+        except ValueError as problem:  # it cannot
+            messagebox.showinfo("Kestrel", f"This cannot go as a long note: {problem}.\n\nA long note holds up to {LONG_NOTE_CHARS} characters of plain text (letters, figures, spaces and ordinary punctuation).", parent=self.root)  # say why
+            return  # nothing sent
+        frames = 1 + -(-len(text) // LONG_NOTE_FRAME_CHARS)  # a header, and a frame for each seven characters
+        after = ("The other station answers with a one-minute receipt. With no receipt the note is sent again, up to three times; "  # (continued)
+                 "the other station adds the copies together, so each try reaches further." if to != "ALL" else "Nobody answers a note to ALL; it is sent once.")  # what happens next
+        if not messagebox.askokcancel("Kestrel", f"This will TRANSMIT a long note to {to}: {frames} frames of about a minute each (about {frames} minutes on the air), when no contact is under way. {after}\n\n"  # (continued)
+                                      "Long notes are heard down to about -26 dB, about 5 dB below the slowest normal level. Check on the scope that the frequency is clear. Continue?", parent=self.root):  # a last check before transmitting
+            return  # the operator backed out
+        if not self.ensure_listening("send a long note"):  # a long note needs a station that can transmit
+            return  # nothing started
+        notes = self.notes_for()  # this station's long notes
+        self.note_rows[(to, text)] = self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to, self.band_for("" if to == "ALL" else to), text, "long note: waiting"))  # show it in the list
+        self.to_send.yview_moveto(1.0)  # keep the newest row in view
+        self.ask_station(lambda station: notes.queue(to, text) or True, f"long note queued for {to} ({frames} minutes on the air): {text}")  # queued in the station's own thread, which sends it when no contact is under way
+        self.message.delete(0, "end")  # clear the box
+
+    def note_event(self, event):  # a long-note event, from the working thread
+        self.note_events.put(event)  # shown by the window's own thread
+
+    def show_note_events(self):  # bring the lists up to date with long-note events
+        while not self.note_events.empty():  # each event since the last look
+            kind, *rest = self.note_events.get()  # what happened
+            if kind == "received":  # a note arrived for this station, or for everyone
+                origin, dest, text = rest  # from whom, to whom, what
+                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} (long note)" + (" to ALL" if dest == "ALL" else ""), text))  # into Messages received
+                self.received.yview_moveto(1.0)  # keep it in view
+                self.root.bell()  # a sound, as for other messages
+                continue  # next event
+            dest, text, tries = rest  # the note's address, text and tries so far
+            row = self.note_rows.get((dest, text))  # its row in Messages to send
+            words = {"delivered": "long note: delivered", "resending": f"long note: try {tries}", "failed": "long note: NOT delivered", "sent": "long note: sent"}.get(kind)  # its new state
+            if row is not None and words and self.to_send.exists(row):  # still listed
+                self.to_send.set(row, "state", words)  # show how it went
+            if kind in ("delivered", "failed", "sent"):  # finished
+                self.note_rows.pop((dest, text), None)  # no more to follow
 
     # ---- quick messages and telemetry ----
 
@@ -3387,7 +3460,7 @@ class Panel:  # the control panel window
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
             run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
-                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
+                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency

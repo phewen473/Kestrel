@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.34 (draft) - November 24, 2026
+
+- **SIGNAL VERSION 0.34: long notes** (new Section 6.16). A short message of up to 28 characters sent in long-beacon frames (Section 5.9), for paths too weak for any speed level. A long-note frame is a long-beacon frame whose spare bit is 1; its other 65 field bits are a note header (sender's callsign, 12-bit code of the station addressed or 0 for ALL, number of text frames), a text frame (sender's code, frame number, seven 7-bit characters) or a receipt (receiver's callsign, the sender's code). A note is a header and one to four text frames, one minute each; the station addressed answers with a one-minute receipt; with no receipt within 150 s the note is sent again, up to three times, and the receiver adds the copies together. A note to ALL is sent once, with no receipt.
+- Simulation (tests/test_longnote.py): each kind of frame read at -24 dB; a text frame at -28 dB, which one copy does not read, read from two copies added together.
+- Stations following 0.33 or earlier take long-note frames for noise (the spare bit is not 0); nothing else changes.
+- The reference program: Messages > Send the message as a long note (reach) (Ctrl+N, and a button beside Broadcast to ALL): the To box names the station (empty: ALL), the Message box holds up to 28 characters. Messages to send follows the note (waiting, try 2, delivered, NOT delivered); received notes go under Messages received, marked "long note".
+
 ## 0.33 (draft) - November 23, 2026
 
 - **SIGNAL VERSION 0.33. Stations following 0.32 or earlier cannot read 0.33 answers and directed calls, nor 0.33 stations theirs.**

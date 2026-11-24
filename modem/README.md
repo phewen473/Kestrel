@@ -208,3 +208,7 @@ The steady column is where every test frame decoded. The fading columns are wher
 ## Not built yet
 
 A fifth, faster level (L5, which needs a different waveform). The link rules that use these frames are in `link/`. Nets and store-and-forward are not built yet.
+
+## Long notes (`longnote.py`, since 0.34)
+
+A long note is a short message, up to 28 characters, sent in long-beacon frames (`longbeacon.py`) for paths too weak for any speed level: heard down to about -26 dB, about 5 dB below L0. A long-note frame is a long-beacon frame whose last field bit (the long beacon's spare, always 0 in a beacon) is 1; its other 65 bits are a note header (sender's callsign, a 12-bit code for the station addressed or 0 for ALL, how many text frames follow), a text frame (the sender's code, the frame's number, seven characters) or a receipt (the receiving station's callsign and the sender's code). A note is a header and one to four text frames, a minute each. `build_note(origin, dest, text)` gives the audio of each frame, `build_receipt(origin, dest)` the receipt's; the receiver reads them with the long beacon's decoder, which now tells the two apart by that bit, and adds failed copies together in the same way. Sending, receipts and resends are in `live/notes.py`. Spec Section 6.16.

@@ -10,7 +10,7 @@ import time  # the real clock
 
 from link.params import TURNAROUND_S  # pause between hearing a frame and replying
 from modem.levels import level_name  # L0 to L4, or LB
-from modem.params import CONTROL_BITS, FRAME_TYPE_LONG  # which frame types are control frames, and the long beacon's
+from modem.params import CONTROL_BITS, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, and the long beacon's frame type and level number
 
 from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener, likely_kestrel  # the continuous receiver, and its test for a near miss that is likely a real Kestrel frame
@@ -97,6 +97,11 @@ def plain_line(line):  # a log line as an operator wants to read it
 def describe(result):  # one line about a received frame
     """Return a readable line describing the receiver's report `result`."""
     name = KIND.get(result.frame_type, "frame")  # what kind of frame
+    note = (result.fields or {}).get("note") if result.ok else None  # a long-note frame (since 0.34): header, text or receipt
+    if note:  # one of those
+        fields = {key: value for key, value in result.fields.items() if key != "text"}  # its fields, without the text (shown under Messages received when the note is for this station)
+        copies = f" ({result.fields['copies']} copies added together)" if result.fields.get("copies", 1) > 1 else ""  # read from several copies?
+        return f"heard long note {note}{copies}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz  {fields}"  # what it was
     if not result.ok and result.level < 0:  # nothing was readable at all, not even the header
         return "noise briefly looked like the start of a frame; nothing decoded"  # a false alarm, said plainly
     if not result.ok:  # it failed its check
@@ -111,6 +116,20 @@ def describe(result):  # one line about a received frame
     who = f"{result.origin} to {result.dest}" if result.frame_type == 1 else f"link {result.link}"  # addresses, or the link number
     shown = repr(result.text) if result.frame_type == 1 and result.dest == "ALL" else f"({len(result.text or '')} characters)"  # a broadcast's text; the content of a message for a particular station is not repeated here (it appears under Messages received when it is for this station)
     return line + f"  [{who}, msg {result.msg_id}, part {result.part + 1}/{result.parts}]  {shown}"  # the addressing, and the text or its length
+
+
+def note_line(event):  # one line about a long note's progress (since 0.34)
+    """Return a plain line for an event from live.notes.LongNotes."""
+    kind, *rest = event  # what happened, and its details
+    if kind == "received":  # a note arrived
+        origin, dest, text = rest  # from whom, to whom, what
+        return f"long note received from {origin}" + (" to ALL" if dest == "ALL" else "") + f": {text}"  # with its text (it is for this station or for everyone)
+    dest, text, tries = rest  # to whom, what, and how many tries
+    words = {"delivered": f"long note to {dest} delivered (receipt received; {tries} tr{'y' if tries == 1 else 'ies'})",  # (continued)
+             "resending": f"no receipt from {dest} for the long note; sending it again (try {tries}; copies are added together at the other end)",  # (continued)
+             "failed": f"long note to {dest} NOT delivered: no receipt after {tries} tries",  # (continued)
+             "sent": f"long note sent to {dest}"}  # what each event says
+    return words.get(kind, f"long note: {event}")  # the line
 
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
@@ -206,7 +225,7 @@ def log_tick(signal_log, source):  # the signal log's regular lines
     signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None, notes=None, on_note=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -239,6 +258,10 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     `expect`, if given, is called for more callsigns the station expects to
     hear (saved contacts, stations heard lately); with the station's own,
     the one it calls and its partner, they help read weak control frames.
+    `notes`, if given (a live.notes.LongNotes), sends this station's long
+    notes and receipts when no contact is under way, and is given every
+    long-note frame heard (since 0.34); `on_note`, if given, is called with
+    each of its events (received, delivered, resending, failed, sent).
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
@@ -318,6 +341,8 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                 on_frame(result)  # pass on every report, decoded or not
             if on_heard is not None and result.ok:  # somebody was heard clearly
                 on_heard(result)  # let the caller note who
+            if notes is not None and result.ok and (result.fields or {}).get("note"):  # a long-note frame (since 0.34)
+                notes.heard(result.fields, now())  # put it with the rest of its note, or take the receipt
             reply = station.handle(result, now())  # what the link rules say to do
             if reply is not None:  # something to send
                 time.sleep(TURNAROUND_S)  # give the other station time to switch to receive
@@ -333,6 +358,22 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         tx = station.poll(now())  # anything to send without having heard something?
         if tx is not None:  # yes
             transmit(tx)  # send it
+        if notes is not None:  # long notes (since 0.34)
+            notes.tick(now())  # resend notes whose receipt has not come
+            free = station.state == "IDLE" and getattr(station, "pending", None) is None  # no contact under way and nothing awaited
+            due = notes.due(now()) if free else None  # "receipt", "note" or None
+            if due == "note" and watch is not None and watch.busy(*band_of(LONG_LEVEL)):  # a note waits while the frequency is in use (a receipt, being a reply, does not)
+                due = None  # not yet
+            if due is not None:  # something to send, and room to send it
+                frames, what = notes.next_frames(now())  # the frames
+                for frame in frames:  # header, then each text frame (or one receipt)
+                    transmit(frame)  # send it
+                notes.sent(what, now())  # wait for the receipt, or report a note to ALL sent
+            for event in notes.events:  # what happened
+                stamp(note_line(event))  # tell the operator
+                if on_note is not None:  # someone keeps a record
+                    on_note(event)  # pass it on
+            notes.events.clear()  # told
         for line in station.log[told:]:  # the station's own notes since last time
             say("          " + line)  # pass them on
             if logging:  # a signal log is kept

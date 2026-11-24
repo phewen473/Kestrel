@@ -33,6 +33,7 @@ from .fec import TAIL, conv_encode, viterbi_decode  # the convolutional code
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import Level  # one level's numbers
 from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, tone_energies, transmission  # the tone waveform
+from . import longnote  # long notes, sent in the same frame (since 0.34)
 from . import native  # the compiled library, used when present
 from .params import BODY_CRC_BITS, CALL_BITS, CENTER_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
 from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
@@ -81,8 +82,12 @@ def unpack(bits):  # bits -> fields
 
 def build_long_beacon(call, grid, available=True, holds_mail=False):  # the transmitter
     """Return the audio of a long beacon from `call` at `grid`."""
-    fields = pack(call, grid, available, holds_mail)  # the fields
-    data = np.concatenate([fields, crc16(fields)])  # and their check value
+    return build_from_fields(pack(call, grid, available, holds_mail))  # the fields, sent in the long frame
+
+
+def build_from_fields(fields):  # any 66 field bits -> a long frame's audio
+    """Return the audio of a long frame carrying the 66 field bits `fields` (a long beacon's, or a long note's since 0.34)."""
+    data = np.concatenate([fields, crc16(fields)])  # the fields and their check value
     coded = conv_encode(data)  # error correction
     coded = np.concatenate([coded, np.zeros(LAYOUT["padded"] - LAYOUT["coded"], dtype=np.uint8)])  # round up to whole tones
     body = np.zeros(LAYOUT["total"], dtype=np.int64)  # room for every body tone
@@ -183,10 +188,13 @@ def decode_energies(energies):  # energies -> fields
     if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the check must match
         return None, -99.0  # not a long beacon (or too damaged)
     try:  # the check passed, so this should work
-        fields = unpack(data[:FIELD_BITS])  # the fields
+        if data[FIELD_BITS - 1]:  # the last field bit set: a long note's frame (since 0.34), not a long beacon
+            fields = longnote.unpack(data[:longnote.FIELD_BITS])  # its fields
+        else:  # a long beacon
+            fields = unpack(data[:FIELD_BITS])  # the fields
     except ValueError:  # a damaged frame slipped past the check
         return None, -99.0  # give up on it
-    if data[FIELD_BITS - 1] or not CALL_SHAPE.match(fields["origin"]):  # the spare bit must be 0, and the callsign must have the shape of one
+    if fields["origin"] and not CALL_SHAPE.match(fields["origin"]):  # a callsign carried must have the shape of one (a note's text frame carries only a code)
         return None, -99.0  # noise that happened to pass the check
     tones = body_tones(data)  # every tone the beacon used
     used = energies[np.arange(LAYOUT["total"]), tones]  # the energy found in each of them (signal plus noise, in units of the noise)
