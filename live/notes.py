@@ -1,6 +1,6 @@
 """Long notes on the air (signal version 0.34): sending them, receipts, resending, and putting received ones together.
 
-A long note (modem/longnote.py) is a header and one to four text frames,
+A long note (modem/longnote.py) is a header and one to eight text frames (four before signal 0.39),
 each a long-beacon frame of about a minute, sent one after another when no
 contact is under way. The station it is for answers with a receipt, one more
 long frame. With no receipt within RECEIPT_WAIT_S of the note's last frame,
@@ -24,7 +24,7 @@ from modem.params import LONG_LEVEL  # the long frame's level number
 
 RECEIPT_WAIT_S = 150.0  # after a note's last frame, wait this long for the receipt (the receiver finishes reading, checks the frequency is clear, and sends a minute-long receipt)
 MOST_TRIES = 3  # a note to a station is sent at most this many times without a receipt
-KEEP_S = 1200.0  # parts of a note heard are kept this long while the rest is awaited (20 minutes: a note and two resends)
+KEEP_S = 2400.0  # parts of a note heard are kept this long while the rest is awaited (40 minutes: a nine-frame note and two resends, each with its receipt wait; 20 minutes before 0.39)
 SEEN_S = 3600.0  # a note shown is not shown again for this long (a resend after a lost receipt); its receipt is still sent
 RECEIPT_GAP_S = 90.0  # at most one receipt to a station in this long (the same note heard twice in quick succession)
 
@@ -46,7 +46,7 @@ class Incoming:  # a note being heard, part by part
     origin: str = ""  # the sender's callsign, once its header is heard
     dest_code: int = -1  # whom it is for, once the header is heard (-1: not yet)
     parts: int = 0  # how many text frames it has, once the header is heard
-    texts: dict = field(default_factory=dict)  # part number -> seven characters
+    texts: dict = field(default_factory=dict)  # part number -> eight characters
     when: float = 0.0  # when anything of it was last heard
 
 
@@ -99,7 +99,7 @@ class LongNotes:  # the long notes of one station
             item.origin, item.dest_code, item.parts, item.when = fields["origin"], fields["dest_code"], fields["parts"], now  # what the header says
         elif kind == "text":  # part of the text
             item = self.incoming.setdefault(fields["origin_code"], Incoming(fields["origin_code"]))  # the note it belongs to
-            item.texts[fields["part"]] = fields["text"]  # its seven characters
+            item.texts[fields["part"]] = fields["text"]  # its eight characters
             item.when = now  # heard now
         else:  # nothing known
             return  # ignore it

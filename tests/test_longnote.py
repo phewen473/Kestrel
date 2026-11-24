@@ -26,16 +26,45 @@ def _read(x):  # decode the best long candidate in `x`
 
 def test_note_fields_round_trip():  # packing and unpacking each kind
     frames = longnote.note_fields("Q1AAAA", "Q2BB", "QSL -24 DB 73 PAT EM93")  # a 22-character note
-    assert len(frames) == 1 + 4 and all(len(bits) == longnote.FIELD_BITS for bits in frames)  # a header and four text frames of 65 bits
+    assert len(frames) == 1 + 3 and all(len(bits) == longnote.FIELD_BITS for bits in frames)  # a header and three text frames of 65 bits (eight characters each since 0.39)
     header = longnote.unpack(frames[0])  # the header
-    assert header["note"] == "header" and header["origin"] == "Q1AAAA" and header["dest_code"] == longnote.code_for("Q2BB") and header["parts"] == 4  # who, to whom, how many
+    assert header["note"] == "header" and header["origin"] == "Q1AAAA" and header["dest_code"] == longnote.code_for("Q2BB") and header["parts"] == 3  # who, to whom, how many
     texts = [longnote.unpack(bits) for bits in frames[1:]]  # the text frames
     assert "".join(t["text"] for t in texts).rstrip() == "QSL -24 DB 73 PAT EM93" and all(t["origin_code"] == longnote.code_for("Q1AAAA") for t in texts)  # the text, and whose it is
     receipt = longnote.unpack(longnote.pack_receipt("Q2BB", "Q1AAAA"))  # a receipt
     assert receipt == {"note": "receipt", "origin": "Q2BB", "dest_code": longnote.code_for("Q1AAAA"), "long": True}  # who received whose note
     assert longnote.unpack(longnote.pack_header("Q1AAAA", "ALL", 1))["dest_code"] == longnote.ALL_CODE  # a note to everyone
     with pytest.raises(ValueError):  # too long
-        longnote.note_fields("Q1AAAA", "Q2BB", "x" * 29)  # refused
+        longnote.note_fields("Q1AAAA", "Q2BB", "X" * 65)  # refused
+
+
+def test_64_characters_in_eight_frames():  # signal 0.39: the longest note
+    text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 .,?!'\"/:;-+=()@#&*%$<>_[]^"  # 64 characters, using the set's punctuation
+    assert len(text) == longnote.MOST_CHARS == 64  # the most a note holds
+    frames = longnote.note_fields("Q1AAAA", "ALL", text)  # the frames
+    assert len(frames) == 1 + 8 and all(len(bits) == longnote.FIELD_BITS for bits in frames)  # a header and eight text frames of 65 bits
+    header = longnote.unpack(frames[0])  # the header
+    assert header["parts"] == 8 and header["origin"] == "Q1AAAA"  # eight text frames announced
+    parts = [longnote.unpack(bits) for bits in frames[1:]]  # the text frames
+    assert [p["part"] for p in parts] == list(range(8)) and "".join(p["text"] for p in parts) == text  # in order, every character back
+
+
+def test_small_letters_go_as_capitals_and_others_are_refused():  # the 64-character set
+    frames = longnote.note_fields("Q1AAAA", "Q2BB", "gm hank 73")  # small letters
+    assert "".join(longnote.unpack(bits)["text"] for bits in frames[1:]).rstrip() == "GM HANK 73"  # sent as capitals
+    with pytest.raises(ValueError, match="cannot carry"):  # a character not in the set
+        longnote.note_fields("Q1AAAA", "Q2BB", "TEMP 20{C}")  # braces are not in it
+
+
+def test_telemetry_fits_in_a_long_note():  # what the long note was extended for
+    from live import telemetry  # the telemetry message
+    heard = [("KO4WZZ", 5.0, 4), ("Q1AAAA", -8.0, 2), ("Q2BB", -12.0, 1), ("Q3CCC", -15.0, 0), ("Q4DDDD", -20.0, 0), ("Q5EE", -22.0, 0)]  # six stations heard
+    text = telemetry.build("EM93", 50, heard, max_chars=longnote.MOST_CHARS)  # cut to a long note
+    assert len(text) <= longnote.MOST_CHARS and text.startswith("TLM1 EM93 P50 N6")  # fits, and still counts all six
+    frames = longnote.note_fields("KO4WSC", "ALL", text)  # as a long note
+    back = "".join(longnote.unpack(bits)["text"] for bits in frames[1:]).rstrip()  # what a receiver puts together
+    info = telemetry.parse(back)  # read as telemetry
+    assert info["count"] == 6 and info["power_w"] == 50.0 and len(info["stations"]) >= 4  # grid, power, count and at least four stations
 
 
 def test_note_frames_decode_weak_and_beacons_still_read():  # over the air
@@ -59,7 +88,7 @@ def test_two_weak_copies_of_a_note_frame_add_up():  # the receiver's combining h
         for found, soft in failed[:1]:  # the strongest failed candidate
             got = combiner.offer(soft, now=trial * 300.0)  # kept, and tried with earlier copies (five minutes apart)
             if got is not None:  # decoded together
-                assert got[0]["note"] == "text" and got[0]["text"] == "HELLO 7" and got[2] >= 2  # the right frame, from two or more copies
+                assert got[0]["note"] == "text" and got[0]["text"] == "HELLO 73" and got[2] >= 2  # the right frame (eight characters since 0.39), from two or more copies
                 return  # done
     raise AssertionError("weak copies never added up")  # combining never helped
 

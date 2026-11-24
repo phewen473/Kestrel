@@ -118,8 +118,9 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
     ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
+    ("Ctrl+K", "Contacts: view, search, change and delete contact records"),  # (continued: since 0.39)
     ("Ctrl+P", "propagation: best band by hour to the station in To (ITU-R P.533)"),  # (continued: since 0.32)
-    ("Ctrl+N", "send the message as a long note (up to 28 characters in minute-long frames, for weak paths; a receipt comes back)"),  # (continued: since 0.34)
+    ("Ctrl+N", f"send the message as a long note (up to {LONG_NOTE_CHARS} characters in minute-long frames, for weak paths; a receipt comes back)"),  # (continued: since 0.34; 64 characters since 0.39)
     ("Ctrl+D", "signals detected: every signal in the passband, its type, frequency and how long it was heard"),  # (continued: since 0.37)
     ("Ctrl+T", "time marks on the scopes on or off (UTC marks across both waterfalls, and the seconds scale)"),  # (continued: since 0.33)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
@@ -490,14 +491,15 @@ class Panel:  # the control panel window
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(keep, text="Respond  Ctrl+Y", command=self.respond).pack(side="left", padx=(0, 8))  # call the selected station by name (answer its beacon by hand)
         ttk.Button(keep, text="Save as contact", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
-        ttk.Button(keep, text="Remove contact", command=self.remove_contact).pack(side="left", padx=4)  # forget it again
+        ttk.Button(keep, text="Remove from list", command=self.remove_from_list).pack(side="left", padx=4)  # off this list; a contact record is kept (since 0.39; was Remove contact)
+        ttk.Button(keep, text="Contacts...  Ctrl+K", command=self.contacts_window).pack(side="left", padx=4)  # the contact records: view, search, change, delete (since 0.39)
         ttk.Button(keep, text="Last 48 hours  F8", command=self.heard_window).pack(side="left", padx=4)  # the longer record
         self.stations.bind("<Double-1>", lambda event: self.open_station_record())  # a double-click opens the station's contact record (a new one, filled in from what was heard, if it is not saved yet), and puts its callsign in the To box
         self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
         self.station_menu.add_command(label="Respond (call this station)", accelerator="Ctrl+Y", command=self.respond)  # call it by name
         self.station_menu.add_command(label="Contact record...", command=self.open_station_record)  # its record (as a double-click)
         self.station_menu.add_command(label="Save as contact", command=self.save_contact)  # keep it
-        self.station_menu.add_command(label="Remove contact", command=self.remove_contact)  # forget it
+        self.station_menu.add_command(label="Remove from this list (a contact record is kept)", command=self.remove_from_list)  # off the list only (since 0.39)
         self.station_menu.add_command(label="Show last 48 hours", command=self.station_history)  # its receptions
         self.station_menu.add_command(label="Propagation to this station...", command=self.propagation_selected)  # best band by hour to it (since 0.32)
         self.station_menu.add_separator()  # then the list as a whole
@@ -603,7 +605,7 @@ class Panel:  # the control panel window
         messages.add_command(label="Go to the Message box", underline=10, accelerator="Ctrl+M", command=lambda: self.message.focus_set())  # the message
         messages.add_command(label="Queue the message", underline=0, accelerator="Enter", command=self.queue_message)  # into the list to send
         messages.add_command(label="Broadcast the message to ALL", underline=0, accelerator="F11", command=self.broadcast_message)  # to everyone
-        messages.add_command(label="Send the message as a long note (reach)...", underline=21, accelerator="Ctrl+N", command=self.long_note_message)  # up to 28 characters in long frames, with a receipt (since 0.34)
+        messages.add_command(label="Send the message as a long note (reach)...", underline=21, accelerator="Ctrl+N", command=self.long_note_message)  # up to 64 characters in long frames (28 before 0.39), with a receipt (since 0.34)
         messages.add_separator()  # a divider
         self.quick_submenu = tk.Menu(messages, tearoff=False)  # the quick messages, by name (filled by refresh_quick)
         messages.add_cascade(label="Quick messages", underline=0, menu=self.quick_submenu)  # put it in the Messages menu
@@ -622,7 +624,9 @@ class Panel:  # the control panel window
         stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
         stations.add_command(label="Put the selected callsign in To", underline=0, accelerator="Enter", command=self.pick_station)  # use it
         stations.add_command(label="Save the selected station as a contact", underline=0, command=self.save_contact)  # keep it
-        stations.add_command(label="Remove the selected contact", underline=0, command=self.remove_contact)  # forget it
+        stations.add_command(label="Remove the selected stations from the list", underline=0, command=self.remove_from_list)  # off the list; contact records are kept (since 0.39)
+        stations.add_separator()  # a divider
+        stations.add_command(label="Contacts (view, search, change, delete)...", underline=0, accelerator="Ctrl+K", command=self.contacts_window)  # the contact records (since 0.39)
         bar.add_cascade(label="Stations", underline=0, menu=stations)  # put the menu on the bar
         view = tk.Menu(bar, tearoff=False)  # the View menu
         self.looks_menu = tk.Menu(view, tearoff=False)  # the Theme submenu (filled by refresh_theme_menus, again whenever the operator's themes change)
@@ -682,7 +686,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Control-d>": self.signals_window, "<Escape>": self.stop_calling}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-k>": self.contacts_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Control-d>": self.signals_window, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -2476,21 +2480,37 @@ class Panel:  # the control panel window
         try:  # can it be sent as it is?
             note_fields(own or "Q0AA", to, text)  # the frames it would make (raises if too long or not plain text)
         except ValueError as problem:  # it cannot
-            messagebox.showinfo("Kestrel", f"This cannot go as a long note: {problem}.\n\nA long note holds up to {LONG_NOTE_CHARS} characters of plain text (letters, figures, spaces and ordinary punctuation).", parent=self.root)  # say why
+            messagebox.showinfo("Kestrel", f"This cannot go as a long note: {problem}.\n\nA long note holds up to {LONG_NOTE_CHARS} characters: capital letters (small ones are sent as capitals), figures, spaces and ordinary punctuation.", parent=self.root)  # say why
             return  # nothing sent
-        frames = 1 + -(-len(text) // LONG_NOTE_FRAME_CHARS)  # a header, and a frame for each seven characters
+        if self.queue_long_note(text, to):  # confirmed and queued (since 0.39 shared with telemetry sent as a long note)
+            self.message.delete(0, "end")  # clear the box (kept if the operator backed out)
+
+    def long_note_telemetry(self):  # Quick > Send telemetry as a long note (since 0.39)
+        """Send what this station hears as a long note to the station in To (or ALL): grid, power, count and as many stations as fit in a long note."""
+        to = self.to.get().strip().upper() or "ALL"  # to whom; everyone if nobody is named
+        own = self.settings["call"].strip().upper()  # this station
+        if to == own:  # addressed to this station itself
+            messagebox.showinfo("Kestrel", "A long note cannot be sent to this station's own callsign.", parent=self.root)  # say so
+            return  # nothing to do
+        heard = telemetry.summarize(self.heardlog.snapshot(), time.time())  # the last half hour
+        text = telemetry.build(self.settings["grid"], self.power_w(), heard, max_chars=LONG_NOTE_CHARS)  # the telemetry, cut to what a long note holds (the count still says how many were heard)
+        self.queue_long_note(text, to)  # confirmed and queued
+
+    def queue_long_note(self, text, to):  # ask, then queue a long note (the typed one, or telemetry)
+        """Ask the operator to confirm sending `text` as a long note to `to`, then queue it; return True if queued."""
+        frames = 1 + -(-len(text.rstrip()) // LONG_NOTE_FRAME_CHARS)  # a header, and a frame for each eight characters
         after = ("The other station answers with a one-minute receipt. With no receipt the note is sent again, up to three times; "  # (continued)
                  "the other station adds the copies together, so each try reaches further." if to != "ALL" else "Nobody answers a note to ALL; it is sent once.")  # what happens next
-        if not messagebox.askokcancel("Kestrel", f"This will TRANSMIT a long note to {to}: {frames} frames of about a minute each (about {frames} minutes on the air), when no contact is under way. {after}\n\n"  # (continued)
-                                      "Long notes are heard down to about -26 dB, about 5 dB below the slowest normal level. Check on the scope that the frequency is clear. Continue?", parent=self.root):  # a last check before transmitting
-            return  # the operator backed out
+        if not messagebox.askokcancel("Kestrel", f"This will TRANSMIT a long note to {to}: {frames} frames of about a minute each (about {frames} minutes on the air), when no contact is under way. {after}\n\n{text.upper()}\n\n"  # (continued)
+                                      "Long notes are heard down to about -26 dB, about 5 dB below the slowest normal level. Check on the scope that the frequency is clear. Continue?", parent=self.root):  # a last check before transmitting, showing what will go
+            return False  # the operator backed out
         if not self.ensure_listening("send a long note"):  # a long note needs a station that can transmit
-            return  # nothing started
+            return False  # nothing started
         notes = self.notes_for()  # this station's long notes
         self.note_rows[(to, text)] = self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to, self.band_for("" if to == "ALL" else to), text, "long note: waiting"))  # show it in the list
         self.to_send.yview_moveto(1.0)  # keep the newest row in view
         self.ask_station(lambda station: notes.queue(to, text) or True, f"long note queued for {to} ({frames} minutes on the air): {text}")  # queued in the station's own thread, which sends it when no contact is under way
-        self.message.delete(0, "end")  # clear the box
+        return True  # queued
 
     def note_event(self, event):  # a long-note event, from the working thread
         self.note_events.put(event)  # shown by the window's own thread
@@ -2555,6 +2575,7 @@ class Panel:  # the control panel window
         self.quick_menu.add_separator()  # a divider
         self.quick_menu.add_command(label="Send telemetry to the station in To", accelerator="Ctrl+4", command=self.send_telemetry)  # what this station hears
         self.quick_menu.add_command(label="Broadcast telemetry to ALL", accelerator="Ctrl+5", command=self.broadcast_telemetry)  # to everyone
+        self.quick_menu.add_command(label=f"Send telemetry as a long note (reach; up to {LONG_NOTE_CHARS} characters)...", command=self.long_note_telemetry)  # for weak paths: to the station in To, or ALL (since 0.39)
 
     def use_quick(self, number):  # put quick message `number` (counted from 1) in the Message box
         if not 1 <= number <= len(self.settings["quick"]):  # there is no such quick message
@@ -3046,15 +3067,94 @@ class Panel:  # the control panel window
             self.stations.set(row, "saved", "*")  # mark the row
         self.refresh_to()  # and offer them first in the To box
 
-    def remove_contact(self):  # forget the selected contacts
-        calls = [self.stations.set(row, "who") for row in self.stations.selection() if self.stations.set(row, "who") in self.contacts]  # the selected saved contacts
-        if not calls:  # none
+    def remove_from_list(self):  # take the selected stations off Stations heard; contact records are kept (since 0.39)
+        """Remove the selected rows from Stations heard. A saved contact's record stays in the contact book (Stations > Contacts deletes records); a station comes back on the list when it is heard again."""
+        rows = list(self.stations.selection())  # the selected rows
+        if not rows:  # none
+            messagebox.showinfo("Kestrel", "Select a station in the Stations heard list first.", parent=self.root)  # say so
             return  # nothing to do
-        entries = sum(len(self.contacts[call]["history"]) for call in calls)  # the history they hold
-        if not messagebox.askyesno("Kestrel - Delete Contact", f"Delete {', '.join(calls)}?\n\nThe record{'s' if len(calls) > 1 else ''} and {entries} history entr{'ies' if entries != 1 else 'y'} are removed from contacts.json. This cannot be undone.\n\nLogbook entries, messages and the 48-hour list of stations heard are kept.", icon="warning", parent=self.root):  # ask first: the history goes too (since 0.31R3)
-            return  # kept
-        for call in calls:  # each one
-            self.forget_contact(call)  # out of the book and off the list
+        calls = []  # the callsigns taken off
+        for row in rows:  # each one
+            call = self.stations.set(row, "who")  # its callsign
+            self.stations.delete(row)  # off the list
+            if self.heard_rows.get(call) == row:  # the row kept for it
+                del self.heard_rows[call]  # forgotten (a new row is made when it is heard again)
+            self.calling.pop(call, None)  # no longer highlighted as calling
+            calls.append(call)  # counted
+        kept = [call for call in calls if call in self.contacts]  # the saved contacts among them
+        self.refresh_to()  # the To box offers what is left
+        self.say(f"removed {', '.join(calls)} from Stations heard" + (f"; the contact record{'s' if len(kept) > 1 else ''} of {', '.join(kept)} {'are' if len(kept) > 1 else 'is'} kept (Stations > Contacts)" if kept else ""))  # confirm
+
+    def contacts_window(self):  # Stations > Contacts: view, search, open, add and delete contact records (since 0.39)
+        top = self.window("contacts", "Kestrel - Contacts")  # the window
+        top.geometry("1000x480")  # a useful size
+        bar = ttk.Frame(top)  # the search line
+        bar.pack(fill="x", padx=8, pady=(8, 0))  # at the top
+        ttk.Label(bar, text="Search").pack(side="left")  # label
+        wanted = tk.StringVar()  # what is typed
+        search = ttk.Entry(bar, textvariable=wanted, width=30)  # the search box
+        search.pack(side="left", padx=6)  # place it
+        ttk.Label(bar, text="callsign, name, location, grid, radio or notes", font="KestrelSmall").pack(side="left")  # what it looks in
+        count = ttk.Label(bar, text="")  # how many are shown
+        count.pack(side="right")  # at the right
+        zone = local_zone_name()  # this computer's time zone, for the heading
+        tree = self.table(top, (("call", "Callsign", 90), ("name", "Name", 110), ("location", "Location", 140), ("grid", "Grid", 60), ("band", "Band", 50), ("radio", "Radio", 110),  # (continued)
+                                ("power", "Power W", 64), ("last", "Last heard (UTC)", 120), ("local", f"Local ({zone})", 100), ("traffic", "Traffic rows", 80)), height=16)  # the contacts, sortable by any heading
+
+        def fill(*_):  # (re)fill the list, keeping only what matches the search
+            words = wanted.get().strip().lower().split()  # the search, word by word
+            tree.delete(*tree.get_children())  # empty it
+            with self.contacts.lock:  # a consistent book
+                records = [dict(record) for record in self.contacts.values()]  # a copy of each record
+            shown = 0  # rows added
+            for record in sorted(records, key=lambda r: r["call"]):  # in callsign order
+                text = " ".join(str(record.get(name, "") or "") for name in ("call", "name", "location", "grid", "radio", "antenna", "notes")).lower()  # what the search looks in
+                if any(word not in text for word in words):  # not every word found
+                    continue  # left out
+                heard_t = (record.get("last_heard") or {}).get("t")  # when it was last heard
+                tree.insert("", "end", iid=record["call"], values=(record["call"], record.get("name", ""), record.get("location", ""), record.get("grid", ""), record.get("band", ""), record.get("radio", ""),  # (continued)
+                                                                   record.get("power_w", ""), utc(heard_t) if heard_t else "", local_time(heard_t) if heard_t else "", len(record.get("log", []))))  # one contact
+                shown += 1  # counted
+            count.configure(text=f"{shown} of {len(records)} contacts")  # how many
+
+        def chosen():  # the callsigns selected
+            return list(tree.selection())  # the row ids are the callsigns
+
+        def open_it():  # open the selected contact's record
+            calls = chosen()  # the selection
+            if calls:  # one is chosen
+                self.contact_window(calls[0])  # its record, to view and change
+
+        def delete_them():  # delete the selected records, after asking
+            calls = [call for call in chosen() if call in self.contacts]  # the selection
+            if not calls:  # none
+                return  # nothing to do
+            rows = sum(len(self.contacts[call].get("log", [])) + len(self.contacts[call]["history"]) for call in calls)  # the history they hold
+            if messagebox.askyesno("Kestrel - Delete Contact", f"Delete {', '.join(calls)}?\n\nThe record{'s' if len(calls) > 1 else ''} and {rows} traffic and session row{'s' if rows != 1 else ''} are removed from contacts.json. This cannot be undone.\n\nLogbook entries, messages and the 48-hour list of stations heard are kept.", icon="warning", parent=top):  # ask first
+                for call in calls:  # each one
+                    self.forget_contact(call)  # out of the book (and its "saved" mark off the list)
+                fill()  # the list again
+
+        def call_it():  # call the selected contact
+            calls = chosen()  # the selection
+            if calls:  # one is chosen
+                self.to.set(calls[0])  # into the To box
+                self.call_to()  # call it by name
+
+        wanted.trace_add("write", fill)  # filter as the search is typed
+        tree.bind("<Double-1>", lambda event: open_it())  # a double-click opens the record
+        tree.bind("<Return>", lambda event: open_it())  # so does Enter
+        tree.bind("<Delete>", lambda event: delete_them())  # Delete asks, then deletes
+        buttons = ttk.Frame(top)  # the buttons
+        buttons.pack(fill="x", padx=8, pady=8)  # at the bottom
+        ttk.Button(buttons, text="New contact...", command=lambda: self.contact_window("")).pack(side="left")  # a record for a callsign to type
+        ttk.Button(buttons, text="Open / edit", command=open_it).pack(side="left", padx=4)  # view and change the selected one
+        ttk.Button(buttons, text="Call  Ctrl+Y", command=call_it).pack(side="left", padx=4)  # call it by name
+        ttk.Button(buttons, text="Delete...", command=delete_them).pack(side="left", padx=(16, 4))  # delete the selected records (asks first)
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
+        self.contacts_refresh = lambda: fill() if top.winfo_exists() else None  # the list follows changes made in a contact's own window
+        fill()  # the first filling
+        search.focus_set()  # ready to type a search
 
 
     def add_contact(self):  # the Add Contact button, under the To box (since 0.31R3)
@@ -3075,33 +3175,7 @@ class Panel:  # the control panel window
             if messagebox.askyesno("Kestrel", f"{call} is not a contact yet.\n\nAdd it as a new contact?", parent=self.root):  # offer to add it
                 self.contact_window(call)  # a new record for it
             return  # done
-        self.choose_contact()  # no callsign: pick one from the list
-
-    def choose_contact(self):  # pick a saved contact to edit
-        top = self.window("choose contact", "Kestrel - Edit Contact")  # a small window
-        ttk.Label(top, text="Choose a contact to edit:").pack(anchor="w", padx=10, pady=(10, 4))  # what to do
-        listing = tk.Listbox(top, height=min(15, max(5, len(self.contacts))), width=40, exportselection=False)  # the contacts
-        listing.pack(fill="both", expand=True, padx=10)  # place it
-        calls = sorted(self.contacts)  # alphabetical
-        for call in calls:  # each contact
-            name = self.contacts[call].get("name", "")  # its name, if known
-            listing.insert("end", f"{call}  {name}".rstrip())  # one line
-        if calls:  # at least one
-            listing.selection_set(0)  # the first chosen
-            listing.focus_set()  # ready for the arrow keys
-
-        def open_chosen():  # open the chosen one
-            picked = listing.curselection()  # the line chosen
-            if picked:  # one is
-                top.destroy()  # close this window
-                self.contact_window(calls[picked[0]])  # and open its record
-
-        listing.bind("<Double-1>", lambda event: open_chosen())  # a double-click opens it
-        listing.bind("<Return>", lambda event: open_chosen())  # so does Enter
-        buttons = ttk.Frame(top)  # the buttons
-        buttons.pack(fill="x", padx=10, pady=10)  # at the bottom
-        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")  # close
-        ttk.Button(buttons, text="Edit", command=open_chosen).pack(side="right", padx=4)  # open it
+        self.contacts_window()  # no callsign: the contacts list, to search and pick one (since 0.39)
 
     def open_station_record(self):  # a double-click on a station heard (since 0.31R3)
         for row in self.stations.selection()[:1]:  # the row chosen
@@ -3139,6 +3213,8 @@ class Panel:  # the control panel window
                 self.stations.set(row, "saved", "")  # unmark it
         self.refresh_to()  # the To list
         self.say(f"{call} deleted from your contacts")  # confirm
+        if getattr(self, "contacts_refresh", None):  # the Contacts window may be open (since 0.39)
+            self.contacts_refresh()  # it shows the change
 
     def contact_window(self, call=""):  # a contact's record: add, edit or delete it (since 0.31R3)
         """Open the record of `call`: the saved one, or a new one. A new one is filled in from the 48-hour list of stations heard when the station was heard (callsign, grid locator, band, frequency, level and signal)."""
@@ -3307,6 +3383,8 @@ class Panel:  # the control panel window
                 self.heard_rows[new_call] = self.stations.insert("", "end", values=("*", new_call, grid, fields.get("band", ""), "", "", "saved contact"))  # add it
             self.refresh_to()  # offer it in the To box
             self.say(f"{new_call} {'added to' if first else 'saved in'} your contacts")  # confirm
+            if getattr(self, "contacts_refresh", None):  # the Contacts window may be open (since 0.39)
+                self.contacts_refresh()  # it shows the change
             top.destroy()  # close the window
 
         def delete():  # the Delete Contact button
