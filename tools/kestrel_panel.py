@@ -261,6 +261,11 @@ def utc(seconds):  # a time for display
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
+def local_time(seconds):  # the same moment in this computer's time zone (since 0.38R2)
+    """Return `seconds` (since 1970) as a local month, day and time, for the Local column beside a UTC one."""
+    return time.strftime("%m-%d %H:%M", time.localtime(seconds))  # month, day and time, local
+
+
 def local_zone_name(seconds=None):  # this computer's time zone, short enough for a scope's margin
     """Return the local time zone at `seconds` (now if None) as its offset from UTC, such as "UTC-5" or "UTC+5:30" (daylight saving time included)."""
     moment = time.localtime(time.time() if seconds is None else seconds)  # the local time then
@@ -688,7 +693,7 @@ class Panel:  # the control panel window
         frame.rowconfigure(0, weight=1)  # and the height
         table = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=2)  # the list itself; it asks for two rows and takes whatever height its panel is given
         for name, heading, width in columns:  # each column
-            table.heading(name, text=heading, anchor="w")  # its heading
+            table.heading(name, text=heading, anchor="w", command=lambda n=name, t=table: self.sort_table(t, n))  # its heading; a click sorts by it, again to reverse (since 0.38R2)
             table.column(name, width=max(22, int(width * 0.6)), minwidth=20, anchor="w", stretch=(name != "saved"))  # a modest width to ask for; every column but the star stretches with the panel
         table.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # place the list
         scroll = ttk.Scrollbar(frame, orient="vertical", command=table.yview)  # a scroll bar for it
@@ -2496,11 +2501,18 @@ class Panel:  # the control panel window
                 row = self.note_rows.get((dest, text))  # its row in Messages to send
                 if row is not None and self.to_send.exists(row):  # still listed
                     self.to_send.set(row, "state", "long note: " + words)  # shown, twice a second
+        while self.contacts.learned:  # a saved station said what radio and power it runs (since 0.38R2)
+            who, changes = self.contacts.learned.pop(0)  # the oldest news
+            said = ", ".join(f"radio {value}" if name == "radio" else f"power {value} W" for name, value in changes.items())  # in words
+            self.say(f"{who}'s contact record updated from its message: {said}")  # tell the operator
         while not self.note_events.empty():  # each event since the last look
             kind, *rest = self.note_events.get()  # what happened
             if kind == "received":  # a note arrived for this station, or for everyone
                 origin, dest, text = rest  # from whom, to whom, what
                 self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} (long note)" + (" to ALL" if dest == "ALL" else ""), text))  # into Messages received
+                self.logbook.write("broadcast" if dest == "ALL" else "message", direction="RX", station=self.settings["call"], **{"from": origin}, to=dest, text=text,  # (continued)
+                                   dial_khz=round(self.dial_hz() / 1000.0, 1), long_note=True)  # into the logbook and the sender's contact history (before 0.38R2 long notes were not logged)
+                self.note_telemetry(origin, text)  # a long note may carry telemetry too
                 self.received.yview_moveto(1.0)  # keep it in view
                 self.root.bell()  # a sound, as for other messages
                 continue  # next event
@@ -2701,15 +2713,15 @@ class Panel:  # the control panel window
                 child.destroy()  # goes
             self.heardlog.prune()  # forget anything older than 48 hours
             if every.get():  # every reception
-                tree = self.table(holder, (("time", "Time (UTC)", 120), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
+                tree = self.table(holder, (("time", "Time (UTC)", 120), ("local", f"Local ({local_zone_name()})", 96), ("call", "Callsign", 90), ("grid", "Grid", 60), ("snr", "Signal", 70), ("level", "Level", 50), ("kind", "Heard sending", 120), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
                 for record in reversed(self.heardlog.snapshot()):  # newest first
                     if only and record["call"] != only:  # another station, when only one is wanted
                         continue  # left out
-                    tree.insert("", "end", values=(utc(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", level_name(record.get("level", 0)), record.get("kind", ""), band_of(record.get("dial_khz", 0)), f"{record.get('dial_khz', 0):.1f}"))  # one row
+                    tree.insert("", "end", values=(utc(record["t"]), local_time(record["t"]), record["call"], record.get("grid", ""), f"{record['snr']:+.0f} dB", level_name(record.get("level", 0)), record.get("kind", ""), band_of(record.get("dial_khz", 0)), f"{record.get('dial_khz', 0):.1f}"))  # one row
             else:  # one row per station
-                tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
+                tree = self.table(holder, (("call", "Callsign", 90), ("grid", "Grid", 60), ("last", "Last heard (UTC)", 120), ("last_local", f"Local ({local_zone_name()})", 96), ("first", "First heard (UTC)", 120), ("count", "Times", 50), ("last_snr", "Last signal", 80), ("best_snr", "Best signal", 80), ("level", "Fastest", 60), ("band", "Band", 50), ("khz", "Frequency kHz", 100)))  # the columns
                 for row in self.heardlog.summary():  # most recent first
-                    tree.insert("", "end", values=(row["call"], row["grid"], utc(row["last"]), utc(row["first"]), row["count"], f"{row['last_snr']:+.0f} dB", f"{row['best_snr']:+.0f} dB", f"L{row['best_level']}", band_of(row["dial_khz"]), f"{row['dial_khz']:.1f}"))  # one row
+                    tree.insert("", "end", values=(row["call"], row["grid"], utc(row["last"]), local_time(row["last"]), utc(row["first"]), row["count"], f"{row['last_snr']:+.0f} dB", f"{row['best_snr']:+.0f} dB", f"L{row['best_level']}", band_of(row["dial_khz"]), f"{row['dial_khz']:.1f}"))  # one row
             tree.bind("<Double-1>", lambda event: use())  # a double-click puts the callsign in To
             tree.bind("<Return>", lambda event: use())  # so does Enter
             tree_box["tree"] = tree  # remember it
@@ -3030,6 +3042,7 @@ class Panel:  # the control panel window
             call = self.stations.set(row, "who")  # its callsign
             if call not in self.contacts:  # not saved yet (a saved one keeps its record)
                 self.contacts.put(call, grid=self.stations.set(row, "grid"), band=self.stations.set(row, "band"))  # remember it, with its grid locator and band if known
+                self.seed_contact_log(call)  # and what was heard of it in the last 48 hours (since 0.38R2)
             self.stations.set(row, "saved", "*")  # mark the row
         self.refresh_to()  # and offer them first in the To box
 
@@ -3106,6 +3119,14 @@ class Panel:  # the control panel window
         if latest is None:  # never heard (in 48 hours)
             return None  # nothing known
         return dict(latest, grid=grid)  # the latest reception, with the grid if any reception carried one
+
+    def seed_contact_log(self, call):  # a newly saved contact gets what was heard of it in the last 48 hours (since 0.38R2)
+        """Copy `call`'s receptions from the 48-hour heard log into its traffic log in the contact book (rows already there are skipped)."""
+        rows = [{"t": record.get("t", 0), "dir": "RX", "what": record.get("kind") or "heard", "band": band_of(record.get("dial_khz") or 0) if record.get("dial_khz") else "",  # (continued)
+                 "dial_khz": record.get("dial_khz") or 0.0, "level": f"L{record['level']}" if record.get("level") is not None else "", "snr_db": record.get("snr"), "text": ""}  # one row per reception
+                for record in self.heardlog.snapshot() if record.get("call") == call]  # this station's receptions
+        if rows:  # something was heard
+            self.contacts.add_log(call, rows)  # into its traffic log
 
     def forget_contact(self, call):  # take a contact out of the book and the lists
         self.contacts.delete(call)  # out of the book and its file, history and all
@@ -3202,7 +3223,7 @@ class Panel:  # the control panel window
         parts = [when] + [part for part in (last.get("band", ""), f"{last['dial_khz']:.1f} kHz" if last.get("dial_khz") else "", f"audio {last['offset_hz']:+.0f} Hz" if last.get("offset_hz") is not None else "", last.get("level", ""), f"{last['snr_db']:+.0f} dB" if last.get("snr_db") is not None else "") if part]  # what is known
         ttk.Label(rig, text="Last heard").grid(row=3, column=0, sticky="nw", padx=(4, 8), pady=3)  # label
         ttk.Label(rig, text="  ·  ".join(parts), wraplength=380, justify="left").grid(row=3, column=1, sticky="w", pady=3)  # the reading
-        ttk.Label(rig, text="Radio, power and antenna are not sent over the air: fill them in when you learn them.", font="KestrelSmall", wraplength=400, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # why they are blank
+        ttk.Label(rig, text="Radio and power fill in by themselves when the station sends them (its \"Rig and power\" quick message, or telemetry); the antenna you fill in.", font="KestrelSmall", wraplength=400, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # where they come from (since 0.38R2)
         notes_row = ttk.Frame(top)  # the notes
         notes_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))  # under both halves
         notes_row.columnconfigure(1, weight=1)  # the box takes the width
@@ -3214,27 +3235,50 @@ class Panel:  # the control panel window
         history = record.get("history", [])  # the history, oldest first
         mode = MODE_NAMES.get(self.settings.get("contact_history_mode", "all"), "All traffic")  # what is recorded
         first_words = "starts with this reception once saved" if not history and heard is not None and self.settings.get("contact_history_mode", "all") == "all" else f"{len(history)} kept"  # how many entries
-        ttk.Label(top, text=f"Contact history: {first_words}, newest first, up to {self.contacts.limit} (Settings > Contacts; recording: {mode})").grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))  # its heading
-        frame = ttk.Frame(top)  # the history list and its scroll bar
-        frame.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=10)  # place it
-        frame.columnconfigure(0, weight=1)  # the list takes the width
-        frame.rowconfigure(0, weight=1)  # and the height
-        columns = (("t", "UTC", 130), ("band", "Band", 50), ("khz", "kHz", 70), ("lvl", "Level", 50), ("heard", "We heard", 76), ("them", "They heard", 86), ("msgs", "Msgs in/out", 92), ("out", "Outcome", 200))  # its columns
-        listing = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=9)  # the history
-        for name, heading, width in columns:  # each column
-            listing.heading(name, text=heading)  # its heading
-            listing.column(name, width=width, stretch=name == "out")  # its width (the outcome takes the rest)
+        traffic = record.get("log", [])  # every beacon, message and call, oldest first (since 0.38R2)
+        ttk.Label(top, text=f"History: {len(traffic)} receptions and messages, and sessions {first_words}, up to {self.contacts.limit} (Settings > Contacts; recording: {mode}). Click a heading to sort; again to reverse.").grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 2))  # its heading
+        tabs = ttk.Notebook(top)  # two views of the history (since 0.38R2)
+        tabs.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=10)  # place them
+
+        def sheet(title, columns, stretch):  # one tab: a sortable list with a scroll bar
+            frame = ttk.Frame(tabs)  # the list and its scroll bar
+            tabs.add(frame, text=title)  # as a tab
+            frame.columnconfigure(0, weight=1)  # the list takes the width
+            frame.rowconfigure(0, weight=1)  # and the height
+            tree = ttk.Treeview(frame, columns=[name for name, _, _ in columns], show="headings", height=9)  # the list
+            for name, heading, width in columns:  # each column
+                tree.heading(name, text=heading, anchor="w", command=lambda n=name: self.sort_table(tree, n))  # a click sorts by it
+                tree.column(name, width=width, stretch=name == stretch)  # its width (one column takes the rest)
+            bar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)  # its scroll bar
+            tree.configure(yscrollcommand=bar.set)  # joined up
+            tree.grid(row=0, column=0, sticky="nsew")  # place the list
+            bar.grid(row=0, column=1, sticky="ns")  # and the bar
+            return tree  # for filling
+
+        def utc(t):  # a moment in UTC
+            return time.strftime("%Y-%m-%d %H:%M", time.gmtime(t or 0))  # as a date and time
+
+        def local(t):  # the same moment in this computer's time zone (since 0.38R2)
+            return time.strftime("%m-%d %H:%M", time.localtime(t or 0))  # month, day and time (the year is in the UTC column)
+
+        log_view = sheet("Traffic (each beacon and message)", (("t", "UTC", 118), ("local", f"Local ({local_zone_name()})", 96), ("dir", "Dir", 34), ("what", "What", 92), ("band", "Band", 46), ("khz", "kHz", 62),  # (continued)
+                                                              ("lvl", "Level", 44), ("snr", "SNR", 56), ("text", "Message", 300)), "text")  # the traffic log's columns
+        for row in reversed(traffic):  # newest first
+            log_view.insert("", "end", values=(utc(row.get("t")), local(row.get("t")), row.get("dir", ""), row.get("what", ""), row.get("band", ""), f"{row['dial_khz']:.1f}" if row.get("dial_khz") else "",  # (continued)
+                                               row.get("level", ""), f"{row['snr_db']:+.0f} dB" if row.get("snr_db") is not None else "", row.get("text", "")))  # one row
+        if not traffic and heard is not None:  # a station not saved yet: what will be copied in when it is
+            for reception in reversed([r for r in self.heardlog.snapshot() if r.get("call") == call]):  # its receptions in the last 48 hours, newest first
+                log_view.insert("", "end", values=(utc(reception.get("t")), local(reception.get("t")), "RX", reception.get("kind", ""), band_of(reception.get("dial_khz") or 0) if reception.get("dial_khz") else "",  # (continued)
+                                                   f"{reception['dial_khz']:.1f}" if reception.get("dial_khz") else "", level_name(reception.get("level", 0)), f"{reception['snr']:+.0f} dB" if reception.get("snr") is not None else "", "(heard before it was saved)"))  # one reception
+        listing = sheet("Sessions", (("t", "UTC", 118), ("local", f"Local ({local_zone_name()})", 96), ("band", "Band", 46), ("khz", "kHz", 62), ("lvl", "Level", 44), ("heard", "We heard", 70), ("them", "They heard", 76),  # (continued)
+                                     ("msgs", "Msgs in/out", 84), ("out", "Outcome", 190)), "out")  # the merged stretches of traffic, as before 0.38R2
         for entry in reversed(history):  # newest first
-            listing.insert("", "end", values=(time.strftime("%Y-%m-%d %H:%M", time.gmtime(entry.get("start", 0))), entry.get("band", ""), f"{entry['dial_khz']:.1f}" if entry.get("dial_khz") else "",  # (continued)
+            listing.insert("", "end", values=(utc(entry.get("start", 0)), local(entry.get("start", 0)), entry.get("band", ""), f"{entry['dial_khz']:.1f}" if entry.get("dial_khz") else "",  # (continued)
                                               entry.get("level", ""), f"{entry['heard_db']:+.0f} dB" if entry.get("heard_db") is not None else "—", f"{entry['their_db']:+.0f} dB" if entry.get("their_db") is not None else "—",  # (continued)
                                               f"{entry.get('msgs_in', 0)} / {entry.get('msgs_out', 0)}", entry.get("outcome", "")))  # one entry
         if not history and heard is not None and self.settings.get("contact_history_mode", "all") == "all":  # a new contact that was heard: its first entry, once saved
-            listing.insert("", "end", values=(time.strftime("%Y-%m-%d %H:%M", time.gmtime(heard["t"])), band_of(heard.get("dial_khz") or 0), f"{heard['dial_khz']:.1f}" if heard.get("dial_khz") else "", level_name(heard.get("level", 0)),  # (continued)
+            listing.insert("", "end", values=(utc(heard["t"]), local(heard["t"]), band_of(heard.get("dial_khz") or 0), f"{heard['dial_khz']:.1f}" if heard.get("dial_khz") else "", level_name(heard.get("level", 0)),  # (continued)
                                               f"{heard['snr']:+.0f} dB" if heard.get("snr") is not None else "—", "—", "0 / 0", f"Heard {heard.get('kind', '')}".strip()))  # the reception it was made from
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=listing.yview)  # its scroll bar
-        listing.configure(yscrollcommand=scroll.set)  # joined up
-        listing.grid(row=0, column=0, sticky="nsew")  # place the list
-        scroll.grid(row=0, column=1, sticky="ns")  # and the bar
 
         def save():  # the Save button
             new_call = boxes["call"].get().strip().upper()  # the callsign
@@ -3255,6 +3299,8 @@ class Panel:  # the control panel window
             if first and new_call == call and heard is not None and self.contacts.mode == "all":  # its first history entry: the reception it was made from
                 self.contacts.add_entry(new_call, {"start": heard["t"], "end": heard["t"], "band": band_of(heard.get("dial_khz") or 0), "dial_khz": heard.get("dial_khz") or 0.0, "level": level_name(heard.get("level", 0)),  # (continued)
                                                    "heard_db": heard.get("snr"), "their_db": None, "msgs_in": 0, "msgs_out": 0, "outcome": f"Heard {heard.get('kind', '')}".strip(), "rank": 0})  # as it was heard
+            if first:  # a new contact
+                self.seed_contact_log(new_call)  # its receptions in the last 48 hours go into its traffic log (since 0.38R2)
             if new_call in self.heard_rows:  # on the stations list
                 self.stations.set(self.heard_rows[new_call], "saved", "*")  # marked as saved
             elif first:  # not on it

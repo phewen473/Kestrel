@@ -1,5 +1,14 @@
 # Kestrel specification changelog
 
+## 0.38R2 (draft, not yet released) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.38); reference program only.
+- **Contact traffic log** (live/contacts.py): each saved contact now keeps a row for every beacon, long beacon, answer and mail notice heard from it, every message, broadcast, long note and telemetry message either way, and every call and contact start and end, with the words of each message (up to 500 rows, oldest dropped first). Before, a contact's history held only merged 15-minute sessions, so single beacons and messages were not seen. Broadcasts now count as messages received in a session, received long notes are written to the logbook (they were not), and a station's receptions from the 48-hour heard log are copied into its log when it is saved.
+- **Radio and power learned over the air**: when a saved station sends its "Rig and power" quick message ("RIG <radio> <n>W") or telemetry (its power), the contact's Radio and Power fields are updated, a "details" row is logged, and the Activity log says so.
+- **Contact window**: the history is two tabs, Traffic (each beacon and message) and Sessions; both have a Local time column beside UTC (headed with the zone, such as "Local (UTC-5)") and sort by any column when its heading is clicked (again to reverse). The Stations heard window (48 hours) also gains Local columns.
+- **Sorting the main lists**: Messages to send, Messages received, and Stations heard and saved contacts sort by any column when its heading is clicked (again to reverse).
+- Tests: tests/test_contact_log.py.
+
 ## 0.38R1 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.38).

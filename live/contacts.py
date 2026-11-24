@@ -38,10 +38,12 @@ what the logbook sees. Mail contents are never recorded here.
 import json  # the file
 import math  # distance and bearing between grid locators
 import os  # file paths
+import re  # reading a radio and power out of a message (since 0.38R2)
 import threading  # the window and the working thread both use the book
 import time  # dates and times
 
 from .bands import band_of  # the band a dial frequency is in
+from .telemetry import parse as telemetry_parse  # a telemetry message's power (since 0.38R2)
 
 HISTORY_MIN, HISTORY_MAX, HISTORY_DEFAULT = 30, 200, 120  # how many history entries each contact may keep
 MODES = ("all", "contacts")  # what goes into a history: all traffic, or completed contacts only
@@ -50,6 +52,19 @@ FIELDS = ("name", "location", "grid", "radio", "power_w", "antenna", "notes")  #
 MERGE_S = 900.0  # traffic within 15 minutes of a history entry, on the same band, is added to it
 RANKS = {"heard": 0, "called": 1, "contact": 2, "ended": 3}  # how far a stretch of traffic got, least first
 HEARD_EVENTS = ("heard", "message", "broadcast", "telemetry")  # received events that come from a named station
+LOG_MOST = 500  # each contact's traffic log keeps at most this many rows, oldest dropped first (since 0.38R2)
+LOG_HEARD = ("beacon", "long beacon", "answer", "mail notice")  # frames heard that get a row of their own in the traffic log (acknowledgments and identifications inside a contact would only crowd it)
+RIG_POWER = re.compile(r"\bRIG\s+(.+?)\s+(\?|\d+(?:\.\d+)?)\s*W\b", re.IGNORECASE)  # "... RIG FT-991A 50W": the quick message "Rig and power" (since 0.38R2)
+
+
+def rig_power_from(text):  # a received message's radio and power, if it says
+    """Return (radio, power in watts as text) from a message such as "Q1AA HANK FM05 RIG FT-991A 50W"; either may be "" when not given; (None, None) when the message names no rig."""
+    found = RIG_POWER.search(text or "")  # the RIG ... W part
+    if not found:  # none
+        return None, None  # nothing said
+    radio = found.group(1).strip()  # the radio, as written
+    power = "" if found.group(2) == "?" else f"{float(found.group(2)):g}"  # the watts ("?" means not known)
+    return ("" if radio == "?" else radio), power  # both
 
 
 def grid_center(grid):  # where a Maidenhead grid locator is
@@ -92,7 +107,7 @@ def blank_record(call):  # a new contact with nothing known yet
     now = time.time()  # the moment it is made
     record = {"call": call, "band": ""}  # the callsign, and the band it was last heard on
     record.update({name: "" for name in FIELDS})  # the operator's fields, empty
-    record.update({"created": now, "updated": now, "last_heard": {}, "history": []})  # when, and nothing heard yet
+    record.update({"created": now, "updated": now, "last_heard": {}, "history": [], "log": []})  # when, and nothing heard yet (the traffic log since 0.38R2)
     return record  # the record
 
 
@@ -104,6 +119,7 @@ def normal_record(call, record):  # a record read from the file, made whole
     whole["call"] = call  # the key is the callsign
     whole["history"] = [entry for entry in whole["history"] if isinstance(entry, dict)] if isinstance(whole["history"], list) else []  # only real entries
     whole["last_heard"] = whole["last_heard"] if isinstance(whole["last_heard"], dict) else {}  # only a real reading
+    whole["log"] = [row for row in whole["log"] if isinstance(row, dict)] if isinstance(whole["log"], list) else []  # only real rows (a file from before 0.38R2 has none)
     return whole  # the record
 
 
@@ -133,6 +149,7 @@ class ContactBook(dict):  # callsign -> record, with the file and the history ru
         self.mode = mode if mode in MODES else "all"  # what goes into a history
         self.lock = threading.RLock()  # one change at a time
         self.sessions = {}  # callsign -> the history entry being added to now (kept in memory)
+        self.learned = []  # (callsign, {field: value}) radio and power learned from received messages, for the panel to announce and take (since 0.38R2)
         self.load()  # read what is there
 
     def load(self):  # read the file
@@ -233,6 +250,69 @@ class ContactBook(dict):  # callsign -> record, with the file and the history ru
             del self[call]["history"][:-self.limit]  # no more than the limit
         return entry  # add to it
 
+    def _log_row(self, record, event, when, direction, fields, dial_khz, snr):  # one row of a contact's traffic log (since 0.38R2)
+        """Append a row to `record`'s traffic log for a beacon or answer heard, a message or broadcast either way, a long note, telemetry, a call, or a contact starting or ending."""
+        what = str(fields.get("text") or "").strip() if event == "heard" else event  # what it was
+        if event == "heard" and what not in LOG_HEARD:  # an acknowledgment, identification or message frame: the message itself gets its own row
+            return  # not logged on its own
+        text = str(fields.get("text") or "") if event in ("message", "broadcast", "telemetry") else ""  # the words, for a message
+        if event == "message" and fields.get("long_note"):  # a long note (since 0.38R2)
+            what = "long note"  # named for what it was
+        if event == "telemetry":  # telemetry comes after the message that carried it
+            for last in reversed(record["log"][-3:]):  # the rows just before (a "details" row may come between)
+                if last.get("what") in ("message", "broadcast", "long note") and last.get("text") == text[:200] and abs(when - last.get("t", 0)) < 30:  # the message just logged was this telemetry
+                    last["what"] = "telemetry"  # name that row for what it was, rather than add a second
+                    return  # one row for one message
+        row = {"t": when, "dir": direction, "what": what, "band": band_of(dial_khz) if dial_khz else "", "dial_khz": dial_khz or 0.0,  # (continued)
+               "level": str(fields.get("level") or ""), "snr_db": None if snr is None else round(float(snr), 1), "text": text[:200]}  # the row
+        record["log"].append(row)  # newest last
+        del record["log"][:-LOG_MOST]  # no more than the most kept
+
+    def _learn_from(self, record, when, text):  # a received message's radio and power, into the contact (the book is locked) (since 0.38R2)
+        """Set `record`'s radio and power from a "RIG <radio> <n>W" message or a telemetry message's power, and log a row saying what changed."""
+        radio, power = rig_power_from(text)  # the quick message "Rig and power"
+        if radio is None:  # not that message: perhaps telemetry
+            info = telemetry_parse(text)  # read it as telemetry
+            radio, power = "", ("" if not info or info.get("power_w") is None else f"{info['power_w']:g}")  # telemetry gives the power only
+        changes = {name: value for name, value in (("radio", radio), ("power_w", power)) if value and str(record.get(name, "")) != value}  # what is new
+        if not changes:  # nothing new
+            return  # leave it
+        record.update(changes)  # into the contact
+        record["updated"] = when  # changed now
+        said = ", ".join(f"radio {changes['radio']}" if name == "radio" else f"power {changes['power_w']} W" for name in changes)  # what it said, in words
+        record["log"].append({"t": when, "dir": "RX", "what": "details", "band": "", "dial_khz": 0.0, "level": "", "snr_db": None, "text": f"updated from its message: {said}"})  # a row saying so
+        del record["log"][:-LOG_MOST]  # no more than the most kept
+        self.learned.append((record["call"], changes))  # for the panel to tell the operator
+
+    def add_log(self, call, rows):  # rows made elsewhere (receptions from the 48-hour heard log, when a station is first saved)
+        """Add `rows` (traffic-log rows) to `call`'s traffic log, oldest first, skipping any already there at the same time and of the same kind; return how many were added."""
+        added = 0  # so far
+        with self.lock:  # one change at a time
+            record = self.get(call)  # the contact
+            if record is None:  # not in the book
+                return 0  # nothing to do
+            have = {(round(row.get("t", 0)), row.get("what")) for row in record["log"]}  # rows already there
+            for row in sorted(rows, key=lambda r: r.get("t", 0)):  # oldest first
+                if (round(row.get("t", 0)), row.get("what")) not in have:  # new
+                    record["log"].append(dict(row))  # added
+                    added += 1  # counted
+            record["log"].sort(key=lambda r: r.get("t", 0))  # in time order
+            del record["log"][:-LOG_MOST]  # no more than the most kept
+        if added:  # something changed
+            self.save()  # write the file
+        return added  # how many
+
+    def learn(self, call, radio=None, power_w=None):  # a station said what radio and power it runs (since 0.38R2)
+        """Set `call`'s radio and power from what it sent, where given and different; return the fields changed (empty when it is not in the book or nothing changed)."""
+        with self.lock:  # one change at a time
+            record = self.get(call)  # the contact
+            if record is None:  # not in the book
+                return {}  # nothing to do
+            changes = {name: value for name, value in (("radio", radio), ("power_w", power_w)) if value and str(record.get(name, "")) != str(value)}  # what is new
+        if changes:  # something to change
+            self.put(call, **changes)  # changed and saved
+        return changes  # what changed
+
     def observe(self, event, when, fields):  # one logbook event
         """Note a logbook event (called by live/logbook.py for every event, at every level of detail).
 
@@ -265,13 +345,16 @@ class ContactBook(dict):  # callsign -> record, with the file and the history ru
                 entry["heard_db"] = round(float(snr), 1)  # how it was heard, latest
             if fields.get("report_db") is not None:  # it said how it heard this station
                 entry["their_db"] = round(float(fields["report_db"]), 1)  # latest
-            if event == "message":  # a message
+            if event in ("message", "broadcast"):  # a message (a broadcast from this station counts as one received, since 0.38R2)
                 entry["msgs_in" if direction == "RX" else "msgs_out"] += 1  # counted
+            self._log_row(record, event, when, direction, fields, dial_khz, snr)  # a row of its own in the traffic log, when it is worth one (since 0.38R2)
+            if direction == "RX" and event in ("message", "broadcast", "telemetry"):  # words from the station: it may say what it runs (since 0.38R2)
+                self._learn_from(record, when, str(fields.get("text") or ""))  # its radio and power, if it says
             rank = {"call": RANKS["called"], "contact start": RANKS["contact"], "contact end": RANKS["ended"]}.get(event, RANKS["heard"])  # how far this got
             if event == "call" and entry["rank"] >= RANKS["contact"]:  # a call inside a contact (a resend)
                 rank = entry["rank"]  # nothing new
             if rank >= entry["rank"]:  # as far as before, or further
-                kind = str(fields.get("text") or "").split()[0] if event == "heard" and fields.get("text") else event  # what was heard
+                kind = str(fields.get("text") or "").strip() if event == "heard" and fields.get("text") else event  # what was heard (the whole name, so "long beacon" is not cut to "long", since 0.38R2)
                 entry["outcome"] = outcome_text(rank, kind if rank == RANKS["heard"] else "")  # the words
                 entry["rank"] = rank  # remembered
             if event == "contact end":  # the contact is over
