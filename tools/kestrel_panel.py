@@ -444,8 +444,7 @@ class Panel:  # the control panel window
         options.grid(row=4, column=0, sticky="w", padx=8, pady=2)  # place it under the buttons
         ttk.Checkbutton(options, text="Keep contact open", variable=self.keep_open).pack(side="left", padx=4)  # hold the lock until End contact is pressed
         ttk.Button(options, text="End contact  F7", command=self.end_contact).pack(side="left", padx=(4, 4))  # close the contact properly, with identification
-        ttk.Button(options, text="Stop calling  Esc", command=self.stop_calling).pack(side="left", padx=(0, 16))  # stop a call or beacon round that has not made a contact, cutting it short on the air
-        ttk.Label(options, text="Once locked:").pack(side="left")  # label for the working-frequency choice
+        ttk.Label(options, text="Once locked:").pack(side="left", padx=(12, 0))  # label for the working-frequency choice
         self.working = ttk.Combobox(options, state="readonly", width=54)  # stay on the calling frequency, or move to a numbered channel
         self.working.pack(side="left", padx=4)  # place it
         typing = ttk.Frame(root)  # the row for typing a message
@@ -466,8 +465,10 @@ class Panel:  # the control panel window
         self.message = ttk.Entry(typing)  # the message box
         self.message.grid(row=0, column=4, sticky="ew")  # place it
         self.message.bind("<Return>", lambda event: self.queue_message())  # the Enter key queues the message
-        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=5, padx=(6, 0))  # add the message to the list to send
-        ttk.Button(typing, text="Broadcast to ALL  F11", command=self.broadcast_message).grid(row=0, column=6, padx=(4, 0))  # send the message to every station listening, with no acknowledgment
+        ttk.Button(typing, text="Queue message", command=self.queue_message).grid(row=0, column=5, padx=(6, 0), sticky="ew")  # add the message to the list to send
+        ttk.Button(typing, text="Clear", command=self.clear_message).grid(row=1, column=5, padx=(6, 0), pady=(4, 0), sticky="ew")  # empty the message box (since 0.40)
+        ttk.Button(typing, text="Broadcast to ALL  F11", command=self.broadcast_message).grid(row=0, column=6, padx=(4, 0), sticky="ew")  # send the message to every station listening, with no acknowledgment
+        ttk.Button(typing, text="Stop calling  Esc", command=self.stop_calling).grid(row=1, column=6, padx=(4, 0), pady=(4, 0), sticky="ew")  # stop a call or beacon round that has not made a contact, cutting it short on the air (under Broadcast since 0.40)
         ttk.Button(typing, text="Long note (reach)  Ctrl+N", command=self.long_note_message).grid(row=0, column=7, padx=(4, 0))  # send a short message in long frames, for weak paths (since 0.34)
         self.panes["split"] = split = ttk.PanedWindow(root, orient="vertical")  # everything below the controls, in two rows with a divider the operator can drag between them
         split.grid(row=6, column=0, sticky="nsew", padx=8, pady=4)  # it takes the rest of the window
@@ -3204,6 +3205,10 @@ class Panel:  # the control panel window
                 self.contact_window(call)  # a new record for it
             return  # done
         self.contacts_window()  # no callsign: the contacts list, to search and pick one (since 0.39)
+
+    def clear_message(self):  # the Clear button under Queue message (since 0.40)
+        self.message.delete(0, "end")  # the message box emptied
+        self.message.focus_set()  # ready to type again
 
     def big_text(self, parent, words, height):  # a read-only text area in larger letters, for reading a message in full (since 0.40)
         """Return a Text widget in `parent` holding `words`, wrapped, read-only, in the panel's font four points larger."""
