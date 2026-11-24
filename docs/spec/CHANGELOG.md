@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.38 (draft) - November 24, 2026
+
+- **Signal version 0.38.** Stations following 0.37 or earlier cannot read 0.38 long beacons and long notes, nor 0.38 stations theirs, and read a beacon with power steps as noise. Everything else is unchanged.
+- **Wide long frame** (Section 5.9): the long beacon's and long notes' 32 tones are five bins apart, 4.29 Hz (were three bins, 2.57 Hz), about 137 Hz in all (were 82 Hz), still 59.5 s. The receiver reads each tone's own bin, then three bins, then five bins (new). Simulated nine-in-ten thresholds, three-bin spacing against five: no spread -26 / -26 dB, 1 Hz -22 / -22, 2 Hz -22 / -22, 3 Hz -20 / -22, 4 Hz -16 / -22, 6 Hz not read / -20 (tools/wide_spacing_study.py). The carrier cleaner covers 1500 Hz +/- 130 Hz (was 100). Tests: tests/test_wide_long.py.
+- **Power steps before a beacon** (Section 5.10, modem/powersteps.py): four 1 s tones at 1500 Hz, 0, -10, -20 and -30 dB against the beacon, 0.25 s apart, sent just before a short beacon; the beacon header's spare bit says they came. Receivers look back in the audio they keep and read each step (SNR in 2.5 kHz, heard or not, how far apart): about 10 dB a step means the sending transmitter's power follows its drive, less means ALC compression. A step is heard down to about -23 dB in 2.5 kHz. The steps go first so reply slots keep their timing; the beaconing station waits 5 s more for answers. Reference program: Operate > Beacon type > Short, with power steps (Settings > Operating too); the steps read are shown in the Activity log, in Stations heard ("power steps to -20 dB, even") and as four bars in the frame strip. Library interface 16: the compiled header reader accepts the spare bit on a beacon. Tests: tests/test_powersteps.py (the steps' shape, the flag through both header readers and both stations, steps read back from a stream fed as a sound card would through both receivers, uneven steps flagged, noise alone hears none).
+
 ## 0.37 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.34); nothing in the specification's rules changes. 0.36 was not released (the number was skipped).

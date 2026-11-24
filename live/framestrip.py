@@ -31,6 +31,7 @@ GOOD_DB, FAIR_DB = 6.0, 3.0  # a body tone whose strongest slot stands this far 
 TAIL_SHARE = 0.2  # a failed body whose last fifth (or more) came through lost is shown as cut off where the signal went
 MESSAGE_KEEP_S = 600.0  # a message's parts are kept together for ten minutes after its last part was heard
 STATION_MATCH_S = 5.0  # the station's own decode of a frame comes within this many seconds of the listener's
+STEPS_KEEP_S = 300.0  # power steps read before a beacon stay shown five minutes, unless a message comes in meanwhile (since 0.38)
 
 
 def tone_state(db):  # how one body tone came through
@@ -56,6 +57,7 @@ class FrameStrip:  # what the strip shows
         self.lock = threading.Lock()  # updated from the station's thread, read from the window's
         self.frame = None  # the frame shown: a dict (see _new_frame), or None while nothing has been heard
         self.message = None  # the message the frame belongs to: {"parts", "status", "origin", "when"}, or None
+        self.steps = None  # the latest power steps read before a beacon: {"reading", "origin", "when"}, or None (since 0.38)
 
     # ---- from the receiver ----
 
@@ -83,6 +85,8 @@ class FrameStrip:  # what the strip shows
             return  # nothing to do
         with self.lock:  # one thread at a time
             now = self.clock()  # when
+            if getattr(result, "power_steps", None) is not None:  # power steps were read before this beacon (since 0.38)
+                self.steps = {"reading": result.power_steps, "origin": (result.fields or {}).get("origin", ""), "when": now}  # shown beside the frame
             frame = self.frame  # the frame shown
             if frame is not None and frame["outcome"] is not None and now - frame["done_at"] <= STATION_MATCH_S and frame["level"] == result.level:  # the frame just finished
                 if not frame["outcome"]["ok"]:  # it failed alone
@@ -165,8 +169,26 @@ class FrameStrip:  # what the strip shows
             return boxes, f"Part{'s' if len(missing) > 1 else ''} {', '.join(missing)} not heard yet", "fair"  # said
         return boxes, "", ""  # still coming
 
+    def _steps_view(self, now):  # the latest power steps, for the place where a message's parts go (since 0.38)
+        """Return the steps to draw: {"steps": [(dB, heard, SNR)], "note", "tone"}, or {} when none were read lately or a message is newer."""
+        s = self.steps  # the latest
+        if s is None or now - s["when"] > STEPS_KEEP_S or (self.message is not None and self.message["when"] > s["when"]):  # none, too old, or a message came since
+            return {}  # nothing
+        r = s["reading"]  # what was read
+        lowest = "none heard" if r.lowest_db != r.lowest_db else f"heard to {r.lowest_db:.0f} dB"  # NaN when none was heard
+        judged = {True: "even", False: "UNEVEN (ALC?)", None: ""}[r.even]  # how evenly they fell
+        who = f"{s['origin']}: " if s["origin"] else ""  # whose
+        return {"steps": [(db, ok, snr) for db, ok, snr in zip((0, -10, -20, -30), r.heard, r.snr_db)], "steps_note": f"{who}{lowest}" + (f", {judged}" if judged else ""),  # (continued)
+                "steps_tone": "good" if r.even is True else "fair" if r.even is False else ""}  # the picture
+
     def _view(self, now):  # what to draw, worked out
         """See view()."""
+        out = self._view_frame(now)  # the frame and its message
+        out.update(self._steps_view(now))  # and the latest power steps, if any (since 0.38)
+        return out  # the picture
+
+    def _view_frame(self, now):  # the frame and its message, worked out
+        """The frame and its message's parts (see view())."""
         parts, done, tone = self._parts_view()  # the message's parts
         f = self.frame  # the frame shown
         if f is None:  # nothing heard yet

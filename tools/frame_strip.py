@@ -74,5 +74,12 @@ def draw(c, v, colors, x, y, w):  # the strip, on canvas `c` at (x, y), `w` wide
         line = bad if part == "missing" else edge  # its border
         c.create_rectangle(bx, y + 18, bx + 16, y + 40, fill=fills.get(part, dim), outline=line, width=2 if part == "missing" else 1, dash=(3, 2) if part == "missing" else ())  # its box
         c.create_text(bx + 8, y + 29, text="?" if part == "missing" else str(k + 1), fill=on if part in fills else bad if part == "missing" else muted, font=("Segoe UI", 8, "bold"))  # its number, or ? when never heard
-    if v.get("done"):  # something to say about the message
+    if v.get("steps") and not v.get("parts"):  # power steps read before a beacon, and no message being followed (since 0.38)
+        c.create_text(px, y, text="Power steps", anchor="nw", fill=muted, font=("Segoe UI", 8))  # their title
+        for k, (db, heard, _snr) in enumerate(v["steps"]):  # each step: 0, -10, -20, -30 dB
+            bx, tall = px + k * 26, 20 - 5 * k  # its place, and a bar a little shorter for each weaker step
+            c.create_rectangle(bx, y + 40 - tall, bx + 18, y + 40, fill=good if heard else dim, outline=edge if heard else bad, dash=() if heard else (3, 2))  # heard (solid) or not (dashed)
+            c.create_text(bx + 9, y + 42, text=f"{db:.0f}", anchor="n", fill=text if heard else muted, font=("Segoe UI", 7))  # its level
+        c.create_text(px, y + 54, text=v.get("steps_note", ""), anchor="nw", fill={"good": good, "fair": fair}.get(v.get("steps_tone"), text), font=("Segoe UI", 8, "bold"), width=165)  # how far down, and how evenly
+    elif v.get("done"):  # something to say about the message
         c.create_text(px, y + 44, text=v["done"], anchor="nw", fill={"good": good, "fair": fair, "bad": bad}.get(v.get("done_tone"), text), font=("Segoe UI", 8, "bold"), width=165)  # said

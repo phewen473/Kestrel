@@ -8,7 +8,8 @@ leaves room in about a minute for tones three times as long as L0's:
 
     preamble (12 tones, the long pattern) | body (36 data tones with 3 pilots)
 
-    51 tones x 1.167 s = 59.5 s, 32 tones 2.57 Hz apart (about 82 Hz wide), centered near 1500 Hz.
+    51 tones x 1.167 s = 59.5 s, 32 tones 4.29 Hz apart (about 137 Hz wide), centered near 1500 Hz
+    (2.57 Hz apart and 82 Hz wide until signal version 0.38).
 
 The body is 66 field bits (callsign 48, grid 15, available 1, holds mail 1,
 spare 1) and a CRC-16, coded with the same K=7 rate-1/2 convolutional code
@@ -43,7 +44,7 @@ from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
 LONG = Level(LONG_LEVEL, LONG_SAMPLES, LONG_STEP)  # the long beacon's tone length and spacing, as a level
 FIELD_BITS = CALL_BITS + GRID_BITS + 3  # callsign, grid and three flag bits (available, holds mail, spare)
 CALL_SHAPE = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the shape of an amateur callsign: what passes the check value must also look like one (noise that passes the 16-bit check almost never does, which matters when many combinations of copies are tried)
-CLEAN_HALF_HZ = 100.0  # carriers are looked for this far either side of 1500 Hz (the beacon's 82 Hz, the 50 Hz of frequency error allowed, and a margin)
+CLEAN_HALF_HZ = 130.0  # carriers are looked for this far either side of 1500 Hz (half the frame's 137 Hz, the 50 Hz of frequency error allowed, and a margin; 100 Hz before signal version 0.38's wider spacing)
 CARRIER_TIMES = 4.0  # a frequency whose quietest-tenth energy is this many times the band's is a steady carrier (plain noise stays under 2)
 CARRIER_MOST = 12  # more occupied bins than this (about 10 Hz in all) is not a few carriers, and nothing is removed
 NOTCH_HALF_HZ = 0.65  # half the width of the notch that removes a carrier, in hertz (three quarters of a bin)
@@ -134,7 +135,7 @@ def clean(x):  # take steady carriers out of the long beacon's band
 
 def candidates(x, keep=3):  # where long beacons may start
     """Return the long pattern's best candidates in `x` (as preamble.detect_preamble)."""
-    return detect_preamble(x, LONG, keep=keep, whiten=True)  # the same search as every level, with the long pattern and tone length, and the band levelled first (a carrier inside 82 Hz would otherwise swamp it)
+    return detect_preamble(x, LONG, keep=keep, whiten=True)  # the same search as every level, with the long pattern and tone length, and the band levelled first (a carrier inside the frame's band would otherwise swamp it)
 
 
 @dataclass  # a plain record
@@ -151,6 +152,7 @@ class Soft:  # what the receiver measured of one long-beacon candidate, kept so 
     wide: np.ndarray = None  # the same, with each tone's bin and the bin either side of it added (since 0.34R1): what a tone smeared by Doppler spread leaves
     band: np.ndarray = None  # every bin of the body (band_energies), kept to read the Doppler spread once the tones are known (since 0.35)
     noise: float = 0.0  # the noise energy per bin of this copy (since 0.35)
+    wider: np.ndarray = None  # each tone's bin and two bins either side of it (since 0.38, with tones five bins apart): what a tone smeared by 3 Hz or more of Doppler spread leaves
 
 
 def _normalized(tone_e):  # tone energies -> units of the noise
@@ -170,12 +172,28 @@ def soft_at(x, found):  # measure one candidate's body
     offset = found["offset_hz"] + extra  # best estimate of the offset
     band = band_energies(x, body_start, LAYOUT["total"], LONG, offset, drift)  # every bin of the tone band, every body tone
     tone_e = tone_energies(band, LONG)  # the 32 tone positions
-    span = M_TONES * LONG.step  # the bins the 32 tones and their neighbors cover
-    wide_e = tone_e + band[:, 0:span:LONG.step][:, :M_TONES] + band[:, 2:span + 2:LONG.step][:, :M_TONES]  # each tone's bin with the bin below and above it (the long frame's tones are 3 bins apart, so no bin is counted twice)
+    wide_e, wider_e = _smeared(band)  # each tone's bin with one, and with two, bins either side (since 0.34R1 and 0.38)
     noise = noise_level(tone_e)  # noise energy per tone position
     ratio, _ = signal_report(known_tone_energies(band[LAYOUT["pilot_pos"]], LAYOUT["pilot_tones"], LONG), noise)  # a first reading from the pilots
     pilot_snr = 10 * np.log10(max(ratio, 1e-12) / (LONG.seconds * REF_BANDWIDTH_HZ))  # in 2.5 kHz
-    return Soft(_normalized(tone_e), float(offset), float(drift), float(found["quality"]), float(pilot_snr), wide=_normalized(wide_e), band=band, noise=float(noise))  # energies in units of the noise, center bins and three-bin sums, and the raw bins for the spread reading
+    return Soft(_normalized(tone_e), float(offset), float(drift), float(found["quality"]), float(pilot_snr), wide=_normalized(wide_e), band=band, noise=float(noise), wider=_normalized(wider_e))  # energies in units of the noise: center bins, three-bin and five-bin sums; and the raw bins for the spread reading
+
+
+def _smeared(band):  # three-bin and five-bin sums of each tone position (since 0.38)
+    """Return (three-bin sums, five-bin sums) of the 32 tone positions from `band` (band_energies: one bin kept either side of the tone band).
+
+    The long frame's tones are five bins apart since signal version 0.38,
+    so a tone's bin and the two bins either side of it belong to no other
+    tone. Beyond the band kept, a noise-like value (the row's median energy
+    / ln 2, the mean of exponentially spread noise) stands in for the second
+    neighbor of the two edge tones.
+    """
+    fill = np.median(band, axis=1, keepdims=True) / np.log(2)  # a noise-like value for the bins outside the band kept
+    padded = np.concatenate([fill, band, fill], axis=1)  # one more bin each end
+    centers = 2 + LONG.step * np.arange(M_TONES)  # each tone's column in the padded band
+    three = padded[:, centers] + padded[:, centers - 1] + padded[:, centers + 1]  # own bin and the bin either side
+    five = three + padded[:, centers - 2] + padded[:, centers + 2]  # and two either side
+    return three, five  # both sums
 
 
 def body_tones(data):  # the tones a body's bits are sent as
@@ -188,19 +206,23 @@ def body_tones(data):  # the tones a body's bits are sent as
     return tones  # pilots and data tones, in sending order
 
 
-def decode_soft(center, wide=None):  # center bins first, then three-bin sums (since 0.34R1)
-    """Decode from the center-bin energies; if that fails and `wide` (three-bin sums) is given, try those.
+def decode_soft(center, wide=None, wider=None):  # center bins first, then three-bin sums (since 0.34R1), then five-bin sums (since 0.38)
+    """Decode from the center-bin energies; if that fails try `wide` (three-bin sums), then `wider` (five-bin sums), when given.
 
-    The three-bin sums read tones that Doppler spread has smeared into
-    their neighboring bins: in simulation they gain about 2 dB at 1 Hz of
-    spread, 4 dB at 2 Hz and 8 dB or more at 3 to 4 Hz, while the center
-    bin stays about 2 dB better on a steady signal. Trying both keeps the
-    better of each. The margin is always measured on the center bins, so
-    reports do not depend on which reading decoded.
+    The sums read tones that Doppler spread has smeared into their
+    neighboring bins. With the tones five bins apart (signal version 0.38),
+    simulation of the long frame gave, nine frames in ten: center bin -26,
+    -20, -18, -16 and -14 dB at 0, 1, 2, 3 and 4 Hz of spread; three bins
+    -26, -22, -22, -20, -20; five bins -26, -22, -22, -22, -22 (and -20 at
+    6 Hz, where three-bin spacing decoded nothing). Trying each in turn
+    keeps the best of all. The margin is always measured on the center
+    bins, so reports do not depend on which reading decoded.
     """
     fields, margin = decode_energies(center)  # the steady-signal reading
     if fields is None and wide is not None:  # failed, and a smeared reading is available
         fields, margin = decode_energies(wide, measure=center)  # try it
+    if fields is None and wider is not None:  # failed again, and the wider reading is available
+        fields, margin = decode_energies(wider, measure=center)  # try it
     return fields, margin  # the result
 
 
@@ -247,7 +269,7 @@ def decode_at(x, found, result, failed=None):  # read one candidate's body
         result.reason = "frame incomplete"  # say why
         return result  # look again later
     result.offset_hz, result.drift_hz_s, result.snr_db = soft.offset_hz, soft.drift_hz_s, soft.pilot_snr_db  # what is known so far
-    fields, margin = decode_soft(soft.energies, soft.wide)  # try to read it (center bins, then three-bin sums)
+    fields, margin = decode_soft(soft.energies, soft.wide, soft.wider)  # try to read it (center bins, then three-bin, then five-bin sums)
     if fields is None:  # the check failed
         result.reason = "body check failed"  # say why
         if failed is not None:  # the caller combines copies
@@ -298,7 +320,8 @@ class LongCombiner:  # adds up copies of the same long beacon heard minutes apar
                 if any(abs(a.when - b.when) < COMBINE_APART_S for a, b in combinations(group, 2)):  # two of them are the same transmission found twice
                     continue  # not a real pair
                 wides = [s.wide for s in (soft,) + group]  # every copy's three-bin sums (a copy kept by an older version may have none)
-                fields, margin = decode_soft(soft.energies + sum(old.energies for old in group), None if any(w is None for w in wides) else sum(wides))  # add the energies and try, center bins then three-bin sums
+                widers = [s.wider for s in (soft,) + group]  # and five-bin sums (since 0.38)
+                fields, margin = decode_soft(soft.energies + sum(old.energies for old in group), None if any(w is None for w in wides) else sum(wides), None if any(w is None for w in widers) else sum(widers))  # add the energies and try: center bins, three-bin, then five-bin sums
                 if fields is not None and (best is None or margin > best[1]):  # it decodes
                     best = (fields, margin, (soft,) + group)  # keep the clearest
             if best is not None:  # decoded with this many: no need for more

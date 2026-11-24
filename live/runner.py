@@ -10,6 +10,7 @@ import time  # the real clock
 
 from link.params import TURNAROUND_S  # pause between hearing a frame and replying
 from modem.levels import level_name  # L0 to L4, or LB
+from modem.powersteps import SECONDS as POWER_STEPS_S  # how long the power steps before a beacon last (since 0.38)
 from modem.params import CONTROL_BITS, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, and the long beacon's frame type and level number
 
 from .busy import ChannelWatch, band_of  # listening before transmitting
@@ -274,6 +275,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
+    margin_set = [LIVE_REPLY_MARGIN_S]  # the margin last given to the station (in a list so the loop can change it; power steps add theirs, since 0.38)
     listener = Listener()  # the continuous receiver
     listener.on_progress = on_progress  # the frame strip, if the caller shows one (since 0.37)
     listener.expect = lambda: (station.call, [station.target, station.partner] + list(expect() if expect is not None else ()))  # this station's callsign, and those it expects: the one it calls, its partner, and any the caller adds (since 0.31R1)
@@ -326,7 +328,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                 signal_log.tx(tx, True, dial_khz=dial(), gain=getattr(sink, "gain", None))  # the transmitter is on
             if on_transmit is not None:  # someone wants to know the transmitter is on
                 on_transmit(tx, True)  # tell them
-            sink.play(tx.audio)  # send the audio
+            sink.play(tx.on_air() if hasattr(tx, "on_air") else tx.audio)  # send the audio (a beacon's power steps first, since 0.38)
         finally:  # ...the transmitter must come off
             ptt.unkey()  # transmitter off
             if logging:  # a signal log is kept
@@ -343,9 +345,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
         for heard in feed_from(listener, source, watch):  # every frame that has completed
             result = heard.result if heard.result.ok and heard.result.frame_type == FRAME_TYPE_LONG else station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry); a long beacon is already decoded, perhaps from several copies added together
+            if getattr(heard.result, "power_steps", None) is not None and getattr(result, "power_steps", None) is None:  # the listener read power steps before this beacon (since 0.38)
+                result.power_steps = heard.result.power_steps  # kept with the station's report
             if logging:  # a signal log is kept
                 signal_log.rx(heard, station_result=result, dial_khz=dial())  # both decodes, and the clip if clips are kept
             stamp(describe(result))  # tell the operator
+            if getattr(result, "power_steps", None) is not None:  # power steps were read before this beacon (since 0.38)
+                stamp(f"{(result.fields or {}).get('origin', '')} {result.power_steps.describe()}".strip())  # tell the operator too
             if on_frame is not None:  # someone keeps a detailed log
                 on_frame(result)  # pass on every report, decoded or not
             if on_heard is not None and result.ok:  # somebody was heard clearly
@@ -364,6 +370,9 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         log_tick(signal_log, source)  # the signal log's once-a-minute lines
         if on_tick is not None:  # another part of the program may have asked for something
             on_tick(station, now())  # let it act, here in the station's own thread
+        margin = LIVE_REPLY_MARGIN_S + (POWER_STEPS_S if getattr(station, "power_steps", False) else 0.0)  # replies to a beacon sent after its power steps come that much later than the link rules time them (since 0.38)
+        if margin != margin_set[0]:  # changed (the operator may turn the steps on or off while running)
+            station.reply_margin = margin_set[0] = margin  # allowed for
         tx = station.poll(now())  # anything to send without having heard something?
         if tx is not None:  # yes
             transmit(tx)  # send it

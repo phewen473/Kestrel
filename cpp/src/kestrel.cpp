@@ -498,6 +498,7 @@ const int kHeaderTones = 12;  /* tones in one header copy (frame.py HEADER_SYMBO
 const int kHeaderCoded = 60;  /* coded bits in one header copy (HEADER_CODED_BITS) */
 const int kHeaderFields = 16;  /* header field bits before the check value (HEADER_FIELD_BITS) */
 const int kHeaderBits = 24;  /* field bits and the 8-bit check value */
+const int kFrameTypeBeacon = 2;  /* the beacon's frame type (FRAME_TYPE_BEACON): the one frame whose header spare bit may be set (power steps before it; since interface 16) */
 
 /* The 5-bit value a tone number carries (mfsk.py GRAY_VALUE, since signal version 0.32): tones are
  * numbered in Gray code, so the value is found by undoing the code (each bit is the XOR of all the bits
@@ -563,7 +564,8 @@ int crc8_bits(const uint8_t *bits, int count) {  /* the header's check value */
 }  /* end of crc8_bits */
 
 /* Decode soft header bits and check them (frame.py _check_header): true, with the 24 header bits in `bits`,
- * when the check value matches, the level field names `level` and the spare bit is clear. */
+ * when the check value matches, the level field names `level` and the spare bit is clear (or, since
+ * interface 16 and signal version 0.38, set on a beacon: power steps came just before it). */
 bool check_header(const double *llrs, int level, uint8_t *bits) {  /* decode and check */
     uint8_t decoded[kHeaderCoded / 2];  /* room for the decoder's output */
     long got = kes_viterbi_decode(llrs, kHeaderCoded, decoded);  /* correct errors */
@@ -575,7 +577,9 @@ bool check_header(const double *llrs, int level, uint8_t *bits) {  /* decode and
         check = (check << 1) | decoded[kHeaderFields + i];  /* gathered */
     }  /* end of the bits */
     int named = (decoded[3] << 2) | (decoded[4] << 1) | decoded[5];  /* the level the header names */
-    if (crc8_bits(decoded, kHeaderFields) != check || named != level || decoded[15] != 0) {  /* any of the three tests fails */
+    int type = (decoded[0] << 2) | (decoded[1] << 1) | decoded[2];  /* the frame type it names */
+    bool spare_ok = decoded[15] == 0 || type == kFrameTypeBeacon;  /* the spare bit is clear, or set on a beacon: power steps before it (since interface 16) */
+    if (crc8_bits(decoded, kHeaderFields) != check || named != level || !spare_ok) {  /* any of the three tests fails */
         return false;  /* no */
     }  /* end of the tests */
     std::memcpy(bits, decoded, kHeaderBits);  /* the header */

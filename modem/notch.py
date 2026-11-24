@@ -12,7 +12,7 @@ out with a notch a few hertz wide. (The second test keeps a strong
 Kestrel frame, which raises a whole stretch of the band, from being
 mistaken for a row of carriers.)
 
-The long beacon has done this for its own 82 Hz since spec 0.28
+The long beacon has done this for its own band (82 Hz, 137 Hz since 0.38) since spec 0.28
 (longbeacon.clean). Since 0.31R1 every level gets it, over the whole band
 any level can use (L4 is 1420 Hz wide, plus 50 Hz of frequency error).
 """

@@ -11,7 +11,7 @@ def test_long_beacon_shape():  # the numbers in the specification
     assert abs(longbeacon.SECONDS - 59.5) < 0.01  # just under a minute
     assert len(longbeacon.build_long_beacon("Q1AAAA", "EM93")) == longbeacon.SAMPLES == round(59.5 * FS)  # the audio is exactly that long
     spacing = longbeacon.LONG.step * longbeacon.LONG.bin_hz  # how far apart the tones are
-    assert abs(spacing - 2.571) < 0.001 and 32 * spacing < 85  # 2.57 Hz apart, about 82 Hz for all 32
+    assert abs(spacing - 4.2857) < 0.001 and 32 * spacing < 140  # 4.29 Hz apart (five bins, since signal version 0.38), about 137 Hz for all 32
 
 
 def test_long_beacon_round_trip_in_weak_noise():  # sent, heard well below L0's limit, and read back exactly

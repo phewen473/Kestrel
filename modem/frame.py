@@ -178,23 +178,41 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     return transmission(np.concatenate([pattern_tones(spec.number), header_syms, body_syms, header_syms]), spec)  # the level's preamble, the header, the body, then the header again: one waveform with faded ends (since 0.32)
 
 
-def build_control(frame_type, fields, level=0):  # the transmitter for control frames
-    """Return the audio of a control frame of the given type carrying the packed `fields` (see control.py)."""
+def _with_steps(header):  # the header with its spare bit set: power steps came before this beacon (since signal version 0.38)
+    """Return a copy of the 24 header bits with the spare bit (bit 15) set and the check value worked out again."""
+    bits = np.array(header, dtype=np.uint8)  # a copy
+    bits[15] = 1  # the spare bit
+    bits[HEADER_FIELD_BITS:] = crc8(bits[:HEADER_FIELD_BITS])  # the check value, for the new fields
+    return bits  # the header
+
+
+def build_control(frame_type, fields, level=0, steps=False):  # the transmitter for control frames
+    """Return the audio of a control frame of the given type carrying the packed `fields` (see control.py).
+
+    With `steps` (beacons only, since signal version 0.38) the header's
+    spare bit is set, telling receivers that power steps (modem/powersteps.py)
+    were sent just before the frame; the caller sends them.
+    """
     if len(fields) != CONTROL_BITS[frame_type]:  # each control frame has a fixed length
         raise ValueError("wrong number of bits for this control frame")  # refuse nonsense
+    if steps and frame_type != FRAME_TYPE_BEACON:  # only a beacon announces power steps
+        raise ValueError("only a beacon can announce power steps")  # refuse nonsense
     layout = control_layout(frame_type)  # shape of this frame's body
-    header_syms = bits_to_symbols(conv_encode(_header_bits(frame_type, level, 0, 0, 1, False)))  # header: type and level; the other fields are zero (one copy)
+    header = _header_bits(frame_type, level, 0, 0, 1, False)  # header: type and level; the other fields are zero
+    if steps:  # power steps before this beacon
+        header = _with_steps(header)  # the spare bit says so
+    header_syms = bits_to_symbols(conv_encode(header))  # the coded header as tones (one copy)
     data_bits = np.concatenate([fields, crc16(fields)])  # the fields and their check value
-    done = native.encode_frame(_header_bits(frame_type, level, 0, 0, 1, False), data_bits, True, layout, LEVELS[level], pattern_tones(level))  # the compiled transmitter, when the library is in use
+    done = native.encode_frame(header, data_bits, True, layout, LEVELS[level], pattern_tones(level))  # the compiled transmitter, when the library is in use
     if done is not None:  # it was
         return done  # the same audio, to rounding
     body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
     return transmission(np.concatenate([pattern_tones(level), header_syms, body_syms, header_syms]), LEVELS[level])  # the level's preamble, the header, the body, then the header again: one waveform with faded ends (since 0.32)
 
 
-def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False):  # "here I am"
-    """Return the audio of a beacon from `call` at grid locator `grid`; `wide` asks answering stations to spread over four reply slots."""
-    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide), level)  # pack the fields and send
+def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False, steps=False):  # "here I am"
+    """Return the audio of a beacon from `call` at grid locator `grid`; `wide` asks answering stations to spread over four reply slots; `steps` says power steps were sent just before it (since 0.38; the caller sends them)."""
+    return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide), level, steps=steps)  # pack the fields and send
 
 
 def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0, directed=False, grid=""):  # "I hear you" (or, with directed, "I am calling you")
@@ -251,6 +269,8 @@ class RxResult:  # the receiver's report
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
     assisted: str = ""  # how a control frame that failed alone was read after all (copies added together, an expected callsign); empty when it read alone (since 0.31R1)
     pattern_tones: int = -1  # for a signature whose header could not be read: how many of the 12 pattern tones stood out in their slots (a real Kestrel frame shows most of them; another mode's signal only one or two); -1 when not measured (since 0.31R2)
+    steps: bool = False  # a beacon whose header says power steps came just before it (since 0.38)
+    power_steps: object = None  # what was read of those steps (a powersteps.Reading), or None (since 0.38)
 
 
 COMBINE_OFFSET_HZ = 4.0  # earlier failed copies of a control frame are added to a new one only if their frequency offsets agree this closely (the same station)
@@ -403,7 +423,8 @@ def _check_header(llrs, spec):  # decode soft header bits and check them
     """Return the header bits if `llrs` decode to a header that passes its check and names `spec`'s level; otherwise None."""
     bits = viterbi_decode(llrs)  # correct errors
     check_ok = np.array_equal(crc8(bits[:HEADER_FIELD_BITS]), bits[HEADER_FIELD_BITS:])  # does the check value match?
-    if check_ok and bits_to_int(bits[3:6]) == spec.number and bits[15] == 0:  # and does the header name the preamble's level, with the spare bit clear?
+    spare_ok = bits[15] == 0 or bits_to_int(bits[0:3]) == FRAME_TYPE_BEACON  # the spare bit is clear, or set on a beacon: power steps came just before it (since signal version 0.38)
+    if check_ok and bits_to_int(bits[3:6]) == spec.number and spare_ok:  # and does the header name the preamble's level, with the spare bit as allowed?
         return bits  # yes: this may be a frame
     return None  # no
 
@@ -485,6 +506,7 @@ def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the re
     result.part = bits_to_int(header[8:11])  # fourth field: part number
     result.parts = bits_to_int(header[11:14]) + 1  # fifth field: part count
     result.compressed = bool(header[14])  # sixth field: is the text compressed?
+    result.steps = bool(header[15])  # the spare bit: on a beacon, power steps came just before the frame (since signal version 0.38)
     is_control = result.frame_type in CONTROL_BITS  # a beacon, answer, acknowledgment or identification?
     if not is_control and (result.frame_type not in ADDRESS_BITS or result.part >= result.parts):  # neither a control frame nor a sensible message frame
         result.reason = "unsupported frame"  # say why we stopped

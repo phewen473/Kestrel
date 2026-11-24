@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.37"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.34"  # the specification version in which the on-air behavior last changed (0.34: long notes, sent in long-beacon frames with the spare bit set; 0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
+SPEC_VERSION = "0.38"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.38"  # the specification version in which the on-air behavior last changed (0.38: the long frame's tones five bins apart (4.29 Hz, 137 Hz in all), and power steps before a beacon, announced by the header's spare bit; 0.34: long notes, sent in long-beacon frames with the spare bit set; 0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 RAMP_S = 0.010  # every transmission fades in and out over this long, along a raised cosine (since 0.32), so it starts and stops without a click
@@ -27,7 +27,7 @@ PREAMBLE_PATTERNS = (  # the twelve tone numbers that start every frame, one row
 LONG_PATTERN = (18, 25, 30, 16, 5, 26, 21, 9, 2, 14, 23, 4)  # the long beacon's own twelve-tone pattern (same rules as the rows above; it starts the long beacon and identifies it)
 LONG_LEVEL = 7  # the number the long beacon's level goes by in reports and logs (shown as "LB"; levels 5 and 6 are kept for faster levels)
 LONG_SAMPLES = 14000  # samples in one long-beacon tone: 1.167 s
-LONG_STEP = 3  # the long beacon's tones sit three FFT bins apart: 2.57 Hz, about 82 Hz for all 32
+LONG_STEP = 5  # the long frame's tones sit five FFT bins apart: 4.29 Hz, about 137 Hz for all 32 (three bins, 2.57 Hz and 82 Hz, until signal version 0.38: the wider spacing costs nothing on a steady path and gains about 2 dB at 3 Hz of Doppler spread, 6 dB at 4 Hz and 10 dB at 6 Hz)
 FRAME_TYPE_LONG = 6  # the frame type the receiver reports for a long beacon (the long beacon has no header; this number is never sent)
 M_TONES = 32  # number of different tones every level can send
 BITS_PER_SYMBOL = 5  # each tone carries 5 bits, because 2**5 = 32

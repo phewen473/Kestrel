@@ -97,7 +97,8 @@ SIGNAL_NAMES = {"off": "Off", "on": "On: text only (a few MB a day)",  # the sig
                 "clips": f"On, with each frame's audio (clips kept {KEEP_DAYS} days, at most {CLIPS_MAX_MB} MB)"}  # (continued)
 RADIO_MODE_NAMES = {"auto": "Automatic: USB-D if the radio has it, otherwise USB", "PKTUSB": "USB-D (upper sideband, data)", "USB": "USB (plain upper sideband)"}  # the radio's mode, as the operator sees it (Kestrel never uses lower sideband)
 LISTEN_FIRST_NAMES = {True: "On: hold beacons, calls and broadcasts while the frequency is in use", False: "Off: transmit regardless (you check the frequency yourself)"}  # listen before transmitting, as the operator sees it
-BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)",  # the two kinds of repeating beacon (continued)
+BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)",  # the three kinds of repeating beacon (continued)
+                     "stepped": "Short, with power steps: 5 s of tones at 0, -10, -20, -30 dB first, then the call-up",  # (continued: since 0.38)
                      "long": "Long: about 60 s, heard much further; nobody answers (every 10 min at most)"}  # (continued)
 LONG_EVERY_MIN = 10  # long beacons repeat no more often than this, in minutes (each holds the frequency for a minute)
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
@@ -379,6 +380,7 @@ class Panel:  # the control panel window
         self.spotter = None  # PSK Reporter spotting, made when turned on in Settings (since 0.35)
         self.watch = signalwatch.SignalWatch()  # every signal in the passband, followed and recognized (since 0.37)
         self.frames = FrameStrip()  # the Kestrel frame arriving or last heard, and its message's parts, for the frame strip (since 0.37)
+        self.steps_heard = {}  # callsign -> (time, powersteps.Reading): the last power steps read before each station's beacon (since 0.38)
         self.strip_at = 0.0  # when the frame strip was last drawn
         self.watch_at = 0.0  # when the watcher last looked
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
@@ -1731,6 +1733,8 @@ class Panel:  # the control panel window
         if not call:  # it names nobody
             return  # nothing to note
         grid = (result.fields or {}).get("grid", "")  # its grid locator, if it carries one
+        if getattr(result, "power_steps", None) is not None:  # power steps came before its beacon (since 0.38)
+            self.steps_heard[call] = (time.time(), result.power_steps)  # kept for the Stations heard list
         kind = KIND.get(result.frame_type, "frame")  # what it was
         if (result.fields or {}).get("note"):  # a long-note frame (since 0.34), not a long beacon
             kind = "long " + ("receipt" if result.fields["note"] == "receipt" else "note")  # named for what it is
@@ -2005,6 +2009,7 @@ class Panel:  # the control panel window
 
     def tick(self, station, now):  # called by the live loop once every tenth of a second, in the station's own thread
         self.station_now = now  # the station's clock, for requests that write to its log
+        station.power_steps = self.settings.get("beacon_type") == "stepped"  # power steps before each short beacon, when chosen (since 0.38; kept in Python by both stations)
         with self.actions_lock:  # take the waiting requests
             waiting, self.actions = self.actions, []  # all of them
         left = [action for action in waiting if not action(station)]  # do each; keep any that cannot be done yet
@@ -2621,6 +2626,11 @@ class Panel:  # the control panel window
             notice = self.mail_notices.get(call)  # its last mail notice, if any
             if notice is not None and time.time() - notice[0] < 7200:  # within the last two hours
                 note = (note + "; " if note else "") + self.notice_words(call, notice[1])  # whom it holds mail for
+            steps = self.steps_heard.get(call)  # its last power steps, if any (since 0.38)
+            if steps is not None and time.time() - steps[0] < 3600:  # within the last hour
+                r = steps[1]  # the reading
+                words = "power steps: none heard" if r.lowest_db != r.lowest_db else f"power steps to {r.lowest_db:.0f} dB" + {True: ", even", False: ", UNEVEN", None: ""}[r.even]  # how far down they were heard, and how evenly
+                note = (note + "; " if note else "") + words  # added
             self.stations.set(row, "mail", note)  # show it
 
     def station_menu_at(self, event):  # a right click on the Stations heard and saved contacts list

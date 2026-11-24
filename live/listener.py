@@ -31,6 +31,7 @@ from modem.frame import pattern_seen  # how much of a signature pattern is reall
 from modem.frame import _body_total, _read_header_how  # how long a frame is by its header, and reading a header
 from modem.preamble import detect_preamble, fine_time, preamble_samples  # the signature-pattern search, the fine timing of a candidate, and a pattern's length
 from modem import longbeacon  # the long beacon's length and limit
+from modem import powersteps  # reading the power steps before a beacon (since 0.38)
 from modem.params import FRAME_TYPE_LONG, LONG_LEVEL  # the long beacon's frame type and level number
 from modem.frame import HEADER_SYMBOLS, RxResult, _body_totals  # tones in the two header copies together, and every body length a frame can have
 from modem.frame import HEADER_SYMBOLS_ONCE  # tones in one header copy (the frame strip, since 0.37)
@@ -534,6 +535,10 @@ class Listener:  # the continuous receiver
         same audio twice, so it is not reported again.
         """
         result.sample = self._number(start)  # where it began in the stream
+        if result.ok and getattr(result, "steps", False):  # a beacon with power steps just before it (since 0.38)
+            first_kept = max(int(start) - powersteps.SAMPLES - FS, 0)  # from a second before the steps (or as far back as the store goes)
+            before = self._slice(first_kept, int(start) + FS)  # the steps and a little either side
+            result.power_steps = powersteps.measure(before, float(result.start) - first_kept, result.offset_hz)  # read (None when the store does not reach back far enough)
         pad = int(PAD_S * FS)  # a little audio either side
         audio = self._slice(start - pad, end + pad)  # the frame's own stretch of audio
         first = self._number(max(start - pad, 0))  # the stream's number for its first sample
