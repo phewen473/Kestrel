@@ -72,7 +72,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
             "scope_rx_color": 50.0, "scope_tx_color": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colors change, and the set of colors used)  # (continued: logging, recording and looks)
-            "scope_time_marks": True,  # (continued: UTC time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, since 0.33)
+            "scope_time_marks": True, "scope_time_zone": "utc",  # (continued: time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, in UTC or local time, since 0.33)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
@@ -217,9 +217,17 @@ def utc(seconds):  # a time for display
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
+def local_zone_name(seconds=None):  # this computer's time zone, short enough for a scope's margin
+    """Return the local time zone at `seconds` (now if None) as its offset from UTC, such as "UTC-5" or "UTC+5:30" (daylight saving time included)."""
+    moment = time.localtime(time.time() if seconds is None else seconds)  # the local time then
+    minutes = int(moment.tm_gmtoff // 60)  # its offset from UTC, in minutes
+    hours, rest = divmod(abs(minutes), 60)  # whole hours, and any part hour
+    return f"UTC{'+' if minutes >= 0 else '-'}{hours}" + (f":{rest:02d}" if rest else "")  # written short
+
+
 FONT_MIN, FONT_MAX = 7, 16  # the smallest and largest font sizes offered
 SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB below full scale. Its waterfall scrolls with the receive waterfall, empty while nothing is sent, so a transmission lines up with what was received at the same moment.\n\n"  # the transmit scope
-              "Time marks (View > Time marks on the scopes, or Ctrl+T, to turn them on or off): a dotted line across both waterfalls every 5, 10, 15, 30 or 60 seconds (whichever suits the waterfall's height), labeled with the time in UTC, and a seconds-ago scale to the right.\n\n"  # the time marks
+              "Time marks (View > Time marks on the scopes, or Ctrl+T, to turn them on or off): a dotted line across both waterfalls every 5, 10, 15, 30 or 60 seconds (whichever suits the waterfall's height), labeled with the time, and a seconds-ago scale to the right. View > Scope time marks in chooses UTC or this computer's local time; the corner shows which (UTC, or the local zone as its offset, such as UTC-5).\n\n"  # the time marks
               "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
               "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labeled.\n\n"  # the scales
               "Floor and Range (the sliders beside each scope): Floor sets the level at the bottom of the trace and the black of the waterfall; raise it to hide noise, lower it to see weaker signals. Range sets how many dB lie between the bottom and the top; fewer dB gives more contrast. Double-click a slider to reset it.\n\n"  # the sliders
@@ -553,7 +561,12 @@ class Panel:  # the control panel window
             colors.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
         view.add_cascade(label="Waterfall colors", underline=0, menu=colors)  # put it in the View menu
         self.time_marks_var = tk.BooleanVar(value=bool(self.settings.get("scope_time_marks", True)))  # whether the waterfalls show time marks
-        view.add_checkbutton(label="Time marks on the scopes", underline=1, accelerator="Ctrl+T", variable=self.time_marks_var, command=self.time_marks_chosen)  # UTC marks and the seconds scale, on or off
+        view.add_checkbutton(label="Time marks on the scopes", underline=1, accelerator="Ctrl+T", variable=self.time_marks_var, command=self.time_marks_chosen)  # the time marks and the seconds scale, on or off
+        self.time_zone_var = tk.StringVar(value="local" if self.settings.get("scope_time_zone") == "local" else "utc")  # whether the marks show UTC or this computer's local time
+        zones = tk.Menu(view, tearoff=False)  # the Scope time submenu
+        zones.add_radiobutton(label="UTC", underline=0, value="utc", variable=self.time_zone_var, command=self.time_zone_chosen)  # coordinated universal time
+        zones.add_radiobutton(label=f"Local time ({local_zone_name()})", underline=0, value="local", variable=self.time_zone_var, command=self.time_zone_chosen)  # this computer's time zone
+        view.add_cascade(label="Scope time marks in", underline=6, menu=zones)  # put it in the View menu
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -799,6 +812,12 @@ class Panel:  # the control panel window
         self.save_settings()  # kept
         self.draw_time_marks()  # shown or cleared now, not at the next line
 
+    def time_zone_chosen(self):  # View > Scope time marks in: UTC or local time was picked
+        """Remember the choice and relabel the marks at once."""
+        self.settings["scope_time_zone"] = self.time_zone_var.get()  # remembered with the other settings
+        self.save_settings()  # kept
+        self.draw_time_marks()  # relabeled now
+
     def toggle_time_marks(self):  # Ctrl+T
         self.time_marks_var.set(not self.time_marks_var.get())  # the other way
         self.time_marks_chosen()  # and act on it
@@ -829,6 +848,8 @@ class Panel:  # the control panel window
             canvas.delete("time")  # the old marks
         if not self.time_marks_var.get():  # turned off
             return  # nothing to draw
+        local = self.time_zone_var.get() == "local"  # local time chosen instead of UTC
+        zone = local_zone_name() if local else "UTC"  # the zone's name, shown in the corner
         for canvas, top, height, width in ((self.scope, self.above + self.trace_h, self.fall_h, self.scope_w), (self.tx_canvas, self.tx_top + self.tx_trace_h, self.tx_fall_h, self.tx_w)):  # the receive waterfall, then the transmit one
             every = self.mark_every(height)  # the spacing that suits its height
             for line, second in self.time_marks:  # each mark
@@ -837,7 +858,7 @@ class Panel:  # the control panel window
                     continue  # skip it
                 y = top + age  # its height on the canvas
                 canvas.create_line(self.left, y, self.left + width, y, fill="#e8e8e8", dash=(2, 4), tags="time")  # a dotted line across the waterfall
-                label = time.strftime("%H:%M:%S", time.gmtime(second))  # the time it marks, UTC
+                label = time.strftime("%H:%M:%S", time.localtime(second) if local else time.gmtime(second))  # the time it marks, in the zone chosen
                 if height >= 12:  # room for words on this waterfall
                     words = canvas.create_text(self.left + 3, y + 1, text=label, anchor="nw" if age < height - 10 else "sw", fill="#ffffff", font="KestrelTiny", tags="time")  # the time beside it, kept on the waterfall
                     box = canvas.bbox(words)  # its size
@@ -850,7 +871,7 @@ class Panel:  # the control panel window
                 if seconds and height < 12:  # a short waterfall
                     continue  # only "now" fits
                 canvas.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font="KestrelTiny", tags="time")  # label it
-            canvas.create_text(self.left + width + self.right / 2, top + height - 1, text="UTC", anchor="s", fill="#a8b0ba", font="KestrelTiny", tags="time")  # what the marks' times are in
+            canvas.create_text(self.left + width + self.right / 2, top + height - 1, text=zone, anchor="s", fill="#a8b0ba", font="KestrelTiny", tags="time")  # what the marks' times are in (UTC, or the local zone as its offset)
 
     def x_for(self, hz, width=None):  # where an audio frequency falls across a scope `width` points wide (the receive scope unless told otherwise)
         return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * ((self.scope_w if width is None else width) - 1)  # left margin plus the share of the width shown
