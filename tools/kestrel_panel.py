@@ -49,6 +49,10 @@ from live import KIND, Listener, call_request, describe, near_line, plain_line, 
 from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
 from live import spaceweather  # today's measured sunspot number and space-weather warnings (since 0.34R1)  # noqa: E402
 from live import propcheck, pskspot, skywatch  # the prediction check, PSK Reporter spotting, and the bands now from ionosondes and spots (since 0.35)  # noqa: E402
+from live import signalwatch  # recognizing the signals in the passband: type, frequency, how long (since 0.37)  # noqa: E402
+from theme_editor import open_theme_editor  # View > Edit themes: the operator's own themes (since 0.37)  # noqa: E402
+import frame_strip  # drawing the frame strip under the receive scope (since 0.37)  # noqa: E402
+from live.framestrip import FrameStrip  # what the frame strip shows (since 0.37)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -73,7 +77,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
-            "log_level": "basic", "record_rx": False, "signal_log": "off", "psk_spot": False, "prop_check": True, "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
+            "log_level": "basic", "record_rx": False, "signal_log": "off", "psk_spot": False, "prop_check": True, "signal_types": list(signalwatch.TYPES), "signal_labels": True, "signal_scope": True, "frame_strip": True, "scope_theme": "theme", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
             "scope_rx_color": 50.0, "scope_tx_color": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colors change, and the set of colors used)  # (continued: logging, recording and looks)
             "scope_time_marks": True, "scope_time_zone": "utc",  # (continued: time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, in UTC or local time, since 0.33)
@@ -102,7 +106,7 @@ PSK_NAMES = {False: "Off", True: "On: report the Kestrel stations I decode to PS
 PROPCHECK_NAMES = {False: "Off", True: "On: compare each station heard with the prediction for its path (prop_check.csv)"}  # the prediction check (since 0.35)
 RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
 CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
-THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
+THEME_NAMES = theme.NAMES  # the themes, as the operator sees them (15 and System since 0.37)
 NO_RIG = "(no rig control)"  # the radio-type choice that means the radio is tuned by hand
 LOCKED = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
 SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
@@ -115,6 +119,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
     ("Ctrl+P", "propagation: best band by hour to the station in To (ITU-R P.533)"),  # (continued: since 0.32)
     ("Ctrl+N", "send the message as a long note (up to 28 characters in minute-long frames, for weak paths; a receipt comes back)"),  # (continued: since 0.34)
+    ("Ctrl+D", "signals detected: every signal in the passband, its type, frequency and how long it was heard"),  # (continued: since 0.37)
     ("Ctrl+T", "time marks on the scopes on or off (UTC marks across both waterfalls, and the seconds scale)"),  # (continued: since 0.33)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
     ("Esc", "in the main window: stop calling (a call started with Respond or Call station, a beacon round, a long beacon, broadcasts waiting) and cut such a transmission short; in other windows: close the window"))  # the rest
@@ -136,6 +141,37 @@ def load_settings():  # read the remembered settings
         settings.pop(f"quick{number}", None)  # are no longer used
     settings["quick"] = [{"name": str(item.get("name", "")), "text": str(item.get("text", ""))} for item in settings["quick"] if isinstance(item, dict)][:QUICK_MOST]  # a fresh copy, so the defaults are never changed by editing
     return settings  # the settings to use
+
+
+MACHINE_KEYS = ("audio_in", "audio_out", "rig", "port", "cat_port", "rigctld", "layout")  # settings that belong to one computer: its sound cards, ports, the rig program's place and the window layout (since 0.37)
+SETTINGS_KIND = "kestrel-settings"  # what an exported settings file says it is (since 0.37)
+
+
+def export_settings_file(settings, path, machine=False):  # File > Export settings (since 0.37)
+    """Write `settings` to `path` as a file another Kestrel can import; this computer's sound cards, ports and layout only when `machine` is true. Themes are not included: they have their own export."""
+    kept = {key: value for key, value in settings.items() if key in DEFAULTS and (machine or key not in MACHINE_KEYS)}  # the settings to give
+    write_json(path, {"kind": SETTINGS_KIND, "version": SPEC_VERSION, "this_computer": bool(machine), "settings": kept})  # written, readably
+
+
+def read_settings_file(path):  # the settings in an exported file (since 0.37)
+    """Return the known settings held in an exported settings file; raise ValueError if it is not one."""
+    data = read_json(path, None)  # the file
+    if not isinstance(data, dict) or data.get("kind") != SETTINGS_KIND or not isinstance(data.get("settings"), dict):  # not a Kestrel settings file
+        raise ValueError("That file holds no Kestrel settings.")  # said
+    return {key: value for key, value in data["settings"].items() if key in DEFAULTS}  # only settings this version knows
+
+
+def merged_settings(current, incoming, machine=False):  # the settings after an import (since 0.37)
+    """Return `current` with each setting from `incoming` laid over it, where it has the right form; this computer's sound cards, ports and layout are kept unless `machine` is true."""
+    merged = dict(current)  # a copy, so the running settings are untouched until the operator agrees
+    for key, value in incoming.items():  # each imported setting
+        if key not in DEFAULTS or (key in MACHINE_KEYS and not machine):  # unknown, or this computer's own and not wanted
+            continue  # kept as it is
+        want = DEFAULTS[key]  # what form it should have
+        same = isinstance(value, bool) if isinstance(want, bool) else isinstance(value, (int, float)) and not isinstance(value, bool) if isinstance(want, (int, float)) else isinstance(value, type(want))  # the right form (a whole number will do for a decimal one)
+        if same:  # it has
+            merged[key] = value  # taken
+    return merged  # the new settings
 
 
 def side_file(suffix):  # a file kept beside this panel's settings file
@@ -251,6 +287,12 @@ PALETTES = {  # the waterfall color sets offered in View > Waterfall colors: nam
     "Gray (black to white)": [(0.0, (0, 0, 0)), (1.0, (255, 255, 255))],  # brightness only, no color at all
     "Gray, reversed (white to black)": [(0.0, (255, 255, 255)), (1.0, (0, 0, 0))],  # dark signals on a light background
     "High contrast (black, white, yellow)": [(0.0, (0, 0, 0)), (0.5, (255, 255, 255)), (1.0, (255, 255, 0))],  # weak signals turn white quickly, strong ones yellow
+    "Night red (black to red)": [(0.0, (0, 0, 0)), (0.6, (150, 0, 0)), (1.0, (255, 70, 70))],  # red only, for night vision (since 0.37)
+    "Amber (black to amber)": [(0.0, (8, 5, 0)), (0.6, (170, 100, 0)), (1.0, (255, 200, 60))],  # an amber screen (since 0.37)
+    "Green phosphor (black to green)": [(0.0, (0, 8, 0)), (0.6, (0, 150, 40)), (1.0, (170, 255, 120))],  # an old radar screen (since 0.37)
+    "Thermal (purple, red, yellow)": [(0.0, (12, 4, 20)), (0.35, (110, 20, 140)), (0.65, (230, 60, 40)), (1.0, (255, 230, 80))],  # a thermal camera's colors (since 0.37)
+    "Ice (black, blue, white)": [(0.0, (2, 10, 20)), (0.5, (40, 110, 200)), (1.0, (235, 250, 255))],  # cold blues to white (since 0.37)
+    "Ocean (navy to aqua)": [(0.0, (0, 10, 30)), (0.5, (0, 90, 140)), (1.0, (120, 255, 230))],  # deep water to surf (since 0.37)
 }  # end of the table
 
 
@@ -263,13 +305,15 @@ def make_palette(name, color):  # the 256 colors of one waterfall
     brightness scale: brightness b is shown as b ** g, with g from 4 (slider at 0)
     to 1/4 (slider at 100).
     """
-    stops = PALETTES.get(name, PALETTES["Classic"])  # the chosen set (the classic one if the name is unknown)
+    stops = PALETTES.get(name, PALETTES["Classic"])  # the chosen set (the classic one if the name is unknown; "Theme's own" is turned into the theme's set by the caller)
     bend = 2.0 ** ((50.0 - float(color)) / 25.0)  # the power applied to brightness: 1 at the middle of the slider
     steps = np.linspace(0.0, 1.0, 256) ** bend  # the 256 brightness steps, bent
     places = [p for p, _ in stops]  # where each color stop sits
     return np.stack([np.interp(steps, places, [c[k] for _, c in stops]) for k in range(3)], axis=1).astype("uint8")  # red, green and blue, each interpolated between the stops
 
 
+SIGNAL_LABEL_ROWS = 3  # names of recognized signals are stacked in up to three rows where they would overlap (since 0.37)
+THEME_OWN = "Theme's own"  # View > Waterfall colors: use the colors that go with the theme (since 0.37)
 VIEW_WIDTHS = {"Full (0-3000 Hz)": 3000.0, "1000 Hz wide": 1000.0, "500 Hz wide": 500.0, "200 Hz wide": 200.0}  # the scope widths offered, by name
 
 
@@ -333,11 +377,15 @@ class Panel:  # the control panel window
         self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
         self.spotter = None  # PSK Reporter spotting, made when turned on in Settings (since 0.35)
+        self.watch = signalwatch.SignalWatch()  # every signal in the passband, followed and recognized (since 0.37)
+        self.frames = FrameStrip()  # the Kestrel frame arriving or last heard, and its message's parts, for the frame strip (since 0.37)
+        self.strip_at = 0.0  # when the frame strip was last drawn
+        self.watch_at = 0.0  # when the watcher last looked
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
         self.logbook.observers.append(self.contacts.observe)  # the contact book learns of every call, reception and contact from the logbook, at any level of detail
         self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
         self.panes = {}  # the dividers the operator can drag, by name, so their positions can be remembered
-        self.colors = theme.apply(root, self.settings["theme"])  # the chosen look (light or dark), and its colors
+        self.colors = theme.apply(root, self.settings["theme"], self.settings.get("scope_theme", "theme"))  # the chosen theme and scope theme, and their colors
         self.apply_fonts()  # the lettering chosen in Settings, before anything is drawn
         root.title(f"Kestrel {SPEC_VERSION}  -  signal v{SIGNAL_VERSION}")  # window title: the program's version, and the signal version so two stations can be compared at a glance (the two differ when a release changes only the program)
         root.columnconfigure(0, weight=1)  # the single column stretches with the window
@@ -514,6 +562,11 @@ class Panel:  # the control panel window
         file_menu.add_command(label="Open the signal log folder", underline=5, command=lambda: self.open_path(self.signal_folder()))  # the detailed signal logs
         file_menu.add_command(label="Signal log report...", underline=7, command=self.signal_log_report)  # summarize the signal logs into a text file
         file_menu.add_separator()  # a divider
+        file_menu.add_command(label="Export settings...", underline=1, command=self.export_settings)  # this station's settings to a file, for a backup or another computer (since 0.37)
+        file_menu.add_command(label="Import settings...", underline=0, command=self.import_settings)  # settings from such a file (since 0.37)
+        file_menu.add_command(label="Export themes...", underline=7, command=self.export_themes)  # every theme the operator made or changed, to a file of its own (since 0.37)
+        file_menu.add_command(label="Import themes...", underline=8, command=self.import_themes)  # themes from such a file (since 0.37)
+        file_menu.add_separator()  # a divider
         file_menu.add_command(label="Exit", underline=1, accelerator="Alt+F4", command=self.close)  # close the panel
         bar.add_cascade(label="File", underline=0, menu=file_menu)  # put the menu on the bar
         operate = tk.Menu(bar, tearoff=False)  # the Operate menu
@@ -556,6 +609,7 @@ class Panel:  # the control panel window
         stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
         stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
         stations.add_command(label="Mail held and carried...", underline=0, accelerator="F10", command=self.mail_window)  # store and forward: mail this station carries, and its own messages out with carriers
+        stations.add_command(label="Signals detected...", underline=1, accelerator="Ctrl+D", command=self.signals_window)  # every signal in the passband, recognized (since 0.37)
         stations.add_command(label="Propagation (best band by hour)...", underline=0, accelerator="Ctrl+P", command=lambda: self.propagation_window())  # ITU-R P.533 predictions to the station in To (since 0.32)
         stations.add_separator()  # a divider
         stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
@@ -564,12 +618,17 @@ class Panel:  # the control panel window
         stations.add_command(label="Remove the selected contact", underline=0, command=self.remove_contact)  # forget it
         bar.add_cascade(label="Stations", underline=0, menu=stations)  # put the menu on the bar
         view = tk.Menu(bar, tearoff=False)  # the View menu
-        looks = tk.Menu(view, tearoff=False)  # the Theme submenu
-        for choice in theme.CHOICES:  # system, light, dark
-            looks.add_radiobutton(label=THEME_NAMES[choice], underline=0, value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
-        view.add_cascade(label="Theme", underline=0, menu=looks)  # put it in the View menu
-        self.palette_var = tk.StringVar(value=self.settings.get("scope_palette") if self.settings.get("scope_palette") in PALETTES else "Classic")  # the waterfall color set chosen (the classic one if the saved name is unknown)
+        self.looks_menu = tk.Menu(view, tearoff=False)  # the Theme submenu (filled by refresh_theme_menus, again whenever the operator's themes change)
+        view.add_cascade(label="Theme", underline=0, menu=self.looks_menu)  # put it in the View menu
+        self.scope_theme_var = tk.StringVar(value=self.settings.get("scope_theme", "theme") if self.settings.get("scope_theme") in theme.SCOPE_THEMES else "theme")  # the scopes' own look (since 0.37)
+        self.scope_looks_menu = tk.Menu(view, tearoff=False)  # the Scope theme submenu (filled the same way)
+        view.add_cascade(label="Scope theme", underline=0, menu=self.scope_looks_menu)  # put it in the View menu
+        view.add_command(label="Edit themes...", underline=0, command=lambda: open_theme_editor(self))  # make, change and share themes (since 0.37)
+        self.refresh_theme_menus()  # fill both submenus
+        self.palette_var = tk.StringVar(value=self.settings.get("scope_palette") if self.settings.get("scope_palette") in PALETTES or self.settings.get("scope_palette") == THEME_OWN else "Classic")  # the waterfall color set chosen (the classic one if the saved name is unknown)
         colors = tk.Menu(view, tearoff=False)  # the Waterfall colors submenu
+        colors.add_radiobutton(label=THEME_OWN + " (follows the theme)", value=THEME_OWN, variable=self.palette_var, command=self.palette_chosen)  # the theme's own colors (since 0.37)
+        colors.add_separator()  # a divider
         for name in PALETTES:  # every color set offered
             colors.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
         view.add_cascade(label="Waterfall colors", underline=0, menu=colors)  # put it in the View menu
@@ -580,6 +639,20 @@ class Panel:  # the control panel window
         zones.add_radiobutton(label="UTC", underline=0, value="utc", variable=self.time_zone_var, command=self.time_zone_chosen)  # coordinated universal time
         zones.add_radiobutton(label=f"Local time ({local_zone_name()})", underline=0, value="local", variable=self.time_zone_var, command=self.time_zone_chosen)  # this computer's time zone
         view.add_cascade(label="Scope time marks in", underline=6, menu=zones)  # put it in the View menu
+        signals = tk.Menu(view, tearoff=False)  # the Recognized signals submenu (since 0.37)
+        sv = self.signal_vars()  # the shared on/off choices
+        signals.add_checkbutton(label="Highlight them on the receive scope", underline=0, variable=sv["scope"], command=self.signal_choice_changed)  # shaded bands with the mode named, on the trace
+        signals.add_checkbutton(label="Label them on the waterfall", underline=0, variable=sv["fall"], command=self.signal_choice_changed)  # names at the top of the waterfall
+        signals.add_separator()  # a divider
+        for kind in signalwatch.TYPES:  # each mode
+            signals.add_checkbutton(label=kind, variable=sv[kind], command=self.signal_choice_changed)  # shown or not
+        signals.add_separator()  # a divider
+        signals.add_command(label="Show every mode", underline=5, command=lambda: self.set_all_signal_types(True))  # all on
+        signals.add_command(label="Hide every mode", underline=0, command=lambda: self.set_all_signal_types(False))  # all off
+        signals.add_command(label="Signals detected list...", underline=8, accelerator="Ctrl+D", command=self.signals_window)  # the list
+        view.add_cascade(label="Recognized signals", underline=0, menu=signals)  # put it in the View menu
+        self.strip_var = tk.BooleanVar(value=bool(self.settings.get("frame_strip", True)))  # the frame strip shown or not (since 0.37)
+        view.add_checkbutton(label="Frame strip under the receive scope", underline=1, variable=self.strip_var, command=self.frame_strip_toggled)  # a Kestrel frame as it arrives: preamble, header, body, header again, and its message's parts
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -602,7 +675,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Escape>": self.stop_calling}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Control-d>": self.signals_window, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -647,28 +720,32 @@ class Panel:  # the control panel window
         scopes.add(tx_frame, weight=1)  # on top
         tx_frame.columnconfigure(0, weight=1)  # its picture takes the width
         tx_frame.rowconfigure(0, weight=1)  # and the height
-        self.tx_canvas = tk.Canvas(tx_frame, width=self.left + self.tx_w + self.right, height=self.tx_top + self.tx_trace_h + self.tx_fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
+        self.tx_canvas = tk.Canvas(tx_frame, width=self.left + self.tx_w + self.right, height=self.tx_top + self.tx_trace_h + self.tx_fall_h + self.below, bg=self.colors["scope_bg"], highlightthickness=0)  # its drawing area
         self.tx_canvas.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)  # filling the box
         self._scope_sliders(tx_frame, "tx").grid(row=0, column=1, sticky="ns", padx=(0, 4), pady=2)  # its Floor and Range sliders, to the right
         self.tx_image = tk.PhotoImage(width=self.tx_w, height=self.tx_fall_h)  # its waterfall as a picture
         self.tx_item = self.tx_canvas.create_image(self.left, self.tx_top + self.tx_trace_h, anchor="nw", image=self.tx_image)  # shown under the trace
-        self.tx_line = self.tx_canvas.create_line(0, 0, 0, 0, fill="#ff9f43")  # its trace, placed when the scales are drawn
-        self.tx_words = self.tx_canvas.create_text(self.left, 7, anchor="w", text="nothing sent yet", fill="#ffd166", font="KestrelSmall")  # what is being sent, or what the picture is of
+        self.tx_line = self.tx_canvas.create_line(0, 0, 0, 0, fill=self.colors["tx_trace"])  # its trace, placed when the scales are drawn
+        self.tx_words = self.tx_canvas.create_text(self.left, 7, anchor="w", text="nothing sent yet", fill=self.colors["tx_words"], font="KestrelSmall")  # what is being sent, or what the picture is of
         frame = ttk.LabelFrame(scopes, text="Receive  -  audio from the radio")  # the box around the receive scope
         scopes.add(frame, weight=3)  # underneath, with most of the height
         frame.columnconfigure(0, weight=1)  # its picture takes the width
         frame.rowconfigure(0, weight=1)  # and the height
-        self.scope = tk.Canvas(frame, width=self.left + self.scope_w + self.right, height=self.above + self.trace_h + self.fall_h + self.below, bg="#0b0e12", highlightthickness=0)  # its drawing area
+        self.scope = tk.Canvas(frame, width=self.left + self.scope_w + self.right, height=self.above + self.trace_h + self.fall_h + self.below, bg=self.colors["scope_bg"], highlightthickness=0)  # its drawing area
         self.scope.grid(row=0, column=0, sticky="nsew", padx=4, pady=(4, 0))  # filling the box
         self._scope_sliders(frame, "rx").grid(row=0, column=1, rowspan=2, sticky="ns", padx=(0, 4), pady=2)  # its Floor and Range sliders, to the right
         self.fall_image = tk.PhotoImage(width=self.scope_w, height=self.fall_h)  # its waterfall as a picture
         self.fall_item = self.scope.create_image(self.left, self.above + self.trace_h, anchor="nw", image=self.fall_image)  # shown under the trace
-        self.trace = self.scope.create_line(0, 0, 0, 0, fill="#7cfc00")  # its trace, placed when the scales are drawn
+        self.trace = self.scope.create_line(0, 0, 0, 0, fill=self.colors["rx_trace"])  # its trace, placed when the scales are drawn
         self.scope.bind("<Button-1>", self.scope_click)  # a click centers the view there, zooming in on a labeled signal
-        self.scope.bind("<Button-3>", lambda event: self.set_view(1500.0, 3000.0))  # a right click returns to the full view
+        self.scope.bind("<Button-3>", self.scope_menu_at)  # a right click shows the scope's menu: the signal under the pointer, the modes shown, and Full view (since 0.37)
         self.scope.bind("<MouseWheel>", self.scope_wheel)  # the wheel zooms in and out about the pointer
         controls = ttk.Frame(frame)  # a row of zoom controls under the picture
         controls.grid(row=1, column=0, sticky="w", padx=4, pady=2)  # place it
+        self.strip_canvas = tk.Canvas(frame, height=96, bg=self.colors["bg"], highlightthickness=0)  # the frame strip: a Kestrel frame as it arrives (since 0.37)
+        self.strip_canvas.grid(row=2, column=0, columnspan=2, sticky="ew", padx=4, pady=(0, 4))  # under the scope's controls
+        if not self.settings.get("frame_strip", True):  # hidden by the operator
+            self.strip_canvas.grid_remove()  # out of the way (its place is remembered)
         ttk.Label(controls, text="View:").grid(row=0, column=0)  # its label
         self.view_choice = tk.StringVar(value="Full (0-3000 Hz)")  # the width chosen
         self.view_box = ttk.Combobox(controls, textvariable=self.view_choice, values=list(VIEW_WIDTHS), state="readonly", width=15)  # the widths offered
@@ -716,6 +793,8 @@ class Panel:  # the control panel window
     def make_palettes(self):  # (re)make both waterfalls' colors
         """Make the 256 colors of each waterfall from the color set chosen in View > Waterfall colors and that scope's Color slider."""
         name = self.palette_var.get()  # the color set chosen
+        if name == THEME_OWN:  # the theme decides (since 0.37)
+            name = self.colors.get("waterfall", "Classic")  # the theme's own set
         for which in ("rx", "tx"):  # the receive and transmit waterfalls
             self.palettes[which] = make_palette(name, self.scope_db[which, "color"].get())  # its colors
 
@@ -760,13 +839,13 @@ class Panel:  # the control panel window
         span = self.top_hz - self.low_hz  # the width of the view
         step = next(size for size in (10, 20, 50, 100, 200, 500) if span / size <= 8 or size == 500)  # the spacing that gives at most eight frequency marks
         marks = sorted({step * n for n in range(int(np.ceil(self.low_hz / step)), int(self.top_hz // step) + 1)} | {hz for hz in (500, 2500) if self.low_hz <= hz <= self.top_hz})  # a mark at every step, and at the two edges of the Kestrel band
-        gray, faint = "#a8b0ba", "#3a414a"  # scale colors
+        gray, faint = self.colors["scale"], self.colors["scale_faint"]  # scale colors, from the theme
         for canvas, width, top, bottom in ((self.tx_canvas, self.tx_w, self.tx_top, self.tx_top + self.tx_trace_h + self.tx_fall_h), (self.scope, self.scope_w, self.above, self.above + self.trace_h + self.fall_h)):  # the transmit scope, then the receive scope
             canvas.delete("scale")  # remove the old scales
             for index, hz in enumerate(marks):  # each frequency mark
                 x = self.x_for(hz, width)  # where it falls across this scope
                 edge = hz in (500, 2500)  # the two edges of the Kestrel band
-                canvas.create_line(x, top, x, bottom, fill="#e0e0e0" if edge else faint, dash=(4, 3) if edge else (1, 4), tags="scale")  # a dashed line for an edge, a faint dotted one otherwise
+                canvas.create_line(x, top, x, bottom, fill=self.colors["edge"] if edge else faint, dash=(4, 3) if edge else (1, 4), tags="scale")  # a dashed line for an edge, a faint dotted one otherwise
                 if width >= 46 * len(marks) or index % 2 == 0:  # room for every label, or else every other one
                     canvas.create_text(x, bottom + self.below / 2, text=str(hz), fill=gray, font="KestrelTiny", tags="scale")  # its audio frequency underneath
             canvas.create_text(self.left + width + self.right / 2, bottom + self.below / 2, text="Hz", fill=gray, font="KestrelTiny", tags="scale")  # the unit of the frequency scale
@@ -797,7 +876,7 @@ class Panel:  # the control panel window
         if levels is None:  # not transmitting
             if self.tx_was:  # a transmission has just ended
                 self.tx_was = False  # note it
-                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill="#a8b0ba")  # labeled as the last transmission
+                self.tx_canvas.itemconfigure(self.tx_words, text=self.tx_canvas.itemcget(self.tx_words, "text").replace("SENDING", "last sent:"), fill=self.colors["scale"])  # labeled as the last transmission
                 self.tx_canvas.coords(self.tx_line, self.left, self.tx_y(-70), self.left + self.tx_w, self.tx_y(-70))  # the trace lies flat again
             if not advance:  # the waterfalls are standing still (nothing running)
                 return  # nothing new to draw
@@ -806,7 +885,7 @@ class Panel:  # the control panel window
             if not self.tx_was:  # a transmission has just begun
                 self.tx_was = True  # note it
                 dial = self.dial_hz() / 1000.0  # the radio's frequency in kHz
-                self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill="#ffd166")  # what is going out, and where its center lands on the air
+                self.tx_canvas.itemconfigure(self.tx_words, text=f"SENDING {self.tx_kind or 'a frame'} on {dial + 1.5:,.1f} kHz (dial {dial:,.1f} + 1500 Hz)", fill=self.colors["tx_words"])  # what is going out, and where its center lands on the air
             floor, span = self.scope_db["tx", "floor"].get(), self.scope_db["tx", "range"].get()  # the transmit scope's Floor and Range sliders
             bright = np.clip((levels - floor) / span, 0.0, 1.0)  # each point on a scale from the floor (bottom, black) to the floor plus the range (top, red)
             points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
@@ -870,12 +949,12 @@ class Panel:  # the control panel window
                 if age >= height or second % every:  # off the bottom, or not one of the marks shown at this spacing
                     continue  # skip it
                 y = top + age  # its height on the canvas
-                canvas.create_line(self.left, y, self.left + width, y, fill="#e8e8e8", dash=(2, 4), tags="time")  # a dotted line across the waterfall
+                canvas.create_line(self.left, y, self.left + width, y, fill=self.colors["time_line"], dash=(2, 4), tags="time")  # a dotted line across the waterfall
                 label = time.strftime("%H:%M:%S", time.localtime(second) if local else time.gmtime(second))  # the time it marks, in the zone chosen
                 if height >= 12:  # room for words on this waterfall
-                    words = canvas.create_text(self.left + 3, y + 1, text=label, anchor="nw" if age < height - 10 else "sw", fill="#ffffff", font="KestrelTiny", tags="time")  # the time beside it, kept on the waterfall
+                    words = canvas.create_text(self.left + 3, y + 1, text=label, anchor="nw" if age < height - 10 else "sw", fill=self.colors["time_text"], font="KestrelTiny", tags="time")  # the time beside it, kept on the waterfall
                     box = canvas.bbox(words)  # its size
-                    canvas.tag_lower(canvas.create_rectangle(box[0] - 1, box[1], box[2] + 1, box[3], fill="#000000", outline="", tags="time"), words)  # a dark patch behind it, so it reads on any color
+                    canvas.tag_lower(canvas.create_rectangle(box[0] - 1, box[1], box[2] + 1, box[3], fill=self.colors["time_bg"], outline="", tags="time"), words)  # a dark patch behind it, so it reads on any color
             x = self.left + width + 4  # just right of the waterfall
             for seconds in (0, 5, 10, 15, 20, 30, 45, 60):  # the seconds-ago scale
                 y = top + seconds / max(self.line_s, 0.02)  # how far down that is
@@ -883,8 +962,8 @@ class Panel:  # the control panel window
                     break  # no more
                 if seconds and height < 12:  # a short waterfall
                     continue  # only "now" fits
-                canvas.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill="#a8b0ba", font="KestrelTiny", tags="time")  # label it
-            canvas.create_text(self.left + width + self.right / 2, top + height - 1, text=zone, anchor="s", fill="#a8b0ba", font="KestrelTiny", tags="time")  # what the marks' times are in (UTC, or the local zone as its offset)
+                canvas.create_text(x, y, text=f"{seconds} s" if seconds else "now", anchor="w", fill=self.colors["scale"], font="KestrelTiny", tags="time")  # label it
+            canvas.create_text(self.left + width + self.right / 2, top + height - 1, text=zone, anchor="s", fill=self.colors["scale"], font="KestrelTiny", tags="time")  # what the marks' times are in (UTC, or the local zone as its offset)
 
     def x_for(self, hz, width=None):  # where an audio frequency falls across a scope `width` points wide (the receive scope unless told otherwise)
         return self.left + (hz - self.low_hz) / (self.top_hz - self.low_hz) * ((self.scope_w if width is None else width) - 1)  # left margin plus the share of the width shown
@@ -915,6 +994,42 @@ class Panel:  # the control panel window
                 self.set_view(at, self.fit_span(width))  # center on it, at a width that suits it
                 return  # done
         self.set_view(hz, 500.0 if self.top_hz - self.low_hz >= 3000.0 else self.top_hz - self.low_hz)  # otherwise center where clicked, zooming to 500 Hz from the full view
+
+    def signal_at(self, hz):  # the recognized signal at a frequency, if one is shown there (since 0.37)
+        """Return (track, kind) for the narrowest shown signal covering hz, or None."""
+        chosen = set(self.settings.get("signal_types") or ())  # the modes shown
+        now = time.time()  # for signals that ended a moment ago
+        near = [(k, k.kind_now) for k in self.watch.current()] + [(k, k.kind) for k in self.watch.done[-40:] if now - k.last < signalwatch.LINGER_S]  # on now, or just ended
+        slack = max(3.0, (self.top_hz - self.low_hz) / max(self.scope_w, 1) * 4)  # a few points either side, so a narrow signal is easy to hit
+        hits = [(k, kind) for k, kind in near if kind in chosen and k.lo - slack <= hz <= k.hi + slack]  # the ones under the pointer
+        return min(hits, key=lambda item: item[0].width) if hits else None  # the narrowest (it lies on top), or none
+
+    def scope_menu_at(self, event):  # a right click on the receive scope (since 0.37)
+        """Show the scope's menu: what the signal under the pointer is, with Zoom, Hide and Show only for its mode; then the choice of modes shown and Full view."""
+        sv = self.signal_vars()  # the tick variables, shared with View > Recognized signals and the Signals detected window
+        menu = tk.Menu(self.root, tearoff=False)  # made fresh each time, for the signal under the pointer
+        hit = self.signal_at(self.hz_at(event.x))  # the signal clicked on, if any
+        if hit is not None:  # on a recognized signal
+            track, kind = hit  # it and its type
+            words = track.detail if kind == "Kestrel" and track.detail else kind  # the Kestrel level and callsign, or the mode
+            menu.add_command(label=f"{words} at {track.center:,.0f} Hz, {track.width} Hz wide, heard {track.seconds:.0f} s", state="disabled")  # what it is, as a heading
+            menu.add_command(label="Zoom in on it", underline=0, command=lambda: self.set_view(track.center, self.fit_span(track.width)))  # centered, at a width that suits it
+            menu.add_command(label=f"Hide {kind} signals", underline=0, command=lambda: (sv[kind].set(False), self.signal_choice_changed()))  # this mode off
+            menu.add_command(label=f"Show only {kind} signals", underline=5, command=lambda: ([sv[k].set(k == kind) for k in signalwatch.TYPES], self.signal_choice_changed()))  # every other mode off
+            menu.add_separator()  # a line
+        menu.add_command(label="Full view", underline=0, command=lambda: self.set_view(1500.0, 3000.0))  # back to everything (what a right click used to do)
+        menu.add_separator()  # a line
+        menu.add_checkbutton(label="Highlight signals on the receive scope", underline=0, variable=sv["scope"], command=self.signal_choice_changed)  # the shaded bands
+        menu.add_checkbutton(label="Label signals on the waterfall", underline=0, variable=sv["fall"], command=self.signal_choice_changed)  # the names on the waterfall
+        modes = tk.Menu(menu, tearoff=False)  # the modes, one tick each
+        for kind in signalwatch.TYPES:  # each mode
+            modes.add_checkbutton(label=kind, variable=sv[kind], command=self.signal_choice_changed)  # shown or not
+        modes.add_separator()  # a line
+        modes.add_command(label="Show every mode", underline=5, command=lambda: self.set_all_signal_types(True))  # all on
+        modes.add_command(label="Hide every mode", underline=0, command=lambda: self.set_all_signal_types(False))  # all off
+        menu.add_cascade(label="Modes shown", underline=0, menu=modes)  # the submenu
+        menu.add_command(label="Signals detected list...", underline=8, accelerator="Ctrl+D", command=self.signals_window)  # the full list
+        self.popup(menu, event)  # shown at the pointer
 
     def scope_wheel(self, event):  # the mouse wheel over the receive scope
         span = (self.top_hz - self.low_hz) * (0.5 if event.delta > 0 else 2.0)  # half the width when turned forward, double when turned back
@@ -955,8 +1070,8 @@ class Panel:  # the control panel window
                 self.scale_khz = dial  # remember where it is now
                 self.scope.delete("rf")  # remove the old labels
                 for hz in (self.low_hz + share * (self.top_hz - self.low_hz) for share in (1 / 6, 1 / 2, 5 / 6)):  # three points across
-                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
-                self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill="#a8b0ba", font="KestrelTiny", tags="rf")  # the unit
+                    self.scope.create_text(self.x_for(hz), self.above / 2, text=f"{dial + hz / 1000.0:,.{1 if self.top_hz - self.low_hz >= 3000.0 else 2}f}", fill=self.colors["scale"], font="KestrelTiny", tags="rf")  # the radio frequency there (upper sideband: dial plus audio)
+                self.scope.create_text(self.left + self.scope_w + self.right / 2, self.above / 2, text="kHz", fill=self.colors["scale"], font="KestrelTiny", tags="rf")  # the unit
             if source is not None:  # there is audio to show
                 levels = source.spectrum(self.top_hz, self.scope_w, self.low_hz)  # the spectrum of the newest audio, in decibels
                 floor = float(np.median(levels))  # the noise level, taken as the middle value
@@ -975,6 +1090,10 @@ class Panel:  # the control panel window
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
             if advance:  # the waterfalls moved
                 self.draw_time_marks()  # the UTC marks and the seconds scale move with them (redrawn each line, since the line rate is measured)
+            if source is not None and time.monotonic() - self.watch_at >= 0.5:  # twice a second (since 0.37)
+                self.watch_at = time.monotonic()  # now
+                self.watch.feed(source.recent, dial_khz=self.dial_hz() / 1000.0)  # the newest second of audio: follow every signal in it
+            self.draw_signal_labels()  # the recognized signals, named on the waterfall
             self.scope.delete("mark")  # the station labels are redrawn each time
             now = time.monotonic()  # for their age
             for call, (hz, width, when) in list(self.marks.items()):  # each station decoded recently
@@ -984,11 +1103,157 @@ class Panel:  # the control panel window
                 if hz + width / 2 < self.low_hz or hz - width / 2 > self.top_hz:  # the signal is outside the view
                     continue  # nothing to draw
                 low, high = self.x_for(max(self.low_hz, hz - width / 2)), self.x_for(min(self.top_hz, hz + width / 2))  # the signal's edges, as far as they are in view
-                self.scope.create_line(low, self.above + 14, low, self.above + 18, high, self.above + 18, high, self.above + 14, fill="#ffd166", tags="mark")  # a bracket over the signal
-                self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill="#ffd166", font="KestrelSmallBold", tags="mark")  # with the callsign above it
+                self.scope.create_line(low, self.above + 14, low, self.above + 18, high, self.above + 18, high, self.above + 14, fill=self.colors["mark"], tags="mark")  # a bracket over the signal
+                self.scope.create_text((low + high) / 2, self.above + 8, text=call, fill=self.colors["mark"], font="KestrelSmallBold", tags="mark")  # with the callsign above it
+        except Exception:  # anything at all
+            pass  # try again next time
+        try:  # the frame strip, four times a second (since 0.37)
+            if self.settings.get("frame_strip", True) and time.monotonic() - self.strip_at >= 0.25:  # shown, and due
+                self.strip_at = time.monotonic()  # now
+                self.draw_frame_strip()  # drawn
         except Exception:  # anything at all
             pass  # try again next time
         self.root.after(100, self.draw_scope)  # ten times a second
+
+    def draw_frame_strip(self):  # the frame strip under the receive scope (since 0.37)
+        """Draw the frame arriving or last heard: preamble, header, body and header again, and its message's parts."""
+        canvas = self.strip_canvas  # where
+        width = canvas.winfo_width()  # how wide it is now
+        if width < 400:  # not laid out yet, or squeezed
+            return  # nothing drawn
+        frame_strip.draw(canvas, self.frames.view(), self.colors, 6, 4, width - 12)  # drawn
+
+    def frame_strip_toggled(self):  # View > Frame strip under the receive scope (since 0.37)
+        """Show or hide the frame strip, and remember the choice."""
+        self.settings["frame_strip"] = bool(self.strip_var.get())  # the choice
+        self.save_settings()  # kept
+        if self.settings["frame_strip"]:  # shown
+            self.strip_canvas.grid()  # back in its place
+            self.draw_frame_strip()  # drawn now
+        else:  # hidden
+            self.strip_canvas.grid_remove()  # out of the way (its place is remembered)
+
+    def draw_signal_labels(self):  # name the recognized signals on the receive waterfall (since 0.37)
+        """Draw a small label at the top of the waterfall over each signal on now whose type is chosen in the Signals detected window."""
+        self.scope.delete("sig")  # the old bands and labels
+        on_scope = self.settings.get("signal_scope", True)  # bands on the receive scope
+        on_fall = self.settings.get("signal_labels", True)  # labels on the waterfall
+        if not on_scope and not on_fall:  # both turned off
+            return  # nothing more
+        chosen = set(self.settings.get("signal_types") or ())  # the modes to show
+        now = time.time()  # for how recently a signal ended
+        shown = [(k, k.kind_now) for k in self.watch.current()] + [(k, k.kind) for k in self.watch.done[-40:] if now - k.last < signalwatch.LINGER_S]  # on now, and ended in the last few seconds (FT8 and FT4 pause between transmissions)
+        shown = sorted(((k, kind) for k, kind in shown if kind in chosen and k.hi >= self.low_hz and k.lo <= self.top_hz), key=lambda item: -item[0].width)  # the ones to draw, widest first (so a narrow signal's band lies on top of a wide one's)
+        rows = {"scope": [], "fall": []}  # the names placed so far, by row: (left, right) in points
+        bg = self.colors.get("label_bg", "#000000")  # the patch behind names
+
+        def place(where, x, words, color, y0, step, anchor, font):  # put a name where it collides with none already placed
+            probe = self.scope.create_text(x, y0, text=words, anchor=anchor, font=font)  # measured first
+            box = self.scope.bbox(probe)  # its size
+            self.scope.delete(probe)  # gone again
+            if not box:  # not drawable
+                return  # nothing
+            half = (box[2] - box[0]) / 2 + 3  # half its width, with a little room
+            placed = rows[where]  # the rows so far
+            for row in range(SIGNAL_LABEL_ROWS):  # the lowest free row
+                if row >= len(placed):  # a new row
+                    placed.append([])  # opened
+                if all(x + half < a or x - half > b for a, b in placed[row]):  # clear of every name in it
+                    placed[row].append((x - half, x + half))  # taken
+                    y = y0 + row * step  # its height
+                    name = self.scope.create_text(x, y, text=words, anchor=anchor, fill=color, font=font, tags="sig")  # the name
+                    nb = self.scope.bbox(name)  # its size
+                    if nb:  # drawn
+                        self.scope.tag_lower(self.scope.create_rectangle(nb[0] - 2, nb[1], nb[2] + 2, nb[3], fill=bg, outline="", tags="sig"), name)  # a patch behind it, so it reads
+                    return  # placed
+            # every row full: the name is left off (its band still shows, and the Signals detected list has it)
+
+        for track, kind in shown:  # each signal
+            words = track.detail if kind == "Kestrel" and track.detail else kind  # the Kestrel level and callsign, or the mode
+            color = self.colors.get("mode_" + kind.lower(), self.colors.get("label", "#ffffff"))  # the mode's color in this theme
+            lo = self.x_for(max(track.lo, self.low_hz))  # its left edge
+            hi = max(self.x_for(min(track.hi, self.top_hz)), lo + 6)  # its right edge (at least 6 points wide, so a narrow signal shows)
+            if on_scope:  # a shaded band over the signal on the receive trace, with the mode named
+                band = self.scope.create_rectangle(lo, self.above + 20, hi, self.above + self.trace_h - 2, fill=color, stipple="gray25", outline=color, tags="sig")  # the band, see-through
+                self.scope.tag_lower(band, self.trace)  # under the trace, so the trace stays clear
+                place("scope", (lo + hi) / 2, words, color, self.above + self.trace_h - 4, -12, "s", "KestrelTinyBold")  # the mode, at the foot of the band (rows go up)
+            if on_fall and any(track is k for k in self.watch.active):  # labels on the waterfall only for signals on now
+                place("fall", (lo + hi) / 2, words, color, self.above + self.trace_h + 2, 12, "n", "KestrelTiny")  # the name, at the top of the waterfall (rows go down)
+
+    def signal_vars(self):  # the on/off choices for recognized signals, shared by the View menu and the Signals detected window (since 0.37)
+        """Return (making them once) the tick variables: "scope", "fall", and one per mode."""
+        if not hasattr(self, "_signal_vars"):  # not made yet
+            chosen = set(self.settings.get("signal_types") or ())  # the modes shown
+            self._signal_vars = {"scope": tk.BooleanVar(value=bool(self.settings.get("signal_scope", True))), "fall": tk.BooleanVar(value=bool(self.settings.get("signal_labels", True))),  # (continued: where they are shown)
+                                 **{kind: tk.BooleanVar(value=kind in chosen) for kind in signalwatch.TYPES}}  # each mode
+        return self._signal_vars  # the variables
+
+    def signal_choice_changed(self):  # a tick changed, in the menu or the window
+        """Keep the settings in step with the tick variables, and redraw."""
+        sv = self.signal_vars()  # the variables
+        self.settings["signal_types"] = [kind for kind in signalwatch.TYPES if sv[kind].get()]  # the modes shown
+        self.settings["signal_scope"] = sv["scope"].get()  # bands on the scope
+        self.settings["signal_labels"] = sv["fall"].get()  # labels on the waterfall
+        self.save_settings()  # kept
+        self.draw_signal_labels()  # redrawn now
+        refresh = getattr(self, "_signals_fill", None)  # the open list, if any
+        if refresh is not None:  # open
+            refresh()  # refilled
+
+    def set_all_signal_types(self, on):  # Show every mode / Hide every mode
+        """Tick or clear every mode."""
+        for kind in signalwatch.TYPES:  # each
+            self.signal_vars()[kind].set(on)  # set
+        self.signal_choice_changed()  # applied
+
+    def signals_window(self):  # Stations > Signals detected (since 0.37)
+        """Show every signal recognized in the passband (on now, then lately), with type, frequency, width, start and length; types to show can be chosen."""
+        top = self.window("signals", "Kestrel - signals detected")  # the window
+        ttk.Label(top, text="Every signal seen in the receiver's passband: what it looks like, where it is and how long it was heard. The type is a judgment from its width,\n"
+                  "length, timing and steadiness, as an operator would make it from the waterfall; Kestrel frames are named by the receiver. Tick the types to list and label.", justify="left").pack(anchor="w", padx=8, pady=(8, 4))  # what it shows
+        picks = ttk.Frame(top)  # the type tick boxes
+        picks.pack(fill="x", padx=8)  # across the top
+        sv = self.signal_vars()  # the on/off choices, shared with View > Recognized signals
+        for i, kind in enumerate(signalwatch.TYPES):  # each mode
+            ttk.Checkbutton(picks, text=kind, variable=sv[kind], command=self.signal_choice_changed).grid(row=0, column=i, padx=(0, 10), sticky="w")  # its box
+        ttk.Checkbutton(picks, text="Highlight them on the receive scope", variable=sv["scope"], command=self.signal_choice_changed).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))  # bands on the trace
+        ttk.Checkbutton(picks, text="Label them on the waterfall", variable=sv["fall"], command=self.signal_choice_changed).grid(row=1, column=4, columnspan=3, sticky="w", pady=(4, 0))  # names on the waterfall
+        ttk.Button(picks, text="All", command=lambda: self.set_all_signal_types(True)).grid(row=1, column=7, sticky="e", pady=(4, 0))  # every mode on
+        ttk.Button(picks, text="None", command=lambda: self.set_all_signal_types(False)).grid(row=1, column=8, sticky="w", padx=(4, 0), pady=(4, 0))  # every mode off
+        tree = self.table(top, (("when", "Started", 80), ("state", "", 50), ("kind", "Type", 70), ("audio", "Audio Hz", 70), ("rf", "Frequency kHz", 100), ("width", "Width Hz", 70), ("length", "Heard for", 80), ("strength", "Strength", 70), ("detail", "Detail", 160)), height=18)  # the list
+
+        def clock(seconds):  # a time, in the zone the scopes use
+            local = self.settings.get("scope_time_zone") == "local"  # local time or UTC
+            return time.strftime("%H:%M:%S", time.localtime(seconds) if local else time.gmtime(seconds))  # as hours, minutes and seconds
+
+        def length(seconds):  # a length, readably
+            return f"{seconds:.0f} s" if seconds < 100 else f"{int(seconds // 60)} min {int(seconds % 60):02d} s"  # seconds, or minutes and seconds
+
+        def fill():  # (re)fill the list
+            if not tree.winfo_exists():  # the window was closed
+                return  # stop
+            kinds = set(self.settings.get("signal_types") or ())  # the types chosen
+            live, finished = self.watch.rows(kinds)  # on now, and heard lately
+            dial = self.dial_hz() / 1000.0  # the radio's frequency, kHz
+            tree.delete(*tree.get_children())  # empty it
+            for track, state in [(k, "ON") for k in live] + [(k, "") for k in finished]:  # each signal
+                kind = track.kind_now if state else track.kind  # its type
+                tree.insert("", "end", values=(clock(track.start), state, kind, f"{track.center:.0f}", f"{dial + track.center / 1000.0:,.3f}" if dial else "", track.width, length(track.seconds), f"{track.strength:+.0f} dB", track.detail))  # one row
+
+        def tick():  # keep it current
+            if top.winfo_exists():  # still open
+                fill()  # the list again
+                top.after(2000, tick)  # every two seconds
+            else:  # closed
+                self._signals_fill = None  # nothing to refill
+
+        self._signals_fill = fill  # refilled when a choice changes in the View menu
+
+        tick()  # fill it now
+        buttons = ttk.Frame(top)  # the row of buttons
+        buttons.pack(fill="x", padx=8, pady=(0, 8))  # at the bottom
+        ttk.Button(buttons, text="Clear the list", command=lambda: (self.watch.done.clear(), fill())).pack(side="left")  # forget the finished signals
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
 
     # ---- the level meters ----
 
@@ -1015,29 +1280,30 @@ class Panel:  # the control panel window
 
     def _meter(self, frame, column, title):  # one vertical meter, scaled -60 to 0 dBFS
         ttk.Label(frame, text=title, font="KestrelSmall", justify="center").grid(row=0, column=column, columnspan=2, pady=(2, 2))  # its title
-        canvas = tk.Canvas(frame, width=self.meter_w + 28, height=self.meter_h, bg="#0b0e12", highlightthickness=0)  # the drawing area: the bar plus room for the scale
+        canvas = tk.Canvas(frame, width=self.meter_w + 28, height=self.meter_h, bg=self.colors["scope_bg"], highlightthickness=0)  # the drawing area: the bar plus room for the scale
         canvas.grid(row=1, column=column, padx=(6, 2))  # place it
         x0, x1 = 26, 26 + self.meter_w  # the bar's left and right edges
-        for low, high, color in ((-60, -30, "#20303a"), (-30, -15, "#16452a"), (-15, -6, "#4a4416"), (-6, 0, "#4a1c1c")):  # the zones: too low, aim here, getting loud, too loud
-            canvas.create_rectangle(x0, self.meter_y(high), x1, self.meter_y(low), fill=color, outline="")  # each zone, dimly
-        canvas.create_rectangle(x0, self.meter_y(-15), x1, self.meter_y(-30), outline="#3fbf6f", width=1)  # the target band outlined
+        for low, high, key in ((-60, -30, "meter_low"), (-30, -15, "meter_ok"), (-15, -6, "meter_loud"), (-6, 0, "meter_hot")):  # the zones: too low, aim here, getting loud, too loud
+            canvas.create_rectangle(x0, self.meter_y(high), x1, self.meter_y(low), fill=self.colors[key], outline="", tags=key)  # each zone, dimly (tagged with its color's name, so a new theme can recolor it)
+        canvas.create_rectangle(x0, self.meter_y(-15), x1, self.meter_y(-30), outline=self.colors["bar_ok"], width=1, tags="target")  # the target band outlined
         for db in (0, -6, -15, -30, -45, -60):  # the scale
-            canvas.create_line(x0 - 4, self.meter_y(db), x0, self.meter_y(db), fill="#a8b0ba")  # a tick
-            canvas.create_text(x0 - 6, self.meter_y(db), text=str(db), anchor="e", fill="#a8b0ba", font="KestrelTiny")  # its value in dBFS
-        canvas.create_rectangle(x0 + 3, self.meter_y(-60), x1 - 3, self.meter_y(-60), fill="#3fbf6f", outline="", tags="bar")  # the level bar, empty to begin with
-        canvas.create_line(x0, self.meter_y(-60), x1, self.meter_y(-60), fill="#ffffff", width=2, tags="peak")  # the peak mark
-        canvas.create_text((x0 + x1) / 2, 8, text="", fill="#ff5555", font="KestrelTinyBold", tags="clip")  # CLIP, when the input is overdriven
+            canvas.create_line(x0 - 4, self.meter_y(db), x0, self.meter_y(db), fill=self.colors["scale"], tags="scale")  # a tick
+            canvas.create_text(x0 - 6, self.meter_y(db), text=str(db), anchor="e", fill=self.colors["scale"], font="KestrelTiny", tags="scale")  # its value in dBFS
+        canvas.create_rectangle(x0 + 3, self.meter_y(-60), x1 - 3, self.meter_y(-60), fill=self.colors["bar_ok"], outline="", tags="bar")  # the level bar, empty to begin with
+        canvas.create_line(x0, self.meter_y(-60), x1, self.meter_y(-60), fill=self.colors["peak"], width=2, tags="peak")  # the peak mark
+        canvas.create_text((x0 + x1) / 2, 8, text="", fill=self.colors["bar_hot"], font="KestrelTinyBold", tags="clip")  # CLIP, when the input is overdriven
         return canvas  # for drawing on
 
     def meter_y(self, db):  # where a level falls on a meter
         return 4 + (min(0.0, max(-60.0, db)) / -60.0) * (self.meter_h - 8)  # 0 dBFS at the top, -60 at the bottom
 
     def show_level(self, canvas, rms_db, peak_db, dim=False, clip=False):  # move one meter's bar and peak mark
-        color = "#3fbf6f" if rms_db < -15 else ("#e0c040" if rms_db < -6 else "#e05050")  # green while in or under the target band, yellow when getting loud, red when too loud
+        c = self.colors  # the theme's colors
+        color = c["bar_ok"] if rms_db < -15 else (c["bar_loud"] if rms_db < -6 else c["bar_hot"])  # green while in or under the target band, yellow when getting loud, red when too loud (in the theme's colors)
         if rms_db < -45:  # hardly any signal
-            color = "#5a7a8a"  # gray-blue: too low to be useful
+            color = c["bar_low"]  # too low to be useful
         if dim:  # a setting, not a live reading
-            color = "#4a5560"  # shown dimly
+            color = c["bar_dim"]  # shown dimly
         canvas.coords("bar", 29, self.meter_y(rms_db), 26 + self.meter_w - 3, self.meter_y(-60))  # the bar, from the bottom up to the RMS level
         canvas.itemconfigure("bar", fill=color)  # in its color
         canvas.coords("peak", 26, self.meter_y(peak_db), 26 + self.meter_w, self.meter_y(peak_db))  # the peak mark
@@ -1192,17 +1458,89 @@ class Panel:  # the control panel window
         self.plain_color = c["bg"]  # the status band's ordinary background
         self.log.configure(background=c["text_bg"], foreground=c["text_fg"], insertbackground=c["text_fg"])  # the log
         self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colors it
-        self.stations.tag_configure("calling", background="#5a4a12" if c["name"] == "dark" else "#fff0a8")  # stations beaconing now: amber in the dark look, pale yellow in the light
+        self.stations.tag_configure("calling", background=c["calling_row"])  # stations beaconing now, highlighted in the theme's color
         self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program color)
-        theme.recolor_comboboxes(self.root, c)  # the open lists of the drop-downs
+        theme.recolor_plain(self.root, c)  # the open lists of the drop-downs, text areas, plain lists and pop-up menus (since 0.37)
+        self.recolor_scopes()  # the scopes and meters (since 0.37)
         for window in self.windows.values():  # any extra windows that are open
             if window.winfo_exists():  # still open
                 theme.color_window(window, c)  # color them too
 
+    def recolor_scopes(self):  # the scopes, meters and waterfalls in the theme's colors (since 0.37)
+        """Recolor both scopes (background, traces, words, scales) and both meters, and remake the waterfall colors if they follow the theme."""
+        c = self.colors  # the palette
+        if not hasattr(self, "scope"):  # the scopes are not built yet (the first coloring comes before them)
+            return  # they are built in these colors
+        for canvas in (self.scope, self.tx_canvas):  # both scopes
+            canvas.configure(bg=c["scope_bg"])  # background
+        if hasattr(self, "strip_canvas"):  # the frame strip (since 0.37)
+            self.strip_canvas.configure(bg=c["bg"])  # on the window's background
+            self.strip_at = 0.0  # redrawn in the new colors at the next look
+        self.scope.itemconfigure(self.trace, fill=c["rx_trace"])  # the receive trace
+        self.tx_canvas.itemconfigure(self.tx_line, fill=c["tx_trace"])  # the transmit trace
+        self.tx_canvas.itemconfigure(self.tx_words, fill=c["tx_words"])  # the transmit scope's words
+        self.scale_khz = None  # the radio-frequency labels are redrawn on the next look
+        self.draw_scales()  # the scales, edges and time marks, redrawn in the new colors
+        for meter in (self.rx_meter, self.tx_meter):  # both meters
+            meter.configure(bg=c["scope_bg"])  # background
+            for key in ("meter_low", "meter_ok", "meter_loud", "meter_hot"):  # the zones
+                meter.itemconfigure(key, fill=c[key])  # each in its color
+            meter.itemconfigure("target", outline=c["bar_ok"])  # the target band
+            meter.itemconfigure("scale", fill=c["scale"])  # ticks and numbers
+            meter.itemconfigure("peak", fill=c["peak"])  # the peak mark
+            meter.itemconfigure("clip", fill=c["bar_hot"])  # the overload warning
+        if self.palette_var.get() == THEME_OWN:  # the waterfalls follow the theme
+            self.make_palettes()  # the theme's waterfall colors
+            self.fall[:] = self.palettes["rx"][0]  # start afresh, so old lines in the old colors do not linger
+            self.tx_fall[:] = self.palettes["tx"][0]  # both waterfalls
+
+    def refresh_theme_menus(self):  # (re)fill View > Theme and View > Scope theme (since 0.37)
+        """List every program theme and scope theme, the operator's own last, in the View menu."""
+        self.looks_menu.delete(0, "end")  # empty
+        built = [c for c in theme.CHOICES if c == "system" or c in theme.BUILT_IN]  # System and the themes that come with Kestrel
+        mine = [c for c in theme.CHOICES if c not in built]  # the operator's own
+        for group in (built, mine):  # the two groups
+            if group is mine and mine:  # the operator's own follow
+                self.looks_menu.add_separator()  # a divider before them
+            for choice in group:  # each theme
+                self.looks_menu.add_radiobutton(label=theme.NAMES[choice], value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
+        self.scope_looks_menu.delete(0, "end")  # empty
+        built = [k for k in theme.SCOPE_NAMES if k in theme.BUILT_IN_SCOPES]  # "follow the program theme" and the built-in scope themes
+        mine = [k for k in theme.SCOPE_NAMES if k not in theme.BUILT_IN_SCOPES]  # the operator's own
+        for key in built + mine:  # each scope theme
+            if key == mine[0] if mine else False:  # the first of the operator's own
+                self.scope_looks_menu.add_separator()  # a divider before them
+            self.scope_looks_menu.add_radiobutton(label=theme.SCOPE_NAMES[key], value=key, variable=self.scope_theme_var, command=lambda k=key: self.set_scope_theme(k))  # one each
+            if key == "theme":  # after "follow the program theme"
+                self.scope_looks_menu.add_separator()  # a divider
+
+    def waterfall_sets(self):  # the waterfall color sets, for the theme editor
+        """Return the names of the waterfall color sets."""
+        return list(PALETTES)  # every one
+
+    def apply_look(self, program, scope):  # show a theme without keeping it as the choice (the theme editor's preview)
+        """Color everything with program theme `program` and scope theme `scope`, without changing the saved settings."""
+        self.colors = theme.apply(self.root, program, scope)  # the themed widgets
+        self.color_plain_widgets()  # and the rest, scopes included
+        self.draw_signal_labels()  # the signal bands
+        self.show_status(self.status.cget("text"), "plain")  # the status band
+
+    def set_scope_theme(self, key):  # View > Scope theme (since 0.37)
+        """Give the scopes and meters their own look (or the program theme's), keep the choice, and redraw them."""
+        self.settings["scope_theme"] = key  # remembered
+        self.scope_theme_var.set(key)  # ticked in the menu
+        if key != "theme":  # a scope theme brings its own waterfall colors
+            self.palette_var.set(THEME_OWN)  # the waterfalls follow it (View > Waterfall colors can still pick another set afterwards)
+            self.settings["scope_palette"] = THEME_OWN  # remembered
+        self.colors = theme.palette(self.settings["theme"], key)  # the colors, with the scope theme's on the scopes
+        self.recolor_scopes()  # the scopes, meters and waterfalls
+        self.draw_signal_labels()  # the signal bands in the new colors
+        self.save_settings()  # kept
+
     def set_theme(self, choice):  # View > Theme
         self.settings["theme"] = choice  # remember the choice
         self.theme_var.set(choice)  # tick it in the menu
-        self.colors = theme.apply(self.root, choice)  # restyle every themed widget
+        self.colors = theme.apply(self.root, choice, self.settings.get("scope_theme", "theme"))  # restyle every themed widget (the scopes keep their own theme if one is chosen)
         self.color_plain_widgets()  # and the rest
         self.show_status(self.status.cget("text"), "plain")  # redraw the status band in the new colors
         self.save_settings()  # keep it for next time
@@ -1279,9 +1617,9 @@ class Panel:  # the control panel window
     def show_status(self, words, color):  # put the station's state on the band at the top
         """Show `words`; a lock is a solid green band, trouble holding it amber or red, anything else plain."""
         if color == "dark green":  # locked with a partner
-            self.status.configure(text=words, bg="#1b7f3b", fg="white")  # white on solid green: unmistakable
+            self.status.configure(text=words, bg=self.colors["status_ok"], fg=self.colors["status_fg"])  # on solid green (in the theme's shade): unmistakable
         elif color in ("dark orange", "red"):  # the link is in trouble, or something failed
-            self.status.configure(text=words, bg="#c0392b" if color == "red" else "#d98200", fg="white")  # white on red or amber
+            self.status.configure(text=words, bg=self.colors["status_bad"] if color == "red" else self.colors["status_warn"], fg=self.colors["status_fg"])  # on red or amber (in the theme's shades)
         else:  # every other state
             self.status.configure(text=words, bg=self.plain_color, fg=self.colors["accent"] if color == "dark blue" else self.colors["fg"])  # colored words on the ordinary background
 
@@ -1400,11 +1738,13 @@ class Panel:  # the control panel window
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
         self.after_heard(call, grid, result)  # PSK Reporter and the prediction check (since 0.35)
+        self.watch.kestrel_heard(1500.0 + result.offset_hz, signal_width_hz(result.level), f"{level_name(result.level)} {call}")  # the recognized signal there is a Kestrel frame (since 0.37)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(),  # (continued)
                            report_db=getattr((result.fields or {}).get("report"), "snr_db", None))  # the logbook, from the advanced level up (report_db, how the sender heard this station, goes only to the contact book)
 
     def log_frame(self, result):  # every report from the receiver (called from the working thread), for the verbose log
+        self.frames.station_result(result)  # the frame strip: a frame that passed with an earlier copy added, and the message's sender (since 0.37)
         if not self.logbook.wants("frame"):  # not logging at that level
             return  # nothing to do
         name = KIND.get(result.frame_type, "frame")  # the kind of frame
@@ -1415,6 +1755,7 @@ class Panel:  # the control panel window
     def note_near(self, result):  # a Kestrel signature heard but not readable (called from the working thread)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=f"{level_name(result.seen_level)}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
+        self.watch.kestrel_heard(1500.0 + result.offset_hz, signal_width_hz(result.seen_level), f"{level_name(result.seen_level)}? (not readable)")  # the recognized signal there looks like Kestrel (since 0.37)
 
     def signal_folder(self):  # where the signal log goes
         """Return (creating it if needed) the signal log folder, beside the logbook."""
@@ -2497,7 +2838,7 @@ class Panel:  # the control panel window
 
         def show_set():  # the prediction set line and the month's sunspot number
             warned = spaceweather.warnings()  # flares, storms, a falling ionosphere (since 0.34R1)
-            set_line.configure(text=sunspots.describe() + "\n" + spaceweather.describe() + "".join("\nWARNING: " + w for w in warned), foreground="#b00000" if warned else "")  # the set in use, today's space weather and any warning
+            set_line.configure(text=sunspots.describe() + "\n" + spaceweather.describe() + "".join("\nWARNING: " + w for w in warned), foreground=self.colors["warn_fg"] if warned else "")  # the set in use, today's space weather and any warning
             year, mon = (int(part) for part in month.get().split("-"))  # the month chosen
             value, how = spaceweather.ssn_for(year, mon)  # today's measured number for this month, else the prediction
             predicted = sunspots.ssn_for(year, mon)[0]  # the month's prediction, for comparison
@@ -3097,7 +3438,7 @@ class Panel:  # the control panel window
             if used and path_box.get().strip() != used:  # the program that answered is not the one shown (the saved one was gone, and the installed one was used)
                 path_box.delete(0, "end")  # clear the box
                 path_box.insert(0, used)  # show the one in use
-            list_note.configure(text=f"The rig type list is empty: {reason}." if reason else f"{len(models)} radio types listed. Choose yours from the Rig type list, or type part of its name to narrow the list.", foreground="#b00020" if reason else "")  # say how it went
+            list_note.configure(text=f"The rig type list is empty: {reason}." if reason else f"{len(models)} radio types listed. Choose yours from the Rig type list, or type part of its name to narrow the list.", foreground=self.colors["warn_fg"] if reason else "")  # say how it went (a problem in the theme's warning color)
             if reason:  # no list
                 self.say(f"Settings: the rig type list is empty: {reason}")  # keep the reason in the log too
 
@@ -3532,6 +3873,7 @@ class Panel:  # the control panel window
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
                 listener.expect = lambda: (job["call"], self.expected_calls())  # this station's callsign and those it expects, to help read weak frames
+                listener.on_progress = self.frames.update  # the frame strip follows each frame as it arrives (since 0.37)
                 log_near = attach_signal_log(listener, signal_log, lambda: round(self.dial_hz() / 1000.0, 1))  # searches and near misses to the signal log, if on
                 shown = NearFilter()  # which near misses the operator sees: likely Kestrel, once a minute per signal (since 0.31R2)
                 listener.on_near = lambda result: (log_near(result), shown.show(result) and (self.say(near_line(result)), self.note_near(result)))  # every one to the signal log; the likely ones shown too
@@ -3567,7 +3909,7 @@ class Panel:  # the control panel window
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
             run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
-                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
+                        signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event, on_progress=self.frames.update)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
@@ -3612,6 +3954,97 @@ class Panel:  # the control panel window
             self.logbook.write("run", station=job["call"], text=f"{mode} stopped", dial_khz=job["entry"]["dial_khz"])  # the logbook
             self.say("stopped")  # closing line
 
+    # ---- exporting and importing settings and themes (since 0.37) ----
+
+    def export_settings(self):  # File > Export settings...
+        """Ask whether to include this computer's sound cards, ports and layout, then write the settings to a file the operator chooses."""
+        top = self.window("export_settings", "Kestrel - export settings")  # a small window
+        body = ttk.Frame(top, padding=12)  # its contents
+        body.pack(fill="both", expand=True)  # filling it
+        ttk.Label(body, text="Your station, radio, audio levels, operating, logging, quick messages and looks\nare written to one file, for a backup or to set up Kestrel on another computer.", justify="left").pack(anchor="w")  # what goes in
+        machine = tk.BooleanVar(value=False)  # this computer's own settings: left out unless asked
+        ttk.Checkbutton(body, text="Include this computer's sound cards, radio ports and window layout\n(leave this off when the file is for a different computer)", variable=machine).pack(anchor="w", pady=(10, 0))  # the choice
+        ttk.Label(body, text="Themes are exported on their own: File > Export themes.\nContacts and logs are not included.", justify="left", foreground=self.colors.get("muted", "")).pack(anchor="w", pady=(10, 0))  # what is not in it
+
+        def go():  # Export...
+            self.save_settings()  # the settings as they are now
+            stamp = time.strftime("%Y%m%d")  # today, for the file name
+            call = re.sub(r"[^A-Za-z0-9]", "", self.settings.get("call", "")) or "station"  # the callsign, safe in a file name
+            path = filedialog.asksaveasfilename(parent=top, title="Export settings", defaultextension=".json", initialfile=f"kestrel-settings-{call}-{stamp}.json", filetypes=[("Kestrel settings", "*.json")])  # where
+            if not path:  # none chosen
+                return  # nothing done
+            try:  # the folder may refuse
+                export_settings_file(self.settings, path, machine=machine.get())  # written
+            except OSError as problem:  # it did
+                messagebox.showerror("Kestrel", f"The settings could not be written:\n{problem}", parent=top)  # said
+                return  # nothing more
+            top.destroy()  # done with the window
+            messagebox.showinfo("Kestrel", "Settings exported. File > Import settings reads them back, here or on another computer.", parent=self.root)  # said
+
+        buttons = ttk.Frame(body)  # the buttons
+        buttons.pack(fill="x", pady=(14, 0))  # under the words
+        ttk.Button(buttons, text="Export...", command=go).pack(side="left")  # go ahead
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right")  # never mind
+
+    def import_settings(self):  # File > Import settings...
+        """Read settings from an exported file, keep a copy of the present ones, and use the new ones from the next start (offering to restart now)."""
+        path = filedialog.askopenfilename(parent=self.root, title="Import settings", filetypes=[("Kestrel settings", "*.json"), ("All files", "*.*")])  # which file
+        if not path:  # none chosen
+            return  # nothing done
+        try:  # it may not be a settings file
+            incoming = read_settings_file(path)  # the settings in it
+        except ValueError as problem:  # it is not
+            messagebox.showerror("Kestrel", str(problem), parent=self.root)  # said
+            return  # nothing done
+        machine = any(key in incoming for key in MACHINE_KEYS) and messagebox.askyesno("Kestrel", "This file also holds a computer's sound cards, radio ports and window layout.\n\nUse those too? Choose No to keep this computer's own.", parent=self.root)  # this computer's own settings: kept unless the operator says otherwise
+        call = incoming.get("call") or "(none)"  # whose they are
+        if not messagebox.askyesno("Kestrel", f"Replace your settings with the ones in this file (callsign {call})?\n\nA copy of your present settings is kept in the data folder first.", parent=self.root):  # agreed?
+            return  # nothing done
+        self.save_settings()  # the present settings, up to date
+        backup = side_file(time.strftime("_before_import_%Y%m%d_%H%M%S.json"))  # the copy's name
+        write_json(backup, self.settings)  # kept
+        self.pending_import = merged_settings(self.settings, incoming, machine)  # used from the next start (close writes them over what it saves)
+        write_json(SETTINGS_FILE, self.pending_import)  # and written now, in case Kestrel is stopped some other way
+        if messagebox.askyesno("Kestrel", f"Settings imported. Your old ones are kept as {os.path.basename(backup)}.\n\nThey take effect when Kestrel starts again. Restart Kestrel now?", parent=self.root):  # restart?
+            self.restart()  # closed and started again
+
+    def restart(self):  # close Kestrel and start it again (after an import)
+        """Close the panel the usual way, then start the same program with the same options."""
+        command = [sys.executable] + sys.argv[1:] if getattr(sys, "frozen", False) else [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]  # the installed program, or Python and this script; same profile
+        self.close()  # everything saved and the radio released
+        subprocess.Popen(command, close_fds=True)  # started again
+
+    def export_themes(self):  # File > Export themes...
+        """Write every theme the operator made, and every built-in theme they changed, to one file."""
+        mine = theme.user_themes()  # what there is
+        count = len(mine["program"]) + len(mine["scope"]) + len(mine["changed"]["program"]) + len(mine["changed"]["scope"])  # how many
+        if not count:  # nothing of the operator's
+            messagebox.showinfo("Kestrel", "You have no themes of your own and have not changed any built-in theme, so there is nothing to export.\n\nTo give someone one of Kestrel's themes, use View > Edit themes > Export this theme.", parent=self.root)  # said
+            return  # nothing done
+        path = filedialog.asksaveasfilename(parent=self.root, title="Export themes", defaultextension=".json", initialfile=f"kestrel-themes-{time.strftime('%Y%m%d')}.json", filetypes=[("Kestrel themes", "*.json")])  # where
+        if not path:  # none chosen
+            return  # nothing done
+        try:  # the folder may refuse
+            theme.export_all(path)  # written
+        except OSError as problem:  # it did
+            messagebox.showerror("Kestrel", f"The themes could not be written:\n{problem}", parent=self.root)  # said
+            return  # nothing more
+        messagebox.showinfo("Kestrel", f"{count} theme(s) exported. File > Import themes reads them back, here or on another computer.", parent=self.root)  # said
+
+    def import_themes(self):  # File > Import themes...
+        """Read themes from a file: new ones are added (renamed if the name is taken), changed built-in themes replace Kestrel's."""
+        path = filedialog.askopenfilename(parent=self.root, title="Import themes", filetypes=[("Kestrel themes", "*.json"), ("All files", "*.*")])  # which file
+        if not path:  # none chosen
+            return  # nothing done
+        count = theme.load_user(path)  # read into the tables
+        if not count:  # nothing usable
+            messagebox.showerror("Kestrel", "That file holds no Kestrel themes.", parent=self.root)  # said
+            return  # nothing done
+        theme.save_user()  # kept
+        self.refresh_theme_menus()  # in View > Theme and Scope theme
+        self.apply_look(self.settings.get("theme", "system"), self.settings.get("scope_theme", "theme"))  # the theme in use may have been one of them
+        messagebox.showinfo("Kestrel", f"{count} theme(s) imported. Choose one under View > Theme or View > Scope theme.", parent=self.root)  # said
+
     def close(self):  # the window is being closed
         self.stop.set()  # stop the station
         self.beacon_wanted = False  # and the repeating beacon
@@ -3619,6 +4052,8 @@ class Panel:  # the control panel window
             self.finish_contact()  # log what there is of it
         self.save_layout()  # remember the window's size and the dividers
         self.save_settings()  # remember the settings
+        if getattr(self, "pending_import", None) is not None:  # settings imported, to take effect at the next start (since 0.37)
+            write_json(SETTINGS_FILE, self.pending_import)  # they replace what was just saved
         self.save_outbox()  # and the messages still waiting
         self.save_mail()  # and the mail
         if self.worker is not None:  # a station or the monitor was running

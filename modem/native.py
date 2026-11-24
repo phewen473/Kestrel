@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 14  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 15  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
@@ -208,6 +208,8 @@ def _load():  # find, open and check the library
         lib.kes_listener_cut.restype = None  # returns nothing
         lib.kes_listener_copy.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_long, _DOUBLE_P]  # listener, from, to, out
         lib.kes_listener_copy.restype = ctypes.c_size_t  # how many copied
+        lib.kes_listener_candidates.argtypes = [ctypes.c_void_p, _DOUBLE_P, ctypes.c_size_t]  # listener, out, most (since ABI 15)
+        lib.kes_listener_candidates.restype = ctypes.c_size_t  # how many written
         why = ""  # in use: no reason to give
         return lib  # ready
     if not why:  # nothing was found at all
@@ -553,6 +555,17 @@ class CompiledListener:  # the compiled continuous receiver (interface 7)
     def pending(self):  # candidates being followed
         """Return how many candidates are being followed."""
         return int(_lib.kes_listener_pending(self.handle))  # from the library
+
+    CANDIDATE_FIELDS = 11  # values per candidate (KES_CANDIDATE_FIELDS in kestrel.h)
+
+    def candidates(self):  # the candidates being followed, for the frame strip (since ABI 15)
+        """Return a list of dicts, one per candidate: slot, stream, position, offset_hz, quality, coarse, has_header, how, fields, tried, start_fine."""
+        most = max(self.pending(), 1)  # room for all of them
+        out = np.zeros(most * self.CANDIDATE_FIELDS)  # the library writes here
+        count = int(_lib.kes_listener_candidates(self.handle, _ptr(out), most))  # written
+        rows = out[:count * self.CANDIDATE_FIELDS].reshape(count, self.CANDIDATE_FIELDS)  # one row each
+        names = ("slot", "stream", "position", "offset_hz", "quality", "coarse", "has_header", "how", "fields", "tried", "start_fine")  # the values, in order
+        return [dict(zip(names, row.tolist())) for row in rows]  # as dicts
 
 
 def compiled_listener(cfg, patterns, totals_by_type, body_totals):  # make one, if the library is in use

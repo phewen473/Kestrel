@@ -1524,6 +1524,33 @@ KES_API void kes_listener_cut(KesListener *h, long start, long end) { h->cut(sta
 KES_API long kes_listener_searches(KesListener *h) { return h->searches; }  /* searches so far */
 KES_API size_t kes_listener_pending(KesListener *h) { return h->pending.size(); }  /* candidates being followed */
 
+KES_API size_t kes_listener_candidates(KesListener *h, double *out, size_t most) {  /* the candidates being followed, for the frame strip (since interface 15) */
+    size_t n = 0;  /* written so far */
+    for (const Pending &p : h->pending) {  /* each candidate */
+        if (n >= most) {  /* no room for more */
+            break;  /* stop */
+        }  /* end of the test */
+        double *o = out + n * KES_CANDIDATE_FIELDS;  /* its row */
+        int fields = 0;  /* the header's first 16 bits, first bit highest */
+        for (int b = 0; b < 16; ++b) {  /* each field bit */
+            fields = (fields << 1) | (p.header[b] & 1);  /* added */
+        }  /* end of the bits */
+        o[0] = static_cast<double>(p.slot);  /* which pattern (0-4 the levels, 5 the long beacon) */
+        o[1] = static_cast<double>(p.stream);  /* where its pattern starts in the stream */
+        o[2] = static_cast<double>(h->position(p.stream));  /* and in the store now (-1 if gone) */
+        o[3] = p.offset;  /* its frequency error, Hz */
+        o[4] = p.quality;  /* how far it stands out */
+        o[5] = p.coarse ? 1.0 : 0.0;  /* not yet finely timed */
+        o[6] = p.has_header ? 1.0 : 0.0;  /* its header has been read */
+        o[7] = static_cast<double>(p.how);  /* which copy gave it (1 first, 2 both, 3 second) */
+        o[8] = static_cast<double>(p.has_header ? fields : 0);  /* the header's fields, when read */
+        o[9] = p.has_since ? 1.0 : 0.0;  /* the first header copy was all there and could not be read */
+        o[10] = p.start_fine;  /* the part of a sample the fine timing found */
+        ++n;  /* one more */
+    }  /* end of the candidates */
+    return n;  /* how many */
+}  /* end of kes_listener_candidates */
+
 KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out) {  /* copy a stretch of the store */
     size_t a = static_cast<size_t>(std::max(from, 0L)), b = std::min(static_cast<size_t>(std::max(to, 0L)), h->store.size());  /* inside the store */
     if (a >= b) {  /* nothing */

@@ -3,7 +3,7 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.35"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SPEC_VERSION = "0.37"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
 SIGNAL_VERSION = "0.34"  # the specification version in which the on-air behavior last changed (0.34: long notes, sent in long-beacon frames with the spare bit set; 0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in

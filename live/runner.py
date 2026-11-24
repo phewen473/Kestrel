@@ -230,7 +230,7 @@ def log_tick(signal_log, source):  # the signal log's regular lines
     signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None, notes=None, on_note=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None, notes=None, on_note=None, on_progress=None):  # the live loop
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -267,11 +267,15 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     notes and receipts when no contact is under way, and is given every
     long-note frame heard (since 0.34); `on_note`, if given, is called with
     each of its events (received, delivered, resending, failed, sent).
+    `on_progress`, if given, is called after every search with the
+    listener's progress() report: the frames arriving and those just
+    finished, for the panel's frame strip (since 0.37).
     """
     station.can_move = retune is not None  # the station may agree to change frequency only if the radio can be retuned
     tuned = 0  # the offset from the calling frequency the radio is on now
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     listener = Listener()  # the continuous receiver
+    listener.on_progress = on_progress  # the frame strip, if the caller shows one (since 0.37)
     listener.expect = lambda: (station.call, [station.target, station.partner] + list(expect() if expect is not None else ()))  # this station's callsign, and those it expects: the one it calls, its partner, and any the caller adds (since 0.31R1)
     started = time.monotonic()  # the moment the clock starts
     watch = ChannelWatch() if listen_first else None  # listens for other signals on the frequency

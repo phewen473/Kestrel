@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 14  /* the interface described in this file (14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
+#define KES_ABI_VERSION 15  /* the interface described in this file (15: kes_listener_candidates, the frames being received, for the panel's frame strip; 14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -228,6 +228,14 @@ KES_API long long kes_listener_number(KesListener *h, long position);  /* a stor
 KES_API void kes_listener_cut(KesListener *h, long start, long end);  /* take a stretch out of the store */
 KES_API long kes_listener_searches(KesListener *h);  /* searches so far */
 KES_API size_t kes_listener_pending(KesListener *h);  /* candidates being followed */
+/* Since interface 15: the candidates being followed, for the panel's frame strip, KES_CANDIDATE_FIELDS
+ * values each: pattern slot (0-4 levels, 5 long beacon), stream sample where the pattern starts, store
+ * position now (-1 if gone), offset Hz, quality, coarse (1 = not yet finely timed), header read (1/0),
+ * which copy gave it (1 first, 2 both, 3 second), the header's 16 field bits as a number (first bit
+ * highest; 0 when not read), first copy tried and unreadable (1/0), fine-timing fraction. Returns how
+ * many were written (at most `most`). */
+#define KES_CANDIDATE_FIELDS 11  /* values per candidate */
+KES_API size_t kes_listener_candidates(KesListener *h, double *out, size_t most);  /* the candidates, for the frame strip */
 KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out);  /* copy a stretch of the store; returns how many */
 
 
