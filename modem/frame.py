@@ -24,7 +24,7 @@ import numpy as np  # numerical arrays
 from .address import bits_to_call, call_to_bits  # callsign <-> bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .blanker import blank_impulses  # static-crash blanker
-from .preamble import detect_preamble, make_preamble, pattern_tones, preamble_samples  # the signature tone pattern that starts every frame
+from .preamble import detect_preamble, pattern_tones, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header and the control frames
 from . import control, ldpc, native  # control-frame fields, error correction for the message body, and the compiled library
@@ -33,7 +33,7 @@ from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
     band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit,  # (continued)
-    signal_report, symbol_energies, symbols_to_audio, tone_energies,  # (continued)
+    signal_report, symbol_energies, tone_energies, transmission,  # (continued)
 )  # end of the import list
 from .params import (  # frame format numbers
     ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
@@ -175,7 +175,7 @@ def build_frame(text, level=0, part=0, parts=1, link=0, msg_id=0, dest=None, ori
     if done is not None:  # it was
         return done  # the same audio, to rounding
     body_syms = _body_symbols(data_bits, layout)  # error correction, shuffling and pilots
-    return np.concatenate([make_preamble(spec), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), spec)])  # the level's preamble, the header, the body, then the header again
+    return transmission(np.concatenate([pattern_tones(spec.number), header_syms, body_syms, header_syms]), spec)  # the level's preamble, the header, the body, then the header again: one waveform with faded ends (since 0.32)
 
 
 def build_control(frame_type, fields, level=0):  # the transmitter for control frames
@@ -189,7 +189,7 @@ def build_control(frame_type, fields, level=0):  # the transmitter for control f
     if done is not None:  # it was
         return done  # the same audio, to rounding
     body_syms = _body_symbols(data_bits, layout, is_control=True)  # error correction, shuffling and pilots
-    return np.concatenate([make_preamble(LEVELS[level]), symbols_to_audio(np.concatenate([header_syms, body_syms, header_syms]), LEVELS[level])])  # the level's preamble, the header, the body, then the header again
+    return transmission(np.concatenate([pattern_tones(level), header_syms, body_syms, header_syms]), LEVELS[level])  # the level's preamble, the header, the body, then the header again: one waveform with faded ends (since 0.32)
 
 
 def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, mail_check=False, holds_mail=False, level=0, wide=False):  # "here I am"

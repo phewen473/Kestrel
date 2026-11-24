@@ -102,6 +102,11 @@ Its complete source code is at:
 Kestrel runs rigctld.exe as a separate program; Kestrel itself is under the Apache License 2.0.
 "@ | Set-Content -Encoding utf8 (Join-Path $App "hamlib\SOURCE.txt")     # where Hamlib's source is, as its licence asks
 
+Write-Host "Adding the ITU-R P.533 propagation engine"                    # step 4b (since 0.32)
+$ItuCache = Join-Path $Cache "ITU-R-HF"                                  # the ITU's source, kept between builds (fetched once, at the pinned commit)
+& $VPy (Join-Path $Src "tools\build_prop.py") --source $ItuCache --target (Join-Path $App "prop")  # build ITURHFProp, P533 and P372 with MinGW gcc, and copy them with their data into prop\ beside Kestrel.exe
+if ($LASTEXITCODE -ne 0) { throw "the ITU-R P.533 engine did not build" }  # a broken build should be fixed, not shipped without
+
 Write-Host "Adding the notes, licences and specification"                # step 5
 New-Item -ItemType Directory -Force (Join-Path $App "docs") | Out-Null   # docs beside Kestrel.exe
 Copy-Item (Join-Path $Src "packaging\windows\README-installed.txt") (Join-Path $App "README.txt")  # the getting-started notes
@@ -110,7 +115,7 @@ Copy-Item (Join-Path $Src "LICENSE") (Join-Path $App "docs\LICENSE-Apache-2.0.tx
 Copy-Item (Join-Path $Src "docs\LICENSE-CC-BY-4.0.txt") (Join-Path $App "docs\LICENSE-CC-BY-4.0.txt")  # the specification's licence
 Copy-Item (Join-Path $Src "cpp\third_party\pocketfft\LICENSE.md") (Join-Path $App "docs\LICENSE-pocketfft.txt")  # the FFT inside the compiled modem library (BSD licence: its notice must travel with it)
 Copy-Item (Join-Path $Src "docs\spec\kestrel-spec.md"), (Join-Path $Src "docs\spec\CHANGELOG.md") (Join-Path $App "docs")  # the specification and its history
-$Licences = @((Get-Content -Raw (Join-Path $Src "NOTICE")), "`r`n==== Kestrel program: Apache License 2.0 ====`r`n", (Get-Content -Raw (Join-Path $Src "LICENSE")), "`r`n==== Kestrel specification: CC BY 4.0 (see docs\LICENSE-CC-BY-4.0.txt) ====`r`n", "`r`n==== Hamlib: GNU GPL / LGPL (see hamlib\COPYING.txt, hamlib\COPYING.LIB.txt and hamlib\SOURCE.txt) ====`r`n") -join "`r`n"  # one text for the installer's licence page
+$Licences = @((Get-Content -Raw (Join-Path $Src "NOTICE")), "`r`n==== Kestrel program: Apache License 2.0 ====`r`n", (Get-Content -Raw (Join-Path $Src "LICENSE")), "`r`n==== Kestrel specification: CC BY 4.0 (see docs\LICENSE-CC-BY-4.0.txt) ====`r`n", "`r`n==== Hamlib: GNU GPL / LGPL (see hamlib\COPYING.txt, hamlib\COPYING.LIB.txt and hamlib\SOURCE.txt) ====`r`n", "`r`n==== ITU-R P.533 propagation engine (ITURHFProp, P533, P372, ITU-R Study Group 3) ====`r`n", (Get-Content -Raw (Join-Path $App "prop\SOURCE.txt")), "`r`n==== Sunspot predictions: NOAA Space Weather Prediction Center (United States government work, public domain) ====`r`n") -join "`r`n"  # one text for the installer's licence page
 $Licences | Set-Content -Encoding utf8 (Join-Path $App "docs\LICENSES.txt")  # written beside the others
 
 Write-Host "Privacy scan"                                                # step 6

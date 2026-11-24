@@ -10,7 +10,7 @@ NATIVE = os.path.join(ROOT, "modem", "_native", "kestrel.dll")  # the compiled m
 analysis = Analysis(  # find everything the panel imports
     [os.path.join(ROOT, "tools", "kestrel_panel.py")],  # the program to build
     pathex=[ROOT],  # so the link, live, modem and sim packages are found
-    datas=[(os.path.join(ROOT, "VERSION"), ".")],  # the commit stamp, for Help > About
+    datas=[(os.path.join(ROOT, "VERSION"), "."), (os.path.join(ROOT, "live", "data", "sunspots.json"), os.path.join("live", "data"))],  # the commit stamp, for Help > About; the shipped sunspot predictions, where live/sunspots.py looks for them (since 0.32)
     binaries=[(NATIVE, os.path.join("modem", "_native"))] if os.path.isfile(NATIVE) else [],  # the compiled modem library, where modem/native.py looks for it (left out if it was not built: the modem then runs in pure Python)
     hiddenimports=["pycaw.pycaw", "comtypes.stream", "serial.tools.list_ports", "tools.decode_wav", "tools.signal_report"],  # imported inside functions, so the search may not see them (the two tools serve File > Decode a recording and File > Signal log report)
     excludes=["matplotlib", "pytest", "IPython", "PyQt5", "PyQt6", "PySide6", "notebook"],  # used only by the study tools and tests, not by the panel

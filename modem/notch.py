@@ -31,6 +31,7 @@ LOCAL_STEPS = 10  # a steady signal must also stand out from the steps around it
 CARRIER_MOST = 24  # more steady steps than this (60 Hz in all) is no carrier but a strong wide signal, and nothing is removed
 NOTCH_HALF_HZ = 1.25  # half the width of each notch, in hertz (half an analysis step either side of its centre)
 MIN_BLOCKS = 8  # fewer whole blocks than this is too little audio to tell steady from brief
+NO_NOISE = 1e-13  # a band whose quiet level is below this share of its strongest energy has no noise floor at all (real audio, even 16-bit, never comes near: since 0.32)
 
 
 def steady_bins(x):  # which analysis steps hold something steady
@@ -44,6 +45,8 @@ def steady_bins(x):  # which analysis steps hold something steady
     power = np.abs(np.fft.rfft(x[:blocks * BLOCK].reshape(blocks, BLOCK) * window, axis=1)[:, low:high]) ** 2  # the energy at each step, block by block
     typical = np.percentile(power, 10, axis=0)  # each step's energy in its quietest tenth of the time: high only if something is there nearly all the time
     local = np.array([np.median(typical[max(0, c - LOCAL_STEPS):c + LOCAL_STEPS + 1]) for c in range(len(typical))])  # each step's neighbourhood, at its quietest
+    if not np.median(typical) > NO_NOISE * float(np.max(power)):  # no noise floor at all: audio made without noise (a simulation), where every faint leak would look steady (since 0.32)
+        return low, np.zeros(0, dtype=int)  # nothing is steady
     busy = np.flatnonzero((typical > CARRIER_TIMES * np.median(typical)) & (typical > CARRIER_TIMES * local))  # the steps occupied all the time, and narrowly
     return low, busy  # where the band starts, and the steady steps
 

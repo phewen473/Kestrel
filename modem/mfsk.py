@@ -8,27 +8,60 @@ the first thing fading and multipath destroy. The receiver only asks
 import numpy as np  # numerical arrays
 
 from . import native  # the compiled library, used when present
-from .params import BITS_PER_SYMBOL, FS, M_TONES  # waveform numbers shared by all levels
+from .params import BITS_PER_SYMBOL, FS, M_TONES, RAMP_S  # waveform numbers shared by all levels
 
-_TONE_BITS = np.array([[(m >> (BITS_PER_SYMBOL - 1 - j)) & 1 for j in range(BITS_PER_SYMBOL)] for m in range(M_TONES)])  # the 5 bits each tone stands for
+GRAY = np.array([v ^ (v >> 1) for v in range(M_TONES)])  # Gray code (since signal version 0.32): the tone that carries each 5-bit value, so neighbouring tones differ in one bit only
+GRAY_VALUE = np.argsort(GRAY)  # the other way round: the 5-bit value each tone carries
+_TONE_BITS = np.array([[(GRAY_VALUE[m] >> (BITS_PER_SYMBOL - 1 - j)) & 1 for j in range(BITS_PER_SYMBOL)] for m in range(M_TONES)])  # the 5 bits each tone stands for
 _WEIGHTS = 1 << np.arange(BITS_PER_SYMBOL - 1, -1, -1)  # place values 16, 8, 4, 2, 1
 PAD = 8  # zero-padding factor for fine frequency measurement (8x finer than one bin)
 FINE_SPAN = 4  # fine search reaches 4 fine steps each side (plus or minus half a bin)
 
 
 def bits_to_symbols(bits):  # coded bits -> tone numbers
-    """Group `bits` in fives (padding with zeros) and return one tone number per group."""
+    """Group `bits` in fives (padding with zeros) and return one tone number per group: the Gray code of the group's value (since 0.32)."""
     bits = np.asarray(bits, dtype=np.int64)  # work in whole numbers
     extra = (-len(bits)) % BITS_PER_SYMBOL  # zeros needed to fill the last group
     padded = np.concatenate([bits, np.zeros(extra, dtype=np.int64)])  # add them
-    return padded.reshape(-1, BITS_PER_SYMBOL) @ _WEIGHTS  # each row of 5 bits becomes a number 0..31
+    return GRAY[padded.reshape(-1, BITS_PER_SYMBOL) @ _WEIGHTS]  # each row of 5 bits becomes a number 0..31, sent as the tone its Gray code names
 
 
 def symbols_to_audio(symbols, level):  # tone numbers -> sound
-    """Return the audio for a run of tones at the given speed level."""
-    n = np.arange(level.samples)  # sample counter within one tone
-    freqs = level.tone_bins[np.asarray(symbols)] * level.bin_hz  # frequency of every tone to send, in Hz
-    return np.cos(2 * np.pi * freqs[:, None] * n[None, :] / FS).reshape(-1)  # one cosine burst per tone, joined end to end
+    """Return the audio for a run of tones at the given speed level, as one continuous-phase waveform.
+
+    Each tone holds a whole number of cycles, so the phase never jumps. At
+    a level with a glide (L3 and L4, since 0.32) the frequency moves from one
+    tone to the next smoothly, along a raised-cosine curve centred on the
+    boundary and `level.glide` of a tone long, which keeps the signal narrow.
+    """
+    freqs = level.tone_bins[np.asarray(symbols, dtype=np.int64)] * level.bin_hz  # frequency of every tone to send, in Hz
+    f = np.repeat(freqs, level.samples).astype(float)  # the wanted frequency, sample by sample (sudden steps)
+    glide = int(round(level.glide * level.samples))  # length of each glide, in samples
+    if glide > 1 and len(f) > 0:  # a glide is wanted
+        kernel = np.hanning(glide + 2)[1:-1]  # a smooth bump (raised cosine) without its zero end points
+        kernel /= kernel.sum()  # scaled so the average frequency, and so the phase at each tone's centre, is kept
+        before = glide // 2  # padding needed before the start
+        padded = np.concatenate([np.full(before, f[0]), f, np.full(glide - 1 - before, f[-1])])  # hold the first and last frequency at the ends
+        f = np.convolve(padded, kernel, mode="valid")  # smooth the steps into glides (same length as before)
+    phase = 2 * np.pi * np.concatenate([[0.0], np.cumsum(f[:-1])]) / FS  # running phase: the frequency added up, starting at zero
+    return np.cos(phase)  # the waveform (without a glide, sample for sample the same as separate cosine bursts, since each tone holds whole cycles)
+
+
+def fade_ends(audio):  # the start and end of a transmission
+    """Return `audio` with a raised-cosine fade in and out of RAMP_S seconds at its two ends (since 0.32), so the transmission starts and stops without a click."""
+    ramp = int(round(RAMP_S * FS))  # length of each fade, in samples
+    if ramp < 2 or 2 * ramp > len(audio):  # too short to fade
+        return audio  # as it is
+    out = np.array(audio, dtype=float)  # a copy
+    edge = 0.5 - 0.5 * np.cos(np.pi * np.arange(ramp) / ramp)  # smooth rise from 0 to 1
+    out[:ramp] *= edge  # fade in
+    out[-ramp:] *= edge[::-1]  # fade out
+    return out  # the audio
+
+
+def transmission(symbols, level):  # a whole frame's tones -> its sound
+    """Return the audio of a complete frame (preamble, header, body, header) from all its tone numbers: one continuous waveform with faded ends."""
+    return fade_ends(symbols_to_audio(symbols, level))  # one waveform, then the fades
 
 
 def _mixed_blocks(x, start, nsym, level, offset_hz, drift_hz_s):  # cut out tones and correct their frequency

@@ -499,6 +499,17 @@ const int kHeaderCoded = 60;  /* coded bits in one header copy (HEADER_CODED_BIT
 const int kHeaderFields = 16;  /* header field bits before the check value (HEADER_FIELD_BITS) */
 const int kHeaderBits = 24;  /* field bits and the 8-bit check value */
 
+/* The 5-bit value a tone number carries (mfsk.py GRAY_VALUE, since signal version 0.32): tones are
+ * numbered in Gray code, so the value is found by undoing the code (each bit is the XOR of all the bits
+ * above it in the tone number). */
+inline int gray_value(int tone) {  /* tone number -> the value it carries */
+    int value = tone;  /* start from the tone number */
+    for (int shift = tone >> 1; shift != 0; shift >>= 1) {  /* each higher bit in turn */
+        value ^= shift;  /* folded in */
+    }  /* end of the bits */
+    return value;  /* the value */
+}  /* end of gray_value */
+
 /* The soft bits of one header copy whose first tone starts at sample `start` (frame.py _header_llrs):
  * measure the copy's tones, judge them against the noise (mfsk.py noise_level) and turn each tone's
  * energies into five soft bits (mfsk.py energies_to_llrs). Writes kHeaderCoded values to llrs. */
@@ -524,7 +535,7 @@ void header_llrs(const double *x, size_t n, double start, double offset_hz, size
             double zero = -1.0, one = -1.0;  /* the strongest tone whose bit j is 0, and is 1 (energies are never negative) */
             for (int m = 0; m < kTones; ++m) {  /* each tone position */
                 double e = tone_e[r * kTones + m];  /* its energy */
-                if ((m >> (kBitsPerTone - 1 - j)) & 1) {  /* bit j is 1 */
+                if ((gray_value(m) >> (kBitsPerTone - 1 - j)) & 1) {  /* bit j of the value this tone carries is 1 (Gray-coded tones, since 0.32) */
                     one = std::max(one, e);  /* the strongest such */
                 } else {  /* bit j is 0 */
                     zero = std::max(zero, e);  /* likewise */
@@ -816,6 +827,8 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
     return 0;  /* done */
 }  /* end of kes_pilot_fit */
 
+static const double kNoNoise = 1e-13;  /* a band whose quiet level is below this share of its strongest energy has no noise floor at all (synthetic audio); modem/notch.py NO_NOISE */
+
 KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windowed, double low_hz, double high_hz, double times, int local_steps, int most,
                               double half_hz, size_t size, double *out) {  /* modem/notch.py remove_steady and modem/longbeacon.py clean */
     std::memcpy(out, x, n * sizeof(double));  /* start from an unchanged copy */
@@ -879,6 +892,8 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windo
     });  /* end of the shared loop */
     std::vector<double> scratch(typical);  /* a copy for the median */
     double level = median_inplace(scratch.data(), scratch.size());  /* the band's typical quiet level */
+    double top = power.empty() ? 0.0 : *std::max_element(power.begin(), power.end());  /* the strongest energy anywhere (since 0.32) */
+    bool has_noise = level > kNoNoise * top;  /* real audio always has a noise floor; audio made without any (a simulation) has none, and then nothing is steady (since 0.32) */
     std::vector<size_t> busy;  /* the steady steps */
     std::vector<double> near;  /* one step's neighbourhood */
     for (size_t c = 0; c < width; ++c) {  /* each step */
@@ -889,7 +904,7 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windo
             near.assign(typical.begin() + static_cast<long>(from), typical.begin() + static_cast<long>(to));  /* copied out */
             local = median_inplace(near.data(), near.size());  /* its quiet level */
         }  /* end of the neighbourhood */
-        if (typical[c] > times * level && (local_steps < 0 || typical[c] > times * local)) {  /* far above the band, and (unless the neighbour test is off) above its own neighbours, even at its quietest */
+        if (has_noise && typical[c] > times * level && (local_steps < 0 || typical[c] > times * local)) {  /* a noise floor exists, and this step is far above the band, and (unless the neighbour test is off) above its own neighbours, even at its quietest */
             busy.push_back(c);  /* steady and narrow */
         }  /* end of the test */
     }  /* end of the steps */
@@ -988,7 +1003,7 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
             double zero = -1.0, one = -1.0;  /* the strongest position whose bit j is 0, and is 1 */
             for (int m = 0; m < kTones; ++m) {  /* each position */
                 double value = e[m] / level[row];  /* judged against the noise around it */
-                if ((m >> (kBitsPerTone - 1 - j)) & 1) {  /* bit j is 1 */
+                if ((gray_value(m) >> (kBitsPerTone - 1 - j)) & 1) {  /* bit j of the value this tone carries is 1 (Gray-coded tones, since 0.32) */
                     one = std::max(one, value);  /* the strongest such */
                 } else {  /* bit j is 0 */
                     zero = std::max(zero, value);  /* likewise */
@@ -1491,7 +1506,8 @@ KES_API size_t kes_listener_copy(KesListener *h, long from, long to, double *out
 
 KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bits, size_t ndata_bits, int is_control, const long *rows,
                               size_t total, const long *data_pos, size_t ndata, const long *pilot_pos, const int *pilot_tones, size_t npilots,
-                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double *audio) {  /* frame.py build_frame / build_control, after the bits are packed */
+                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double glide, size_t fade,
+                              double *audio) {  /* frame.py build_frame / build_control, after the bits are packed */
     if (samples == 0 || ndata_bits == 0 || total == 0 || ndata * kBitsPerTone < coded) {  /* nonsense */
         return -1;  /* refuse */
     }  /* end of the check */
@@ -1515,7 +1531,7 @@ KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bi
                 size_t i = g * kBitsPerTone + static_cast<size_t>(j);  /* the bit's place */
                 value = (value << 1) | (i < bits.size() ? bits[i] : 0);  /* added (zeros past the end) */
             }  /* end of the bits */
-            out[g] = value;  /* kept */
+            out[g] = value ^ (value >> 1);  /* sent as the tone its Gray code names (since signal version 0.32) */
         }  /* end of the tones */
     };  /* end of to_symbols */
     std::vector<uint8_t> coded_header;  /* the header, coded */
@@ -1572,13 +1588,49 @@ KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bi
     all.insert(all.end(), body.begin(), body.end());  /* ...the body... */
     all.insert(all.end(), header_syms.begin(), header_syms.end());  /* ...and the header again (since 0.26) */
     double bin_hz = kSampleRate / static_cast<double>(samples);  /* one FFT bin, in hertz */
-    for (size_t s = 0; s < all.size(); ++s) {  /* each tone (mfsk.py symbols_to_audio) */
+    size_t length = all.size() * samples;  /* samples in the whole frame */
+    std::vector<double> freq(length);  /* the wanted frequency, sample by sample (sudden steps) */
+    for (size_t s = 0; s < all.size(); ++s) {  /* each tone */
         double f = static_cast<double>(tone_bins[all[s]]) * bin_hz;  /* its frequency */
-        for (size_t m = 0; m < samples; ++m) {  /* each sample */
-            audio[s * samples + m] = std::cos(2.0 * kPi * f * static_cast<double>(m) / kSampleRate);  /* a cosine burst, starting afresh each tone */
-        }  /* end of the samples */
+        std::fill(freq.begin() + static_cast<long>(s * samples), freq.begin() + static_cast<long>((s + 1) * samples), f);  /* held for the whole tone */
     }  /* end of the tones */
-    return static_cast<long>(all.size() * samples);  /* samples written */
+    long glide_n = std::lround(glide * static_cast<double>(samples));  /* length of each glide, in samples (mfsk.py symbols_to_audio; 0 = sudden steps) */
+    if (glide_n > 1) {  /* a glide is wanted (L3 and L4, since 0.32) */
+        std::vector<double> kernel(static_cast<size_t>(glide_n));  /* a raised-cosine bump: numpy's hanning(glide + 2) without its zero ends */
+        double total_k = 0.0;  /* its sum */
+        for (long k = 0; k < glide_n; ++k) {  /* each point */
+            kernel[static_cast<size_t>(k)] = 0.5 - 0.5 * std::cos(2.0 * kPi * static_cast<double>(k + 1) / static_cast<double>(glide_n + 1));  /* its height */
+            total_k += kernel[static_cast<size_t>(k)];  /* added up */
+        }  /* end of the points */
+        for (double &k : kernel) {  /* each point */
+            k /= total_k;  /* scaled so the heights add up to 1 */
+        }  /* end of the points */
+        long before = glide_n / 2;  /* padding before the start (the first frequency held) */
+        std::vector<double> smooth(length);  /* the gliding frequency */
+        for (size_t i = 0; i < length; ++i) {  /* each sample (numpy convolve, "valid", of the padded steps with the symmetric bump) */
+            double sum = 0.0;  /* the weighted sum */
+            for (long t = 0; t < glide_n; ++t) {  /* each point of the bump */
+                long src = static_cast<long>(i) + t - before;  /* the step sample it weighs */
+                src = std::max(0L, std::min(src, static_cast<long>(length) - 1));  /* the ends held */
+                sum += freq[static_cast<size_t>(src)] * kernel[static_cast<size_t>(glide_n - 1 - t)];  /* added (the bump reversed, as numpy does; it is symmetric anyway) */
+            }  /* end of the bump */
+            smooth[i] = sum;  /* kept */
+        }  /* end of the samples */
+        freq.swap(smooth);  /* used from here on */
+    }  /* end of the glide */
+    double phase = 0.0;  /* running phase in cycles times 2 pi / FS: the frequencies added up */
+    for (size_t i = 0; i < length; ++i) {  /* each sample: one continuous-phase waveform (each tone holds whole cycles, so without a glide this equals separate bursts) */
+        audio[i] = std::cos(2.0 * kPi * phase / kSampleRate);  /* the waveform */
+        phase += freq[i];  /* the running sum of frequency (numpy cumsum, in order) */
+    }  /* end of the samples */
+    if (fade > 1 && 2 * fade <= length) {  /* fades wanted and they fit (mfsk.py fade_ends, since 0.32) */
+        for (size_t i = 0; i < fade; ++i) {  /* each fade sample */
+            double edge = 0.5 - 0.5 * std::cos(kPi * static_cast<double>(i) / static_cast<double>(fade));  /* smooth rise from 0 to 1 */
+            audio[i] *= edge;  /* fade in */
+            audio[length - 1 - i] *= edge;  /* fade out (mirrored) */
+        }  /* end of the fade */
+    }  /* end of the fades */
+    return static_cast<long>(length);  /* samples written */
 }  /* end of kes_encode_frame */
 
 }  /* end of the exported functions */

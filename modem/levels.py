@@ -19,6 +19,7 @@ class Level:  # one speed level
     number: int  # the level's number (0 is the slowest and most robust)
     samples: int  # audio samples in one tone
     step: int  # how many FFT bins apart neighbouring tones sit
+    glide: float = 0.0  # share of a tone length over which the frequency glides smoothly to the next tone (0 = a sudden step); since signal version 0.32
 
     @property  # computed from the fields above
     def seconds(self):  # tone length in seconds
@@ -53,8 +54,8 @@ LEVELS = (  # the levels built so far: (number, samples per tone, tone spacing i
     Level(0, 4800, 2),  # L0: 0.4 s tones, 5 Hz apart, about 160 Hz wide
     Level(1, 1620, 2),  # L1: 0.135 s tones, 15 Hz apart, about 470 Hz wide (200 characters in under 90 s)
     Level(2, 1080, 2),  # L2: 0.09 s tones, 22 Hz apart, about 710 Hz wide (200 characters in under 60 s)
-    Level(3, 540, 1),  # L3: 0.045 s tones, 22 Hz apart, about 710 Hz wide
-    Level(4, 270, 1),  # L4: 0.0225 s tones, 44 Hz apart, about 1420 Hz wide
+    Level(3, 540, 1, 0.25),  # L3: 0.045 s tones, 22 Hz apart, about 710 Hz wide; each change of tone glides over a quarter of a tone (since 0.32: 40 dB width 1580 -> 920 Hz)
+    Level(4, 270, 1, 0.25),  # L4: 0.0225 s tones, 44 Hz apart, about 1420 Hz wide; glides as L3 (since 0.32: 40 dB width 2840 -> 1840 Hz, inside 2.8 kHz)
 )  # end of the table
 
 MIN_SNR_DB = (-20.0, -16.0, -14.0, -11.0, -8.0)  # weakest SNR (2.5 kHz, noise only) at which every test frame decoded, per level (re-measured with the tone-pattern preamble: L3 and L4 each lost 1 dB, one frame in forty failing at the old figure)

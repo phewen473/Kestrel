@@ -58,7 +58,9 @@ def test_listener_stays_quiet_on_noise_and_on_half_a_frame():  # two things it m
     rest = np.concatenate([frame[(half // 6000 + (half % 6000 > 0)) * 6000:], np.zeros(2 * FS) + 0.05 * rng.standard_normal(2 * FS)])  # the remainder, then two seconds of noise
     for i in range(0, len(rest), 6000):  # feed it
         late.extend(listener.feed(rest[i:i + 6000]))  # collect
-    assert len(late) == 1 and late[0].result.ok and late[0].result.text == "x" * 120  # reported once, complete and correct
+    decoded = [h for h in late if h.result.ok]  # the frames that decoded
+    assert len(decoded) == 1 and decoded[0].result.text == "x" * 120  # the frame is reported once, complete and correct
+    assert all(h.result.reason == "body check failed" for h in late if not h.result.ok)  # anything else is a failed frame (a chance match inside the strong frame, since 0.32 left in place so it cannot take the real frame with it), never a wrong message
 
 
 def test_rig_control_speaks_rigctld():  # tuning and keying through Hamlib's rigctld

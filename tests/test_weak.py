@@ -68,7 +68,7 @@ def test_an_expected_callsign_helps_read_an_answer():  # expected callsigns
     rng = np.random.default_rng(5)  # repeatable
     audio = build_answer("Q1AAAA", "Q2BB", ChannelReport(-10, 0.1, 0, 0), level=2)  # Q2BB answering Q1AAAA
     helped = 0  # answers read only with help
-    for _ in range(20):  # weak copies
+    for _ in range(40):  # weak copies (40 since 0.32: the cleaner signal reads more copies alone, leaving fewer for help to rescue)
         x = _in_noise(audio, -17.0, rng)  # below L2's limit
         if receive(x, long_beacons=False).ok:  # read alone
             continue  # not the case being tested

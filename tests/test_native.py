@@ -313,7 +313,7 @@ def test_transmitter_matches_python(python_only):  # frames built by the library
                                    (build_ident, ("Q1AAAA", 17), {}), (build_notice, ("Q1AAAA", (call_hash("Q2BB"), ), (), (call_hash("Q3CCC"), )), {})):  # and the rest
             mine = build(*args, level=level, **extra)  # compiled
             ref = python_only(build, *args, level=level, **extra)  # Python
-            assert len(mine) == len(ref) and np.max(np.abs(mine - ref)) < 1e-12  # the same audio
+            assert len(mine) == len(ref) and np.max(np.abs(mine - ref)) < 1e-9  # the same audio, to rounding (the glides at L3 and L4 add up many small terms in a different order: about 3e-11 apart, since 0.32)
 
 
 def test_describe_says_what_is_in_use():  # the About box line

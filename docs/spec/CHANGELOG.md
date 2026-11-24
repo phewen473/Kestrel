@@ -1,5 +1,15 @@
 # Kestrel specification changelog
 
+## 0.32 (draft) - 23 November 2026
+
+- **SIGNAL VERSION 0.32. Stations following 0.31R4 or earlier cannot exchange frames with 0.32 stations.**
+- **Gray-coded tones** (Section 5.2): a 5-bit value v is sent as tone v XOR (v >> 1), at every level and in the long beacon, so the commonest error (one tone over) costs one bit. Preamble patterns and pilots are unchanged (they name tones directly). Simulation (`tools/waveform_study.py`, 40 frames a point, nine-in-ten limits): up to 1.4 dB better (L0 noise only -21.1 -> -22.0 dB, L0 moderate fading -15.0 -> -16.3, L2 moderate -9.0 -> -10.0, L4 moderate -1.0 -> -2.0, L4 near-vertical incidence -1.3 -> -2.7), no change in the spectrum.
+- **Glides between tones at L3 and L4** (Section 5.2): the frequency moves to the next tone along a raised cosine a quarter of a tone long, continuous in phase. 40 dB width: L4 2844 -> 1839 Hz (now inside 2.8 kHz), L3 1581 -> 919 Hz; power more than 100 Hz outside the tones: L4 -27.5 -> -36.4 dB. Cost in simulation at most about 0.7 dB. Measured and not adopted at L0 to L2: there the glide cost up to 5.7 dB in fading, and those levels are already narrow.
+- **Faded ends** (Section 5.2): every frame fades in and out over 10 ms (raised cosine). No measurable cost.
+- Measured and not adopted: other tone spacings at L0 (1 and 3 bins), L2 (1 bin) and L3 (2 bins): no worthwhile gain.
+- New in the simulator: every ITU-R F.1487 condition, among them mid-latitude disturbed near vertical incidence (7 ms, 1 Hz), the condition of short 80 and 40 m paths.
+- The reference program: HF propagation predictions by Recommendation ITU-R P.533 (new Section 6.15), with the ITU's own program (built by `tools/build_prop.py`, shipped in the setup program): best band by hour for any grid locator, a suggestion when a station is picked, the sky-wave condition and level to expect, and a table of NOAA's predicted sunspot numbers that can be updated over the internet or with an update file. Compiled library interface 12 (the transmitter's glide and fades, Gray coding in the transmitter and both soft-bit readers).
+
 ## 0.31R4 (draft) - 23 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30.** Nothing in the specification changes either.

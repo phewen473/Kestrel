@@ -23,3 +23,7 @@ dist/
 modem/_native/
 # the finished setup program, ready to install (kept on the build computer, published as a release, not in Git)
 install/
+# the propagation engine, built by tools/build_prop.py (the installer builds its own)
+live/_prop/
+# run logs from the study tools (local records, not results)
+results/*.log

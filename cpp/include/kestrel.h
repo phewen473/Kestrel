@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 11  /* the interface described in this file (2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
+#define KES_ABI_VERSION 12  /* the interface described in this file (12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -193,12 +193,15 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
 /* The transmitter (modem/frame.py build_frame and build_control, once the bits are packed): code the 24
  * header bits (K = 7) and the body (with its CRC: the convolutional code if is_control, else the LDPC code,
  * whose three shuffles `rows` (3 x k) come from ldpc.py info_checks), pad and interleave the body, place
- * its data tones and pilots, and write the audio of preamble, header, body and header again: cosine
- * bursts of `samples` samples at tone_bins[tone] FFT bins. `audio` must hold (npreamble + 24 + total) *
- * samples values. Returns the number of samples written, or -1 on bad arguments. */
+ * its data tones and pilots, and write the audio of preamble, header, body and header again: tones of
+ * `samples` samples at tone_bins[tone] FFT bins, numbered in Gray code, as one continuous-phase waveform
+ * whose frequency glides over `glide` of a tone at each change (0 = sudden steps) and which fades in and
+ * out over `fade` samples at its ends (since interface 12, signal version 0.32). `audio` must hold
+ * (npreamble + 24 + total) * samples values. Returns the number of samples written, or -1 on bad arguments. */
 KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bits, size_t ndata_bits, int is_control, const long *rows,
                               size_t total, const long *data_pos, size_t ndata, const long *pilot_pos, const int *pilot_tones, size_t npilots,
-                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double *audio);
+                              size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double glide, size_t fade,
+                              double *audio);
 
 typedef struct KesListener KesListener;  /* a continuous receiver (its insides are the library's own) */
 KES_API KesListener *kes_listener_new(const double *cfg, size_t count);  /* make one (NULL if count is not KES_CFG_COUNT) */

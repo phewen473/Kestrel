@@ -19,7 +19,8 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 11  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 12  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
 _BYTE_P = ctypes.POINTER(ctypes.c_uint8)  # a pointer to bytes
@@ -174,7 +175,7 @@ def _load():  # find, open and check the library
         lib.kes_station_reply.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]  # station, room, its size
         lib.kes_station_reply.restype = ctypes.c_long  # the reply's length, or -1
         lib.kes_encode_frame.argtypes = [_BYTE_P, _BYTE_P, ctypes.c_size_t, ctypes.c_int, _LONG_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t,
-                                         ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, audio
+                                         ctypes.c_size_t, _INT_P, ctypes.c_size_t, ctypes.c_size_t, _INT_P, ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # header, data, data length, control?, LDPC rows, tones, data places, data tones, pilot places, pilot tones, pilots, coded, preamble, its length, samples, tone bins, glide (share of a tone), fade (samples), audio (interface 12)
         lib.kes_encode_frame.restype = ctypes.c_long  # samples written, or -1
         lib.kes_listener_new.argtypes = [_DOUBLE_P, ctypes.c_size_t]  # settings, how many
         lib.kes_listener_new.restype = ctypes.c_void_p  # the listener (a handle)
@@ -569,7 +570,7 @@ def encode_frame(header_bits, data_bits, is_control, layout, spec, preamble_tone
     audio = np.zeros((len(pattern) + 24 + int(layout["total"])) * spec.samples)  # room for the whole frame
     got = _lib.kes_encode_frame(header.ctypes.data_as(_BYTE_P), data.ctypes.data_as(_BYTE_P), len(data), int(bool(is_control)), rows_p,
                                 int(layout["total"]), data_pos_p, len(data_pos), pilot_pos_p, pilot_tones_p, len(pilot_pos),
-                                int(layout["coded"]), pattern_p, len(pattern), int(spec.samples), bins_p, _ptr(audio))  # made
+                                int(layout["coded"]), pattern_p, len(pattern), int(spec.samples), bins_p, float(spec.glide), int(round(RAMP_S * 12000)), _ptr(audio))  # made (with the level's glide and the fades at the ends, since interface 12)
     if got < 0:  # the library refused
         return None  # the Python code will handle it
     return audio[:got]  # the frame's audio

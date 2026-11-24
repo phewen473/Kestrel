@@ -47,6 +47,7 @@ from modem import call_hash  # the short code a mail notice uses for a callsign 
 from modem import native  # the compiled modem library, to say in About and --check whether it is in use  # noqa: E402
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
+from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
@@ -105,6 +106,7 @@ SHORTCUTS = (  # the keyboard shortcuts, for Help > Keyboard shortcuts
     ("Ctrl+L", "go to the To box (callsign)"), ("Ctrl+M", "go to the Message box"), ("Enter", "in the Message box: queue the message; in a list: put the callsign in To"),  # (continued)
     ("Alt+1 ... Alt+9, Alt+0", "put quick message 1 to 10 in the Message box"), ("Ctrl+1, 2, 3", "put quick message 1, 2 or 3 in the Message box (as before)"), ("Ctrl+4", "send telemetry to the station in To"), ("Ctrl+5", "broadcast telemetry to ALL"),  # (continued)
     ("Ctrl+R", "go to the frequency list"), ("Ctrl+Up / Ctrl+Down", "previous / next frequency"), ("Ctrl+G", "go to the stations list"),  # (continued)
+    ("Ctrl+P", "propagation: best band by hour to the station in To (ITU-R P.533)"),  # (continued: since 0.32)
     ("Ctrl+J", "go to the level sliders"), ("Tab / Shift+Tab", "move between controls"), ("Alt + underlined letter", "open a menu"),  # (continued)
     ("Esc", "in the main window: stop calling (a call started with Respond or Call station, a beacon round, a long beacon, broadcasts waiting) and cut such a transmission short; in other windows: close the window"))  # the rest
 
@@ -414,6 +416,7 @@ class Panel:  # the control panel window
         self.station_menu.add_command(label="Save as contact", command=self.save_contact)  # keep it
         self.station_menu.add_command(label="Remove contact", command=self.remove_contact)  # forget it
         self.station_menu.add_command(label="Show last 48 hours", command=self.station_history)  # its receptions
+        self.station_menu.add_command(label="Propagation to this station...", command=self.propagation_selected)  # best band by hour to it (since 0.32)
         self.station_menu.add_separator()  # then the list as a whole
         self.station_menu.add_command(label="Select all", accelerator="Ctrl+A", command=lambda: self.select_all_rows(self.stations))  # every station
         self.station_menu.add_command(label="Copy", accelerator="Ctrl+C", command=lambda: self.copy_rows(self.stations))  # to the clipboard
@@ -524,6 +527,7 @@ class Panel:  # the control panel window
         stations.add_command(label="Stations heard (last 48 hours)...", underline=0, accelerator="F8", command=self.heard_window)  # the longer record
         stations.add_command(label="Telemetry received...", underline=0, accelerator="F9", command=self.telemetry_window)  # what other stations hear
         stations.add_command(label="Mail held and carried...", underline=0, accelerator="F10", command=self.mail_window)  # store and forward: mail this station carries, and its own messages out with carriers
+        stations.add_command(label="Propagation (best band by hour)...", underline=0, accelerator="Ctrl+P", command=lambda: self.propagation_window())  # ITU-R P.533 predictions to the station in To (since 0.32)
         stations.add_separator()  # a divider
         stations.add_command(label="Go to the stations list", underline=6, accelerator="Ctrl+G", command=self.focus_stations)  # the list on the main window
         stations.add_command(label="Put the selected callsign in To", underline=0, accelerator="Enter", command=self.pick_station)  # use it
@@ -562,7 +566,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Escape>": self.stop_calling}  # every shortcut
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Escape>": self.stop_calling}  # every shortcut
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -2187,6 +2191,172 @@ class Panel:  # the control panel window
         ttk.Button(buttons, text="Broadcast our telemetry", command=self.broadcast_telemetry).pack(side="left", padx=4)  # to everyone
         ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
 
+    # ---- propagation predictions (since 0.32) ----
+
+    def station_grid(self, call):  # the grid locator known for a callsign
+        """Return the grid locator of `call` from the contact book or the Stations heard list, or "" if none is known."""
+        call = (call or "").strip().upper()  # as written in capitals
+        grid = self.contacts.get(call, {}).get("grid", "") if call else ""  # a saved contact's grid
+        if not grid and call in self.heard_rows:  # heard instead
+            grid = self.stations.set(self.heard_rows[call], "grid")  # its grid from the list
+        return grid or ""  # the grid, or nothing
+
+    def propagation_selected(self):  # right click on a station > Propagation to this station
+        rows = self.stations.selection()  # the selected station
+        call = self.stations.set(rows[0], "who") if rows else self.to.get()  # it, or the To box
+        self.propagation_window(call)  # open the window for it
+
+    def propagation_window(self, call=None):  # Stations > Propagation (Ctrl+P)
+        """Open the propagation window: P.533 predictions from this station to a grid locator, every hour of a month, Kestrel's calling frequency on each band."""
+        call = (self.to.get() if call is None else call).strip().upper()  # the station asked about (the To box unless told)
+        top = self.window("propagation", "Kestrel - propagation (ITU-R P.533)")  # the window
+        top.columnconfigure(0, weight=1)  # the table takes the width
+        top.rowconfigure(3, weight=1)  # and the height
+        form = ttk.Frame(top, padding=8)  # the settings row
+        form.grid(row=0, column=0, sticky="ew")  # at the top
+        ttk.Label(form, text=f"From {self.settings['grid'] or '(set your grid in Settings)'} to grid").grid(row=0, column=0, sticky="w")  # this station's grid
+        to_grid = ttk.Entry(form, width=8)  # the far end's grid
+        to_grid.insert(0, self.station_grid(call))  # filled in when known
+        to_grid.grid(row=0, column=1, padx=(4, 10))  # place it
+        ttk.Label(form, text=f"({call})" if call else "").grid(row=0, column=2, sticky="w")  # whose grid it is
+        today = time.gmtime()  # this month
+        months = [f"{today.tm_year + (today.tm_mon - 1 + i) // 12:04d}-{(today.tm_mon - 1 + i) % 12 + 1:02d}" for i in range(12)]  # this month and the eleven after it
+        month = tk.StringVar(value=months[0])  # the month chosen
+        ttk.Label(form, text="Month").grid(row=0, column=3, padx=(10, 4))  # label
+        ttk.Combobox(form, textvariable=month, values=months, state="readonly", width=8).grid(row=0, column=4)  # the choice
+        ttk.Label(form, text="Power (W)").grid(row=0, column=5, padx=(10, 4))  # label
+        power = ttk.Entry(form, width=6)  # transmitter power
+        power.insert(0, str(self.settings.get("prop_power_w") or self.settings.get("max_power_w") or "100"))  # as last used, or the radio's full power
+        power.grid(row=0, column=6)  # place it
+        noise_names = list(propagation.NOISE_CHOICES.values())  # the man-made noise choices, in words
+        noise = tk.StringVar(value=propagation.NOISE_CHOICES.get(self.settings.get("prop_noise", "RURAL"), "Rural"))  # as last used
+        ttk.Label(form, text="Noise here").grid(row=0, column=7, padx=(10, 4))  # label
+        ttk.Combobox(form, textvariable=noise, values=noise_names, state="readonly", width=12).grid(row=0, column=8)  # the choice
+        ttk.Label(form, text="Sunspot number").grid(row=1, column=0, sticky="w", pady=(6, 0))  # label
+        ssn_box = ttk.Entry(form, width=8)  # an override (blank = the prediction)
+        ssn_box.insert(0, str(self.settings.get("prop_ssn_override", "") or ""))  # as last left
+        ssn_box.grid(row=1, column=1, padx=(4, 10), pady=(6, 0))  # place it
+        ssn_note = ttk.Label(form, text="")  # what the prediction gives
+        ssn_note.grid(row=1, column=2, columnspan=7, sticky="w", pady=(6, 0))  # place it
+        set_line = ttk.Label(top, text="", font="KestrelSmall")  # which prediction set is in use, and its date
+        set_line.grid(row=1, column=0, sticky="w", padx=8)  # under the settings
+        advice = ttk.Label(top, text="", wraplength=760, justify="left")  # the suggestion
+        advice.grid(row=2, column=0, sticky="w", padx=8, pady=(6, 4))  # above the table
+        bands = list(propagation.band_frequencies())  # the bands predicted
+        middle = ttk.Frame(top)  # a holder for the table (which places itself by packing)
+        middle.grid(row=3, column=0, sticky="nsew")  # filling the middle of the window
+        tree = self.table(middle, [("utc", "UTC", 50), ("local", "Local", 50)] + [(b, b, 130) for b in bands] + [("muf", "MUF", 60), ("best", "Best", 60)], height=24)  # one row per hour
+        ttk.Label(top, text="Each band: reliability (per cent of days L0 works), median SNR in 2.5 kHz, the fastest level expected, and the path (NVIS, one hop, two hops or more).\n"
+                  "P.533 predicts the month's typical conditions; a flare or a geomagnetic storm on a given day is not in it.", font="KestrelSmall", justify="left").grid(row=4, column=0, sticky="w", padx=8)  # how to read it
+        buttons = ttk.Frame(top, padding=8)  # the row of buttons
+        buttons.grid(row=5, column=0, sticky="ew")  # at the bottom
+        state = {"busy": False}  # whether a prediction is running
+
+        def show_set():  # the prediction set line and the month's sunspot number
+            set_line.configure(text=sunspots.describe())  # the set in use and its issue date
+            year, mon = (int(part) for part in month.get().split("-"))  # the month chosen
+            value, how = sunspots.ssn_for(year, mon)  # its predicted number
+            ssn_note.configure(text=f"blank = predicted {value:.0f} for {month.get()} ({how})" if value is not None else "no prediction set: type a number")  # say so
+
+        def predict():  # the Predict button
+            if state["busy"]:  # one already running
+                return  # wait for it
+            grid = to_grid.get().strip().upper()  # the far end
+            if not self.settings["grid"]:  # this station's grid is not set
+                messagebox.showinfo("Kestrel", "Set your own grid locator in Settings > Station first.", parent=top)  # say so
+                return  # nothing to do
+            year, mon = (int(part) for part in month.get().split("-"))  # the month
+            try:  # the typed numbers may be nonsense
+                watts = float(power.get() or 100)  # transmitter power
+                ssn = float(ssn_box.get()) if ssn_box.get().strip() else sunspots.ssn_for(year, mon)[0]  # the sunspot number: typed, or predicted
+            except ValueError:  # not numbers
+                messagebox.showerror("Kestrel", "Power and sunspot number must be numbers.", parent=top)  # say so
+                return  # nothing to do
+            if ssn is None:  # no number at all
+                messagebox.showerror("Kestrel", "There is no sunspot prediction; type a sunspot number.", parent=top)  # say so
+                return  # nothing to do
+            code = {v: k for k, v in propagation.NOISE_CHOICES.items()}.get(noise.get(), "RURAL")  # the noise setting as P.533 names it
+            self.settings.update(prop_power_w=f"{watts:g}", prop_noise=code, prop_ssn_override=ssn_box.get().strip())  # remembered
+            self.save_settings()  # kept
+            state["busy"] = True  # running
+            advice.configure(text=f"Predicting {self.settings['grid']} to {grid}, {month.get()}, sunspot number {ssn:.0f}...")  # say so
+            out = queue.Queue()  # the answer comes back through this
+
+            def job():  # the background part (the ITU program takes a second or two)
+                try:  # it may fail
+                    out.put(propagation.predict(self.settings["grid"], grid, year, mon, ssn, watts, code))  # the rows
+                except Exception as error:  # anything at all: say it in the window
+                    out.put(error)  # the error instead
+
+            def collect():  # look for the answer
+                if out.empty():  # not yet
+                    top.after(200, collect)  # look again soon
+                    return  # wait
+                state["busy"] = False  # done
+                rows = out.get()  # the answer
+                if isinstance(rows, Exception):  # it failed
+                    advice.configure(text=f"No prediction: {rows}")  # say why
+                    return  # nothing to show
+                fill(rows)  # show it
+
+            threading.Thread(target=job, daemon=True).start()  # run it
+            top.after(200, collect)  # and wait for it
+
+        def fill(rows):  # show a prediction
+            tree.delete(*tree.get_children())  # empty the table
+            now = time.gmtime().tm_hour  # the hour now, UTC
+            names = {"nvis": "NVIS", "moderate": "1 hop", "poor": "2+ hops"}  # paths in short words
+            offset = -time.timezone // 3600 if not time.localtime().tm_isdst else -time.altzone // 3600  # local time's difference from UTC, hours
+            for hour in range(24):  # each hour
+                here = {r["band"]: r for r in rows if r["hour"] == hour}  # its bands
+                best = propagation.best_at(rows, hour)  # the best band then
+                cells = []  # one cell per band
+                for band in bands:  # each band
+                    r = here.get(band)  # its row
+                    cells.append(f"{r['reliability']:3.0f}% {r['snr']:+3.0f} {'L' + str(r['level']) if r['level'] is not None else '--'} {names[r['condition']]}" if r else "")  # reliability, SNR, level, path
+                muf = next(iter(here.values()))["muf"] if here else 0.0  # the hour's MUF (the same for every band)
+                item = tree.insert("", "end", values=(f"{hour:02d}00", f"{(hour + offset) % 24:02d}00", *cells, f"{muf:.1f}", best["band"] if best else "-"))  # the row
+                if hour == now:  # the hour now
+                    tree.selection_set(item)  # highlighted
+                    tree.see(item)  # and in view
+            advice.configure(text=propagation.suggestion(rows, now) + "  " + "  ".join(f"{band} best at {', '.join(f'{h:02d}' for h in propagation.best_times(rows, band))} UTC." for band in bands if propagation.best_times(rows, band)))  # the suggestion now, and each band's best hours
+
+        def update_online():  # the Update online button
+            def job():  # in the background (the internet may be slow)
+                try:  # it may fail
+                    data = sunspots.update_online()  # fetch NOAA's prediction
+                    top.after(0, lambda: (show_set(), messagebox.showinfo("Kestrel", f"Sunspot predictions updated from NOAA (issued {data['issued']}).", parent=top)))  # say so
+                except Exception as error:  # no internet, or NOAA's file changed
+                    top.after(0, lambda: messagebox.showerror("Kestrel", f"Could not update online: {error}\n\nThe predictions already here are still used. An update file can also be placed in:\n{sunspots.updates_folder()}", parent=top))  # say why
+            threading.Thread(target=job, daemon=True).start()  # run it
+
+        def load_file():  # the Load update file button
+            path = filedialog.askopenfilename(parent=top, title="Kestrel sunspot update file", filetypes=[("Kestrel sunspot predictions", "sunspots*.json"), ("All files", "*.*")])  # choose it
+            if not path:  # none chosen
+                return  # nothing to do
+            try:  # it may not be one of ours
+                data = sunspots.import_file(path)  # check it and copy it into the updates folder
+            except (OSError, ValueError) as error:  # unusable
+                messagebox.showerror("Kestrel", f"That file cannot be used: {error}", parent=top)  # say why
+                return  # nothing changed
+            show_set()  # the line again
+            messagebox.showinfo("Kestrel", f"Update file loaded (issued {data['issued']}). The prediction set with the latest issue date is used.", parent=top)  # say so
+
+        ttk.Button(buttons, text="Predict", command=predict).pack(side="left")  # run it
+        ttk.Button(buttons, text="Update sunspot predictions online", command=update_online).pack(side="left", padx=(8, 0))  # fetch from NOAA
+        ttk.Button(buttons, text="Load update file...", command=load_file).pack(side="left", padx=(8, 0))  # a file sent by hand
+        ttk.Button(buttons, text="Open updates folder", command=lambda: self.open_path(sunspots.updates_folder())).pack(side="left", padx=(8, 0))  # where update files go
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
+        month.trace_add("write", lambda *args: show_set())  # a new month: its sunspot number
+        show_set()  # the line now
+        why = propagation.missing()  # is the ITU program here?
+        if why:  # no
+            advice.configure(text=why)  # say what is missing
+        elif to_grid.get():  # a grid is known
+            predict()  # predict straight away
+        to_grid.bind("<Return>", lambda event: predict())  # Enter predicts
+        to_grid.focus_set()  # the grid box has the keyboard
+
     def shortcuts_window(self):  # Help > Keyboard shortcuts
         top = self.window("keys", "Kestrel - keyboard shortcuts")  # the window
         tree = self.table(top, (("key", "Key", 170), ("detail", "Does", 430)), height=len(SHORTCUTS))  # the list
@@ -2355,6 +2525,34 @@ class Panel:  # the control panel window
 
         grid_box.bind("<KeyRelease>", show_distance)  # follow the typing
         show_distance()  # and show it now
+        ttk.Label(station, text="Best band now").grid(row=5, column=0, sticky="nw", padx=(4, 8), pady=3)  # the propagation suggestion (since 0.32)
+        hint = ttk.Label(station, text="", wraplength=300, justify="left", font="KestrelSmall")  # filled in when the prediction is ready
+        hint.grid(row=5, column=1, sticky="w", pady=3)  # place it
+        ttk.Button(station, text="Propagation...", command=lambda: self.propagation_window(boxes["call"].get())).grid(row=6, column=1, sticky="w")  # the full table
+
+        def suggest():  # predict in the background and show the suggestion for this hour
+            far, own = grid_box.get().strip(), self.settings["grid"]  # the two grids
+            if not far or not own or propagation.missing():  # cannot predict
+                hint.configure(text="(needs both grid locators)" if not (far and own) else "(propagation program not installed)")  # say why
+                return  # nothing more
+            now = time.gmtime()  # this hour and month
+            ssn = sunspots.ssn_for(now.tm_year, now.tm_mon)[0]  # the predicted sunspot number
+            if ssn is None:  # no prediction set at all
+                hint.configure(text="(no sunspot prediction)")  # say so
+                return  # nothing more
+            hint.configure(text="predicting...")  # say so
+
+            def job():  # the background part
+                try:  # it may fail
+                    words = propagation.suggestion(propagation.predict(own, far, now.tm_year, now.tm_mon, ssn, float(self.settings.get("prop_power_w") or self.settings.get("max_power_w") or 100), self.settings.get("prop_noise", "RURAL")), now.tm_hour)  # the suggestion for this hour
+                except Exception as error:  # anything: say it
+                    words = f"(no prediction: {error})"  # why
+                top.after(0, lambda: hint.configure(text=words) if hint.winfo_exists() else None)  # shown, if the window is still open
+
+            threading.Thread(target=job, daemon=True).start()  # run it
+
+        grid_box.bind("<FocusOut>", lambda event: suggest())  # predict again when the grid has been typed
+        suggest()  # and now
         rig = ttk.LabelFrame(top, text="Rig", padding=8)  # the other station's radio
         rig.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(10, 0))  # the right half
         box(rig, 0, "radio", "Radio")  # the radio
@@ -3164,6 +3362,16 @@ def self_check():  # Kestrel.exe --check: is everything the program needs presen
         note(True, "tools: decode a recording, signal log report")  # present
     except Exception as problem:  # left out of the build
         note(False, f"tools: {problem}")  # say so
+    why = propagation.missing()  # the ITU-R P.533 program and its data (since 0.32)
+    if why is None:  # present: try one real prediction
+        try:  # it may fail to run
+            rows = propagation.predict("EM93", "EM95", time.gmtime().tm_year, time.gmtime().tm_mon, 80)  # a short path, this month
+            note(len(rows) > 0, f"propagation: ITU-R P.533 program runs ({len(rows)} band-hours predicted)")  # it works
+        except Exception as problem:  # it did not run
+            note(False, f"propagation: {problem}")  # say so
+    else:  # missing
+        note(False, f"propagation: {why}")  # say so
+    note(sunspots.current() is not None, sunspots.describe())  # the sunspot predictions and their issue date
     program = find_rigctld()  # the rig control program
     models = list_models(program) if program else []  # the radios it knows
     note(bool(program) and bool(models), f"rigctld: {os.path.basename(program) if program else 'not found'}, {len(models)} radio types")  # found and working (the name only: no folder names in the report)

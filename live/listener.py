@@ -418,13 +418,22 @@ class Listener:  # the continuous receiver
         self.priors.append(Prior(attempt.frame_type, attempt.body_llrs, float(attempt.offset_hz), here))  # kept
         self.priors = self.priors[-PRIOR_MOST:]  # only the most recent
 
-    def _take(self, result, start, end):  # hand a frame over and cut it out of the store
-        """Return a Heard for the frame from store position `start` to `end`, and cut it out of the store."""
+    def _take(self, result, start, end):  # hand a frame over (and cut it out of the store if it decoded)
+        """Return a Heard for the frame from store position `start` to `end`.
+
+        A frame that decoded is cut out of the store, so it is not found again.
+        A frame that failed its check is handed over (the station may add it to
+        a retry) but left in place (since 0.32): a chance match inside another,
+        stronger frame can pass a header check, and cutting it out would take
+        that real frame with it. The incremental search does not search the
+        same audio twice, so it is not reported again.
+        """
         result.sample = self._number(start)  # where it began in the stream
         pad = int(PAD_S * FS)  # a little audio either side
         audio = self._slice(start - pad, end + pad)  # the frame's own stretch of audio
         first = self._number(max(start - pad, 0))  # the stream's number for its first sample
-        self._cut(start, end)  # cut the frame out so it is not found again
+        if result.ok:  # decoded
+            self._cut(start, end)  # cut the frame out so it is not found again
         return Heard(result, audio, first)  # hand it over
 
     # ---- the whole-store search (before 0.31; kept as the reference) ----

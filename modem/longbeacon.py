@@ -32,10 +32,10 @@ from .crc import crc16  # the body's check value
 from .fec import TAIL, conv_encode, viterbi_decode  # the convolutional code
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import Level  # one level's numbers
-from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, symbols_to_audio, tone_energies  # the tone waveform
+from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit, signal_report, tone_energies, transmission  # the tone waveform
 from . import native  # the compiled library, used when present
 from .params import BODY_CRC_BITS, CALL_BITS, CENTRE_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
-from .preamble import detect_preamble, make_preamble  # its twelve-tone pattern
+from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
 
 LONG = Level(LONG_LEVEL, LONG_SAMPLES, LONG_STEP)  # the long beacon's tone length and spacing, as a level
 FIELD_BITS = CALL_BITS + GRID_BITS + 3  # callsign, grid and three flag bits (available, holds mail, spare)
@@ -88,7 +88,7 @@ def build_long_beacon(call, grid, available=True, holds_mail=False):  # the tran
     body = np.zeros(LAYOUT["total"], dtype=np.int64)  # room for every body tone
     body[LAYOUT["data_pos"]] = bits_to_symbols(interleave(coded))  # shuffled data bits become the data tones
     body[LAYOUT["pilot_pos"]] = LAYOUT["pilot_tones"]  # known tones in the pilot positions
-    return np.concatenate([make_preamble(LONG), symbols_to_audio(body, LONG)])  # the long pattern, then the body
+    return transmission(np.concatenate([pattern_tones(LONG_LEVEL), body]), LONG)  # the long pattern, then the body: one waveform with faded ends (since 0.32)
 
 
 def clean(x):  # take steady carriers out of the long beacon's band
@@ -112,6 +112,8 @@ def clean(x):  # take steady carriers out of the long beacon's band
     power = np.abs(np.fft.rfft(x[:blocks * n].reshape(blocks, n), axis=1)[:, low:high]) ** 2  # the energy in each bin, tone length by tone length
     typical = np.percentile(power, 10, axis=0)  # each bin's energy in its quietest tenth of the time: high only if something is there nearly all the time
     busy = np.flatnonzero(typical > CARRIER_TIMES * np.median(typical))  # bins that are occupied all the time
+    if not np.median(typical) > 1e-13 * float(np.max(power)):  # no noise floor at all (audio made without noise): nothing is steady (since 0.32, as modem/notch.py NO_NOISE)
+        busy = busy[:0]  # none
     if len(busy) == 0 or len(busy) > CARRIER_MOST:  # no carrier; or so many bins that it is no carrier but a strong signal (a strong beacon spills a little into every bin), which needs no help
         return x  # nothing to do
     size = next_fast_len(len(x), real=True)  # a length the transform handles quickly
