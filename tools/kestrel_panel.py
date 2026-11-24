@@ -387,6 +387,7 @@ class Panel:  # the control panel window
         self.watch = signalwatch.SignalWatch()  # every signal in the passband, followed and recognized (since 0.37)
         self.frames = FrameStrip()  # the Kestrel frame arriving or last heard, and its message's parts, for the frame strip (since 0.37)
         self.steps_heard = {}  # callsign -> (time, powersteps.Reading): the last power steps read before each station's beacon (since 0.38)
+        self.gap_said = {}  # callsign -> the UTC hour its prediction check was last told in the Activity log (since 0.39)
         self.strip_at = 0.0  # when the frame strip was last drawn
         self.watch_at = 0.0  # when the watcher last looked
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
@@ -1718,7 +1719,29 @@ class Panel:  # the control panel window
         if self.settings.get("prop_check", True) and grid and self.settings["grid"]:  # checking predictions
             name = band_of(dial / 1000.0)  # e.g. "40m"
             if name:  # an amateur band
-                propcheck.check(call, self.settings["grid"], grid, f"{name[:-1]} m", result.snr_db, float(self.settings.get("prop_power_w") or self.settings.get("max_power_w") or 100), self.settings.get("prop_noise", "RURAL"))  # in the background
+                band, noise = f"{name[:-1]} m", self.settings.get("prop_noise", "RURAL")  # the band as P.533 names it, and the noise here
+                usual = float(self.settings.get("prop_power_w") or self.settings.get("max_power_w") or 100)  # the power assumed when nothing better is known
+                try:  # the other station's power, when it has said (its Rig and power message or telemetry, since 0.39)
+                    theirs = float((self.contacts.get(call) or {}).get("power_w") or usual)  # in watts
+                except (TypeError, ValueError):  # not a number
+                    theirs = usual  # the usual figure
+                propcheck.check(call, self.settings["grid"], grid, band, result.snr_db, theirs, noise, on_row=self.prop_gap)  # this station hearing it, in the background
+                report = getattr((result.fields or {}).get("report"), "snr_db", None)  # how it heard this station, when the frame carries a report (since 0.39)
+                if report is not None:  # it does
+                    mine = self.power_w()  # this station's power as the radio measured it, if it did
+                    propcheck.check(call, self.settings["grid"], grid, band, float(report), float(mine) if mine else usual, noise, direction="out", on_row=self.prop_gap)  # it hearing this station, in the background
+
+    def prop_gap(self, row):  # a prediction check was recorded (called from its background thread; since 0.39)
+        """Tell the operator, at most once an hour per station, when a station's measured SNR falls well short of the prediction, and what that points to."""
+        call = row["call"]  # whose
+        hour = row["utc"][:13]  # this hour
+        if self.gap_said.get(call) == hour:  # said already this hour
+            return  # once is enough
+        gaps = propcheck.station_gaps(call)  # both ways, last 30 days
+        if not propcheck.verdict(gaps):  # nothing worth saying
+            return  # quiet
+        self.gap_said[call] = hour  # remembered
+        self.say(f"prediction check, {call}: {propcheck.describe_station(call)}")  # the Activity log (say is safe from any thread)
 
     def follow_spotter(self):  # keep the spotter in step with the settings and send when due (since 0.35)
         """Start, stop or tick the PSK Reporter spotter; called twice a second from follow_station."""
@@ -3299,7 +3322,10 @@ class Panel:  # the control panel window
         parts = [when] + [part for part in (last.get("band", ""), f"{last['dial_khz']:.1f} kHz" if last.get("dial_khz") else "", f"audio {last['offset_hz']:+.0f} Hz" if last.get("offset_hz") is not None else "", last.get("level", ""), f"{last['snr_db']:+.0f} dB" if last.get("snr_db") is not None else "") if part]  # what is known
         ttk.Label(rig, text="Last heard").grid(row=3, column=0, sticky="nw", padx=(4, 8), pady=3)  # label
         ttk.Label(rig, text="  ·  ".join(parts), wraplength=380, justify="left").grid(row=3, column=1, sticky="w", pady=3)  # the reading
-        ttk.Label(rig, text="Radio and power fill in by themselves when the station sends them (its \"Rig and power\" quick message, or telemetry); the antenna you fill in.", font="KestrelSmall", wraplength=400, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # where they come from (since 0.38R2)
+        checked = propcheck.describe_station(call) if call else ""  # heard and reported SNR against the P.533 prediction, both ways (since 0.39)
+        ttk.Label(rig, text="Against prediction").grid(row=4, column=0, sticky="nw", padx=(4, 8), pady=3)  # label
+        ttk.Label(rig, text=checked or "nothing checked yet (needs a grid locator and a decoded frame; reports from the station show the other way)", wraplength=380, justify="left").grid(row=4, column=1, sticky="w", pady=3)  # the comparison
+        ttk.Label(rig, text="Radio and power fill in by themselves when the station sends them (its \"Rig and power\" quick message, or telemetry); the antenna you fill in.", font="KestrelSmall", wraplength=400, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))  # where they come from (since 0.38R2)
         notes_row = ttk.Frame(top)  # the notes
         notes_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 0))  # under both halves
         notes_row.columnconfigure(1, weight=1)  # the box takes the width
