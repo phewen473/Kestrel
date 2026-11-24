@@ -265,6 +265,15 @@ def utc(seconds):  # a time for display
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds))  # date and time, UTC
 
 
+HEARD_TIME = "%m-%d %H:%M"  # how Stations heard and Messages received show when: month-day and local time (since 0.40; the time alone before)
+
+
+def heard_when(record):  # when a saved contact was last heard, for its row in Stations heard (since 0.40)
+    """Return the local date and time `record` (a contact record) was last heard, as HEARD_TIME, or "" if never."""
+    t = (record.get("last_heard") or {}).get("t")  # when, in seconds since 1970
+    return time.strftime(HEARD_TIME, time.localtime(t)) if t else ""  # local date and time, or nothing
+
+
 def local_time(seconds):  # the same moment in this computer's time zone (since 0.38R2)
     """Return `seconds` (since 1970) as a local month, day and time, for the Local column beside a UTC one."""
     return time.strftime("%m-%d %H:%M", time.localtime(seconds))  # month, day and time, local
@@ -490,8 +499,8 @@ class Panel:  # the control panel window
         self.to_send.bind("<Control-a>", lambda event: (self.select_all_rows(self.to_send), "break")[1])  # Ctrl+A in the list
         self.to_send.bind("<Control-c>", lambda event: (self.copy_rows(self.to_send), "break")[1])  # Ctrl+C in the list
         self.to_send.bind("<Button-3>", self.send_menu_at)  # a right click selects the message under the pointer and shows the menu
-        self.received = self._list(lists, 1, "Messages received", (("time", "Time", 64), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
-        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "Signal", 58), ("time", "Last heard", 68), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
+        self.received = self._list(lists, 1, "Messages received", (("time", "Received", 140), ("who", "From", 110), ("text", "Message", 230)))  # incoming messages and broadcasts
+        self.stations = self._list(lists, 2, "Stations heard and saved contacts", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "Signal", 58), ("time", "Last heard", 140), ("text", "Sending", 90), ("mail", "Status and messages", 170)))  # every callsign heard on the frequency, plus the operator's saved contacts (marked *); stations beaconing now are highlighted
         keep = ttk.Frame(self.stations.master)  # buttons under that list
         keep.grid(row=1, column=0, columnspan=2, sticky="w", padx=4, pady=(0, 4))  # place them
         ttk.Button(keep, text="Respond  Ctrl+Y", command=self.respond).pack(side="left", padx=(0, 8))  # call the selected station by name (answer its beacon by hand)
@@ -517,7 +526,7 @@ class Panel:  # the control panel window
         self.stations.bind("<Button-3>", self.station_menu_at)  # a right click selects the station under the pointer and shows the menu
         self.stations.bind("<Return>", lambda event: self.pick_station())  # so does Enter
         for call in sorted(self.contacts):  # the saved contacts are listed from the start
-            self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), self.contacts[call].get("band", ""), "", "", "saved contact"))  # one row each, with the band it was last heard on
+            self.heard_rows[call] = self.stations.insert("", "end", values=("*", call, self.contacts[call].get("grid", ""), self.contacts[call].get("band", ""), "", heard_when(self.contacts[call]), "saved contact"))  # one row each, with the band it was last heard on
         self.refresh_to()  # offer them in the To box
         for item in read_json(side_file("_outbox.json"), []):  # messages left waiting when the panel was last closed
             self.to_send.insert("", "end", values=(item.get("time", ""), item.get("to") or "partner", self.band_for(item.get("to", "")), item.get("text", ""), "waiting"))  # back in the list
@@ -1929,7 +1938,7 @@ class Panel:  # the control panel window
             if kind == "mail notice":  # a station says whom it holds mail for
                 if call_hash(self.settings["call"]) in fields.get("held", []):  # it holds mail for this station
                     self.say(f"{call} holds mail for you; it will be delivered when you work {call} (Listen answers its beacon by itself, or select it and press Respond, Ctrl+Y)")  # tell the operator
-            values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), band, f"{snr:+.0f} dB", time.strftime("%H:%M:%S"), kind)  # the row's contents (a grid learned earlier is kept)
+            values = ("*" if call in self.contacts else "", call, grid or (self.stations.set(self.heard_rows[call], "grid") if call in self.heard_rows else ""), band, f"{snr:+.0f} dB", time.strftime(HEARD_TIME), kind)  # the row's contents (a grid learned earlier is kept)
             if call in self.heard_rows:  # already listed
                 self.stations.item(self.heard_rows[call], values=values)  # bring its row up to date
                 self.stations.move(self.heard_rows[call], "", 0)  # and move it to the top: most recently heard first
@@ -1960,14 +1969,14 @@ class Panel:  # the control panel window
                         self.to_send.set(row, "state", "sent " + time.strftime("%H:%M"))  # say so
             while self.shown_b < len(station.bulletins):  # a broadcast (or an addressed message) has arrived since the last look
                 origin, dest, text = station.bulletins[self.shown_b]  # who sent it, who it was for, and what it says
-                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} to {dest}", text))  # add it to the received list
+                self.received.insert("", "end", values=(time.strftime(HEARD_TIME), f"{origin} to {dest}", text))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
                 self.logbook.write("broadcast" if dest == "ALL" else "message", direction="RX", station=self.settings["call"], **{"from": origin}, to=dest, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1))  # the logbook
                 self.note_telemetry(origin, text)  # it may be telemetry
                 self.shown_b += 1  # one more shown
             while self.shown < len(station.inbox):  # a message has arrived since the last look
                 text = station.inbox[self.shown]  # the message
-                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), station.partner, text))  # add it to the received list
+                self.received.insert("", "end", values=(time.strftime(HEARD_TIME), station.partner, text))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
                 snr = station.history[-1][0] if station.history else None  # the latest reading of the partner's signal
                 if self.contact is not None:  # in a contact
@@ -2543,7 +2552,16 @@ class Panel:  # the control panel window
     def note_event(self, event):  # a long-note event, from the working thread
         self.note_events.put(event)  # shown by the window's own thread
 
+    def keep_sorted(self):  # the main lists stay in the order the operator chose as rows arrive and change (since 0.40; called with the long-note events, twice a second)
+        now = time.monotonic()  # now
+        if now - getattr(self, "resorted_at", 0.0) < 1.0:  # at most once a second
+            return  # not yet
+        self.resorted_at = now  # remembered
+        for tree in (self.to_send, self.received, self.stations):  # the three lists
+            self.sort_table(tree, None)  # again, by the column and direction chosen (nothing happens to a list never sorted)
+
     def show_note_events(self):  # bring the lists up to date with long-note events
+        self.keep_sorted()  # the main lists keep their chosen order (since 0.40)
         if self.long_notes is not None:  # notes may be under way
             for dest, text, words in self.long_notes.status():  # each unfinished note and its progress (which try, which frame, the receipt countdown)
                 row = self.note_rows.get((dest, text))  # its row in Messages to send
@@ -2557,7 +2575,7 @@ class Panel:  # the control panel window
             kind, *rest = self.note_events.get()  # what happened
             if kind == "received":  # a note arrived for this station, or for everyone
                 origin, dest, text = rest  # from whom, to whom, what
-                self.received.insert("", "end", values=(time.strftime("%H:%M:%S"), f"{origin} (long note)" + (" to ALL" if dest == "ALL" else ""), text))  # into Messages received
+                self.received.insert("", "end", values=(time.strftime(HEARD_TIME), f"{origin} (long note)" + (" to ALL" if dest == "ALL" else ""), text))  # into Messages received
                 self.logbook.write("broadcast" if dest == "ALL" else "message", direction="RX", station=self.settings["call"], **{"from": origin}, to=dest, text=text,  # (continued)
                                    dial_khz=round(self.dial_hz() / 1000.0, 1), long_note=True)  # into the logbook and the sender's contact history (before 0.38R2 long notes were not logged)
                 self.note_telemetry(origin, text)  # a long note may carry telemetry too
@@ -2736,10 +2754,16 @@ class Panel:  # the control panel window
         tree.configure(yscrollcommand=scroll.set)  # tie the two together
         return tree  # for filling
 
-    def sort_table(self, tree, column):  # sort a list by one column (again to reverse)
+    def sort_table(self, tree, column):  # sort a list by one column (again to reverse); column None sorts again as last chosen
+        state = getattr(tree, "_sort", None)  # the column and direction it is sorted by now, if any (since 0.40)
+        if column is None:  # sort again as before (new rows arrived; since 0.40)
+            if state is None:  # never sorted
+                return  # leave the order alone
+            column, backwards = state  # as before
+        else:  # a heading clicked
+            backwards = state is not None and state[0] == column and not state[1]  # the same column again: the other way
+        tree._sort = (column, backwards)  # remembered (for the next click, and for keeping the order as rows arrive)
         rows = [(tree.set(row, column), row) for row in tree.get_children("")]  # the column's values
-        backwards = getattr(tree, "_sorted", None) == column  # the same column twice: reverse
-        tree._sorted = None if backwards else column  # remember for next time
 
         def key(item):  # numbers as numbers, words as words
             text = item[0].replace(" dB", "").replace("L", "").replace("W", "").strip()  # drop units
@@ -2750,6 +2774,11 @@ class Panel:  # the control panel window
 
         for index, (_, row) in enumerate(sorted(rows, key=key, reverse=backwards)):  # in the new order
             tree.move(row, "", index)  # move each row
+        titles = getattr(tree, "_titles", None)  # each heading's own words, kept the first time (since 0.40)
+        if titles is None:  # the first sort of this list
+            titles = tree._titles = {name: tree.heading(name, "text") for name in tree["columns"]}  # remembered
+        for name, words in titles.items():  # every heading
+            tree.heading(name, text=words + ((" ▼" if backwards else " ▲") if name == column else ""))  # an arrow on the sorted one: ▲ smallest first, ▼ largest first
 
     def heard_window(self, only=None):  # Stations > Stations heard (last 48 hours); with `only`, one station's receptions
         top = self.window("heard", f"Kestrel - {only} heard in the last 48 hours" if only else "Kestrel - stations heard in the last 48 hours")  # the window
@@ -3498,7 +3527,7 @@ class Panel:  # the control panel window
             if new_call in self.heard_rows:  # on the stations list
                 self.stations.set(self.heard_rows[new_call], "saved", "*")  # marked as saved
             elif first:  # not on it
-                self.heard_rows[new_call] = self.stations.insert("", "end", values=("*", new_call, grid, fields.get("band", ""), "", "", "saved contact"))  # add it
+                self.heard_rows[new_call] = self.stations.insert("", "end", values=("*", new_call, grid, fields.get("band", ""), "", heard_when(self.contacts.get(new_call) or {}), "saved contact"))  # add it
             self.refresh_to()  # offer it in the To box
             self.say(f"{new_call} {'added to' if first else 'saved in'} your contacts")  # confirm
             if getattr(self, "contacts_refresh", None):  # the Contacts window may be open (since 0.39)
