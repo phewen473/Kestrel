@@ -4200,11 +4200,29 @@ def main():  # the script itself
     PROFILE = "".join(c for c in args.profile if c.isalnum() or c in "-_")  # keep only characters that are safe in a file name
     if PROFILE:  # a profile was named
         SETTINGS_FILE = os.path.join(data_dir(), f"panel_{PROFILE}.json")  # its own settings file
+    crash_file = None  # where a hard crash's details go (since 0.38R2)
+    try:  # the folder may refuse
+        import faulthandler  # Python's own record of a crash that kills the program outright (in the compiled library, say), which no ordinary error report sees
+        os.makedirs(LOG_FOLDER, exist_ok=True)  # the logs folder
+        crash_file = open(os.path.join(LOG_FOLDER, f"crash_{time.strftime('%Y%m%d_%H%M%SZ', time.gmtime())}.txt"), "w", encoding="utf-8")  # one file per start; left empty (and removed at a normal exit) unless the program crashes
+        crash_file.write(f"Kestrel {SPEC_VERSION} started {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}; if more follows, the program crashed: where each thread was\n")  # what the file is
+        crash_file.flush()  # on disk now
+        faulthandler.enable(file=crash_file, all_threads=True)  # on a crash, every thread's place is written here
+    except OSError:  # no file: go on without it
+        crash_file = None  # none
     root = tk.Tk()  # the window
     Panel(root)  # its contents
     if PROFILE:  # a profile was named
         root.title(f"Kestrel {SPEC_VERSION} - {PROFILE}  -  signal v{SIGNAL_VERSION}")  # show the program's version, which panel this is, and the signal version
     root.mainloop()  # run until closed
+    if crash_file is not None:  # a normal exit: no crash to report
+        try:  # tidy up
+            import faulthandler  # (imported above)
+            faulthandler.disable()  # no longer watching
+            crash_file.close()  # finished
+            os.remove(crash_file.name)  # an empty record is not kept
+        except OSError:  # could not
+            pass  # harmless
 
 
 if __name__ == "__main__":  # only when run as a script
