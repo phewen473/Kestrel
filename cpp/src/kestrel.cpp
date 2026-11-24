@@ -709,6 +709,35 @@ KES_API int kes_ldpc_decode(const double *llrs, long k, const long *edge_bits, c
     return 0;  /* not every check satisfied */
 }  /* end of kes_ldpc_decode */
 
+KES_API int kes_tone_spread(const double *band, size_t rows, size_t cols, const long *tones, int step, const double *noise, double *out) {  /* modem/mfsk.py tone_spread (since ABI 14) */
+    if (rows == 0 || step < 1 || out == nullptr) {  /* nothing to measure */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    double own = 0.0, side = 0.0, lean = 0.0, noise_sum = 0.0;  /* signal in the tone's bin, in its two neighbors, the upper neighbor less the lower, and the noise counted */
+    size_t used = 0;  /* symbols counted */
+    for (size_t r = 0; r < rows; ++r) {  /* each symbol */
+        long first = tones[r] * static_cast<long>(step);  /* column of the bin just below the tone sent (the tone itself is the next column) */
+        if (first < 0 || static_cast<size_t>(first) + 2 >= cols) {  /* outside the band kept */
+            continue;  /* skip it */
+        }  /* end of the check */
+        const double *row = band + r * cols;  /* this symbol's bins */
+        double n = noise[r];  /* this symbol's noise energy per bin */
+        own += row[first + 1] - n;  /* the tone's own bin, less its noise */
+        side += row[first] + row[first + 2] - 2.0 * n;  /* its two neighbors, less their noise */
+        lean += row[first + 2] - row[first];  /* above minus below: a leftover frequency error leans one way */
+        noise_sum += n;  /* the noise in one bin, summed */
+        ++used;  /* one more */
+    }  /* end of the symbols */
+    if (used == 0) {  /* nothing counted */
+        return -1;  /* refuse */
+    }  /* end of the check */
+    double total = own + side;  /* the signal energy found in the three bins */
+    out[0] = total > 0.0 ? std::min(std::max(side / total, 0.0), 1.0) : -1.0;  /* the share that spread into the neighbors (-1: no signal to measure) */
+    out[1] = total > 0.0 ? lean / total : 0.0;  /* which way it leans, -1 to 1 */
+    out[2] = noise_sum > 0.0 ? total / noise_sum : 0.0;  /* signal against the noise in one bin, summed over the symbols: how much the reading can be trusted */
+    return 0;  /* done */
+}  /* end of kes_tone_spread */
+
 KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int tracking, double *level) {  /* modem/mfsk.py noise_profile */
     if (rows == 0 || span < 0) {  /* nothing to do */
         return -1;  /* refuse */

@@ -5,6 +5,7 @@ so it makes the decision and sends it back in every channel report.
 """
 
 from modem import LEVELS, is_fading, pick_level  # the speed levels, the fading test and the level-choice rule
+from modem.plan import is_fast  # the fast-fading test, by measured Doppler spread (since 0.35)
 
 from .params import SNR_LOOKBACK, STEP_UP_CLEAN, STEP_UP_LEVELS  # how far back to look, how many clean frames earn a faster level, and how far to climb at once
 
@@ -24,14 +25,17 @@ def cap_level(level, allowed):  # keep a level inside what both stations can use
 def supported_level(history, allowed):  # what the recent measurements can carry
     """Return the fastest level the recent measurements support.
 
-    `history` is a list of (SNR in dB, fading index) pairs, newest last.
-    The weakest of the last few SNR readings is used, and the signal
-    counts as fading if any recent frame looked like fading.
+    `history` is a list of (SNR in dB, fading index[, Doppler spread in Hz])
+    readings, newest last. The weakest of the last few SNR readings is used,
+    and the signal counts as fading if any recent frame looked like fading.
+    Since 0.35, when every reading carries a spread in the fast range
+    (modem.levels.FAST_SPREAD_HZ), the fast-fading table is used.
     """
     recent = history[-SNR_LOOKBACK:]  # the last few frames
     snr_db = min(entry[0] for entry in recent)  # be guided by the weakest of them
     fading = any(is_fading(entry[1]) for entry in history)  # one fading frame is enough to be careful
-    return cap_level(pick_level(snr_db, fading=fading), allowed)  # the level-choice rule of the specification, held to shared levels
+    fast = all(len(entry) > 2 and is_fast(entry[2]) for entry in history)  # every frame read as fast fading (one slow or unread frame is enough to be careful)
+    return cap_level(pick_level(snr_db, fading=fading, fast=fast), allowed)  # the level-choice rule of the specification, held to shared levels
 
 
 def wanted_level(history, current, clean_run, failed, allowed):  # the decision sent back in the channel report

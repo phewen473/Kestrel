@@ -71,6 +71,11 @@ class Transmission:  # one frame the station wants on the air
         return len(self.audio) / FS  # samples divided by the sample rate
 
 
+def _reading(result):  # one frame's measurements, as the history keeps them
+    """Return (SNR, fading index, Doppler spread) of a receiver report (the spread NaN when it was not read)."""
+    return (result.snr_db, result.fade_index, getattr(result, "spread_hz", float("nan")))  # the three readings
+
+
 class PythonStation:  # the link rules for one station, in Python (the reference the compiled station is tested against)
     """A station's state and its rules. Use beacon() or listen() to start, queue() to add messages, then poll(), hear() and handle()."""
 
@@ -91,7 +96,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.allowed = [0]  # speed levels both stations can use
         self.tx_level = 0  # the level the partner asked this station to send at
         self.want = 0  # the level this station asks the partner to send at
-        self.history = []  # recent (SNR, fading index) measurements of the partner's frames
+        self.history = []  # recent (SNR, fading index, Doppler spread) measurements of the partner's frames (the spread since 0.35)
         self.clean_run = 0  # clean frames in a row since the last change of wanted level
         self.good_run = 0  # clean frames in a row since the last failure (for leaving DEGRADED)
         self.last_result = None  # the receiver's report on the frame heard most recently
@@ -334,7 +339,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.log.append(f"{now:7.1f}s {self.call}: {text}")  # time, who, what
 
     def _report_of(self, result):  # a channel report on one frame, outside any contact
-        return ChannelReport(result.snr_db if np.isfinite(result.snr_db) else float(SNR_FLOOR_DB), result.fade_index, result.offset_hz, supported_level([(result.snr_db, result.fade_index)], self.levels) if np.isfinite(result.snr_db) else 0)  # how it was heard, and the level it supports
+        return ChannelReport(result.snr_db if np.isfinite(result.snr_db) else float(SNR_FLOOR_DB), result.fade_index, result.offset_hz, supported_level([_reading(result)], self.levels) if np.isfinite(result.snr_db) else 0)  # how it was heard, and the level it supports
 
     def _report(self):  # the channel report to send back
         result = self.last_result  # the frame heard most recently
@@ -346,7 +351,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
     def _note(self, result, failed):  # take in the measurements of a frame from the partner
         self.last_result = result  # keep it for the next report
         if np.isfinite(result.snr_db):  # a usable SNR reading
-            self.history = (self.history + [(result.snr_db, result.fade_index)])[-HISTORY:]  # add it, keep only the recent ones
+            self.history = (self.history + [_reading(result)])[-HISTORY:]  # add it, keep only the recent ones
         self.clean_run = 0 if failed else self.clean_run + 1  # count clean frames since the last change of level
         self.good_run = 0 if failed else self.good_run + 1  # count clean frames since the last failure
         if self.history:  # with at least one measurement
@@ -360,7 +365,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             self.state = "LOCKED"  # healthy once more
 
     def _fresh_start(self, result):  # restart the measurements from one new frame
-        self.history = [(result.snr_db, result.fade_index)] if np.isfinite(result.snr_db) else []  # forget older readings
+        self.history = [_reading(result)] if np.isfinite(result.snr_db) else []  # forget older readings
         self.last_result = result  # keep it for the next report
         self.clean_run = self.good_run = 0  # new runs
         self.want = supported_level(self.history, self.allowed) if self.history else min(self.allowed)  # ask for what this one reading supports
@@ -505,7 +510,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.last_activity = now  # a good frame was heard
         sender = (result.fields or {}).get("origin") or (result.origin if result.frame_type == FRAME_TYPE_ADDRESSED else "")  # the callsign it carries, if any
         if sender and np.isfinite(result.snr_db):  # it names its sender and was measured
-            self.heard_at[sender] = (now, ChannelReport(result.snr_db, result.fade_index, result.offset_hz, supported_level([(result.snr_db, result.fade_index)], self.levels)))  # remember the reading, for a directed call to it
+            self.heard_at[sender] = (now, ChannelReport(result.snr_db, result.fade_index, result.offset_hz, supported_level([_reading(result)], self.levels)))  # remember the reading, for a directed call to it
         kind = result.frame_type  # what sort of frame it is
         if kind == FRAME_TYPE_ADDRESSED:  # a fully addressed message: a broadcast, or one sent without a lock
             return self._on_addressed(result, now)  # show it if it is for this station or for everyone

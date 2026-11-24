@@ -36,6 +36,7 @@ from .mfsk import band_energies, bits_to_symbols, energies_to_llrs, known_tone_e
 from . import longnote  # long notes, sent in the same frame (since 0.34)
 from . import native  # the compiled library, used when present
 from .params import M_TONES  # 32 tones (for the three-bin sums, since 0.34R1)
+from .mfsk import tone_spread  # the Doppler-spread reading (since 0.35)
 from .params import BODY_CRC_BITS, CALL_BITS, CENTER_HZ, FRAME_TYPE_LONG, FS, GRID_BITS, LONG_LEVEL, LONG_SAMPLES, LONG_STEP, PREAMBLE_TONES, REF_BANDWIDTH_HZ  # the numbers that define it
 from .preamble import detect_preamble, pattern_tones  # its twelve-tone pattern
 
@@ -148,6 +149,8 @@ class Soft:  # what the receiver measured of one long-beacon candidate, kept so 
     sample: int = -1  # where the candidate began in a continuous stream (set by live.Listener)
     when: float = 0.0  # when it was heard, in seconds (set by whoever keeps the copies)
     wide: np.ndarray = None  # the same, with each tone's bin and the bin either side of it added (since 0.34R1): what a tone smeared by Doppler spread leaves
+    band: np.ndarray = None  # every bin of the body (band_energies), kept to read the Doppler spread once the tones are known (since 0.35)
+    noise: float = 0.0  # the noise energy per bin of this copy (since 0.35)
 
 
 def _normalized(tone_e):  # tone energies -> units of the noise
@@ -172,7 +175,7 @@ def soft_at(x, found):  # measure one candidate's body
     noise = noise_level(tone_e)  # noise energy per tone position
     ratio, _ = signal_report(known_tone_energies(band[LAYOUT["pilot_pos"]], LAYOUT["pilot_tones"], LONG), noise)  # a first reading from the pilots
     pilot_snr = 10 * np.log10(max(ratio, 1e-12) / (LONG.seconds * REF_BANDWIDTH_HZ))  # in 2.5 kHz
-    return Soft(_normalized(tone_e), float(offset), float(drift), float(found["quality"]), float(pilot_snr), wide=_normalized(wide_e))  # energies in units of the noise, center bins and three-bin sums
+    return Soft(_normalized(tone_e), float(offset), float(drift), float(found["quality"]), float(pilot_snr), wide=_normalized(wide_e), band=band, noise=float(noise))  # energies in units of the noise, center bins and three-bin sums, and the raw bins for the spread reading
 
 
 def body_tones(data):  # the tones a body's bits are sent as
@@ -227,6 +230,7 @@ def decode_energies(energies, measure=None):  # energies -> fields
     used = measure[np.arange(LAYOUT["total"]), tones]  # the energy found in each of them (signal plus noise, in units of the noise)
     copies = float(np.median(measure)) / np.log(2)  # how many copies were added (the noise floor of the sum)
     margin = 10 * np.log10(max(float(np.mean(used)) / copies - 1.0, 1e-6))  # signal energy per tone against the noise, per copy
+    fields["_tones"] = tones  # the tones sent, for the spread reading (taken out again by _fill; since 0.35)
     return fields, margin  # the beacon, and how clearly it stood out
 
 
@@ -249,12 +253,16 @@ def decode_at(x, found, result, failed=None):  # read one candidate's body
         if failed is not None:  # the caller combines copies
             failed.append((found, soft))  # hand this one over
         return result  # not readable alone
-    _fill(result, fields, margin)  # the finished report
+    _fill(result, fields, margin, soft=soft)  # the finished report
     return result  # a long beacon
 
 
-def _fill(result, fields, margin_db, copies=1):  # complete a report from decoded fields
-    """Put the decoded `fields` and the signal reading into `result`."""
+def _fill(result, fields, margin_db, copies=1, soft=None):  # complete a report from decoded fields
+    """Put the decoded `fields` and the signal reading into `result`; with `soft` (a copy's measurements), the Doppler spread too."""
+    tones = fields.get("_tones")  # the tones sent, when decode_energies left them
+    fields = {k: v for k, v in fields.items() if not k.startswith("_")}  # the fields proper
+    if soft is not None and soft.band is not None and tones is not None:  # the spread can be read (since 0.35)
+        result.spread_hz = tone_spread(soft.band, tones, LONG, soft.noise)[0]  # from how far this copy's tones smeared
     result.fields = dict(fields, copies=copies)  # the fields, and how many copies it took
     result.origin = fields["origin"]  # the sender, where every frame keeps it
     result.ok, result.reason = True, ""  # success

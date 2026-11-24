@@ -1,5 +1,16 @@
 # Kestrel specification changelog
 
+## 0.35 (draft) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.34).
+- **Bands** (Sections 6.9, 6.10): calling frequencies 17 m 18092.5, 15 m 21112.5, 10 m 28110.0 and 6 m 50340.0 kHz, with channels (two on 17 m, four elsewhere). 6 m is not in the P.533 predictions (2 to 30 MHz).
+- **Doppler spread** (Section 5.7): measured on every decoded frame from how far its tones smeared into the bins beside them (in the C++ library, kes_tone_spread, ABI 14, with the same sums in Python). Shown in the activity line and the link readings, written to the signal log. Checked in simulation (tools/spread_check.py).
+- **Level choice in fast fading** (Section 6.5): when every recent frame's spread reads 0.5 to 2.5 Hz, the fast-fading table (L0 -14, L1 -8, L2 -10 dB) replaces the general fading table for the slow levels (tools/level_spread_study.py). In the Python and the C++ station alike; the channel report on the air is unchanged.
+- **Propagation window** (Section 6.15): Check the bands now: the short-path window from the nearest fresh ionosonde (KC2G), and WSPR and PSK Reporter activity on the path in the last hour. Predictions checked against stations heard (prop_check.csv), with a summary.
+- **PSK Reporter**: optional reporting of Kestrel stations heard (Settings > Logging), off by default.
+- Not built, with reasons: a two-way link-quality exchange (the acknowledgment already carries SNR, fading, offset and the level wanted, and the receiver chooses from its own measurements; the fast-fading table needed no signal change); a wide-spacing long frame and a stepped-power beacon (both would change what is sent, and the 0.34R1 study showed the three-bin reading already recovers most of the loss up to 2 Hz of spread).
+- About box: thanks to KO4WZZ for testing.
+
 ## 0.34R1 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.34). Tested first: a sky-wave study (tools/skywave_study.py) of the recommendations of the sky-wave research, on the F.1487 conditions plus two new realistic ones in the simulator: "nvis_real" (0.3 Hz spread, 0.8 ms, second path 4 dB weaker and 0.2 Hz off) and "dawn" (0.5 Hz, 1 ms, paths 0.3 Hz apart, 3 dB apart). The simulator's two-path model takes an unequal, shifted second path.

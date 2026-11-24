@@ -33,7 +33,7 @@ from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
     band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit,  # (continued)
-    signal_report, symbol_energies, tone_energies, transmission,  # (continued)
+    signal_report, symbol_energies, tone_energies, tone_spread, transmission,  # (continued: tone_spread since 0.35)
 )  # end of the import list
 from .params import (  # frame format numbers
     ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
@@ -229,6 +229,7 @@ class RxResult:  # the receiver's report
     drift_hz_s: float = 0.0  # measured frequency drift, in Hz per second
     snr_db: float = float("nan")  # measured signal-to-noise ratio in 2.5 kHz
     fade_index: float = float("nan")  # how much the signal faded during the frame: 0 = steady, about 1 = deep, frequent fades
+    spread_hz: float = float("nan")  # Doppler spread read from how far the tones smeared into the bins beside them (since 0.35; NaN = too weak to tell)
     sync_quality: float = 0.0  # strength of the preamble detection
     level: int = -1  # speed level read from the header
     size_class: int = -1  # size class read from the header
@@ -555,6 +556,7 @@ def _measure(result, band, tones, noise, spec):  # fill in the channel measureme
     """Put the SNR and fading index into `result`, from body symbols whose tones are known."""
     ratio, result.fade_index = signal_report(known_tone_energies(band, tones, spec), noise)  # signal against noise, and how much it faded
     result.snr_db = 10 * np.log10(max(ratio, 1e-12) / (spec.seconds * REF_BANDWIDTH_HZ))  # convert to SNR in 2.5 kHz
+    result.spread_hz = tone_spread(band, tones, spec, noise)[0]  # how far the tones were smeared: the Doppler spread (since 0.35; NaN when too weak to tell)
 
 
 def _score(result):  # how believable a failed attempt is

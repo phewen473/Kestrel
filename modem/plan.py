@@ -10,8 +10,14 @@ The rules (specification section 6.8):
 
 from .frame import build_frame, frame_seconds  # transmitter and airtime calculator
 from .levels import FADE_INDEX_LIMIT, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB  # the speed levels and the SNR each one needs, steady and fading
+from .levels import FAST_SPREAD_HZ, MIN_SNR_FAST_FADING_DB  # and in fast fading, by measured Doppler spread (since 0.35)
 from .params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, FRAME_TYPE_ADDRESSED, FRAME_TYPE_LINK, MAX_PARTS, SIZE_CLASSES  # limits, frame types and sizes
 from .text import fits, pick_size_class  # which size class a text needs, and whether a text fits one
+
+
+def is_fast(spread_hz):  # fast fading, by the measured spread?
+    """Return True when a frame's measured Doppler spread lies in FAST_SPREAD_HZ (a missing reading is not fast)."""
+    return FAST_SPREAD_HZ[0] <= spread_hz <= FAST_SPREAD_HZ[1]  # NaN compares false, so a missing reading is not fast
 
 
 def is_fading(fade_index):  # steady signal or fading signal?
@@ -19,13 +25,15 @@ def is_fading(fade_index):  # steady signal or fading signal?
     return not fade_index <= FADE_INDEX_LIMIT  # written this way so a missing reading (not-a-number) counts as fading, the safe choice
 
 
-def pick_level(snr_db, margin_db=2.0, fading=False):  # rule 1
+def pick_level(snr_db, margin_db=2.0, fading=False, fast=False):  # rule 1
     """Return the number of the fastest level that works at `snr_db`, keeping `margin_db` in hand.
 
     Set `fading` when the signal is fading: each level then needs a
-    stronger signal, because fades wipe out parts of the frame.
+    stronger signal, because fades wipe out parts of the frame. Set `fast`
+    as well when the measured Doppler spread says the fading is fast
+    (FAST_SPREAD_HZ, since 0.35): the slower levels then need less.
     """
-    limits = MIN_SNR_FADING_DB if fading else MIN_SNR_DB  # which table of limits applies
+    limits = (MIN_SNR_FAST_FADING_DB if fast else MIN_SNR_FADING_DB) if fading else MIN_SNR_DB  # which table of limits applies
     usable = [spec.number for spec in LEVELS if snr_db >= limits[spec.number] + margin_db]  # every level the signal is strong enough for
     return max(usable) if usable else 0  # the fastest of them; the slowest level when none qualifies
 

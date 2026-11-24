@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 13  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 14  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
@@ -110,6 +110,8 @@ def _load():  # find, open and check the library
         lib.kes_ldpc_decode.restype = ctypes.c_int  # 1 all checks satisfied, 0 gave up, -1 bad arguments
         lib.kes_noise_profile.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, _DOUBLE_P]  # tone energies, rows, span, tracking, level
         lib.kes_noise_profile.restype = ctypes.c_int  # 0, or -1
+        lib.kes_tone_spread.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, _LONG_P, ctypes.c_int, _DOUBLE_P, _DOUBLE_P]  # band, rows, columns, tones sent, step, noise per row, answers (since ABI 14)
+        lib.kes_tone_spread.restype = ctypes.c_int  # 0, or -1
         lib.kes_pilot_fit.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, _LONG_P, _INT_P, ctypes.c_size_t, ctypes.c_size_t,
                                       _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
         lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
@@ -385,6 +387,19 @@ def noise_profile(tone_e, span, tracking):  # modem/mfsk.py noise_profile, compi
     if _lib.kes_noise_profile(_ptr(tone_e), tone_e.shape[0], int(span), int(bool(tracking)), _ptr(level)) < 0:  # the library refused
         return None  # the Python code will handle it
     return level  # one level per symbol
+
+
+def tone_spread(band, tones, step, noise):  # modem/mfsk.py tone_spread, compiled (since ABI 14)
+    """Return (share in the neighbors, lean, trust) for known tones, or None when the library is not in use."""
+    if _lib is None or band.ndim != 2 or band.shape[0] == 0:  # no library, or nothing to measure
+        return None  # the caller uses Python
+    band = _doubles(band)  # plain doubles, row after row
+    sent, sent_p = _longs(tones)  # the tone sent in each row
+    level = _doubles(np.broadcast_to(np.asarray(noise, dtype=float), (band.shape[0],)))  # the noise per bin of each row
+    out = np.empty(3)  # room for the answers
+    if _lib.kes_tone_spread(_ptr(band), band.shape[0], band.shape[1], sent_p, int(step), _ptr(level), _ptr(out)) < 0:  # the library refused
+        return None  # the Python code will handle it
+    return float(out[0]), float(out[1]), float(out[2])  # the three readings
 
 
 def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, offset_hz):  # modem/mfsk.py pilot_frequency_fit, compiled

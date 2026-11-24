@@ -48,6 +48,7 @@ from modem import native  # the compiled modem library, to say in About and --ch
 from live import KIND, Listener, call_request, describe, near_line, plain_line, run_station, status_for  # the continuous receiver, a directed call to make when free, a one-line frame description, a near-miss line, the plain form of a log line, the live loop, the state shown by a log line  # noqa: E402
 from live.contacts import HISTORY_DEFAULT, HISTORY_MAX, HISTORY_MIN, MODE_NAMES, ContactBook, distance_bearing  # the contact book: records, history rules, grid distances (since 0.31R3)  # noqa: E402
 from live import spaceweather  # today's measured sunspot number and space-weather warnings (since 0.34R1)  # noqa: E402
+from live import propcheck, pskspot, skywatch  # the prediction check, PSK Reporter spotting, and the bands now from ionosondes and spots (since 0.35)  # noqa: E402
 from live import propagation, sunspots  # HF propagation predictions (ITU-R P.533) and the predicted sunspot numbers they need (since 0.32)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -72,7 +73,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "frequency": 0, "audio_in": "", "audio_out": "", "gain": "0.25", "rig": "", "ptt": "none", "port": "",  # (continued: frequency, audio, keying)
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
-            "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
+            "log_level": "basic", "record_rx": False, "signal_log": "off", "psk_spot": False, "prop_check": True, "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
             "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
             "scope_rx_color": 50.0, "scope_tx_color": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colors change, and the set of colors used)  # (continued: logging, recording and looks)
             "scope_time_marks": True, "scope_time_zone": "utc",  # (continued: time marks and the seconds scale on both waterfalls, View > Time marks on the scopes, in UTC or local time, since 0.33)
@@ -97,6 +98,8 @@ BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)", 
 LONG_EVERY_MIN = 10  # long beacons repeat no more often than this, in minutes (each holds the frequency for a minute)
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
 CARRY_NAMES = {True: "Yes: hold mail for other stations and deliver it when they ask", False: "No: decline mail for other stations"}  # store and forward (since 0.30), as the operator sees it
+PSK_NAMES = {False: "Off", True: "On: report the Kestrel stations I decode to PSK Reporter (every five minutes or so)"}  # spotting, as the operator sees it (since 0.35)
+PROPCHECK_NAMES = {False: "Off", True: "On: compare each station heard with the prediction for its path (prop_check.csv)"}  # the prediction check (since 0.35)
 RECORD_NAMES = {False: "Off", True: "On: save everything received to WAV files (about 86 MB an hour, kept 7 days)"}  # recording the received audio, as the operator sees it
 CALL_PATTERN = re.compile(r"^([A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z](/[A-Z0-9]{1,4})?$")  # the general shape of an amateur callsign, with an optional prefix or suffix such as /P or /1
 THEME_NAMES = {"system": "System (follow Windows)", "light": "Light", "dark": "Dark"}  # looks, as the operator sees them
@@ -188,7 +191,7 @@ def about_text():  # the words in Help > About
             f"Program: {build_info()}\n"  # which build of the program
             f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}; {native.describe()}\n\n"  # the Python it runs on, and whether the compiled modem library is helping
             f"Stations must have the same signal version to hear each other.\n\n"  # the practical point
-            f"Originated by P. H. Ewen (KO4WSC).\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit and licenses
+            f"Originated by P. H. Ewen (KO4WSC).\nThank you to KO4WZZ for doing countless rounds of testing.\nProgram under Apache License 2.0; specification under CC BY 4.0.")  # credit, thanks (since 0.35) and licenses
 
 
 def device_choices(kind):  # the sound devices to offer in a drop-down list
@@ -329,6 +332,7 @@ class Panel:  # the control panel window
         self.mail_saved = time.monotonic()  # when the mail was last written to its file
         self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
+        self.spotter = None  # PSK Reporter spotting, made when turned on in Settings (since 0.35)
         self.logbook = logbook.Logbook(LOG_FOLDER, name="kestrel" + (f"_{PROFILE}" if PROFILE else ""), level=self.settings["log_level"])  # the CSV and ADIF logs
         self.logbook.observers.append(self.contacts.observe)  # the contact book learns of every call, reception and contact from the logbook, at any level of detail
         self.fonts = {}  # Kestrel's own named fonts (small, tiny, big ...), which follow the font chosen in Settings
@@ -1348,6 +1352,39 @@ class Panel:  # the control panel window
         calls = [row["call"] for row in self.heardlog.summary()] + list(self.contacts)  # heard lately, then saved (both safe to read from this thread)
         return [call for call in dict.fromkeys(calls) if call and call != self.settings["call"]][:EXPECT_MOST]  # no repeats, not this station, at most a few
 
+    def known_grid(self, call):  # the grid locator last known for a station (since 0.35)
+        """Return the grid of `call` from the contact book or the stations heard, or ""."""
+        saved = (self.contacts[call] or {}).get("grid", "") if call in self.contacts else ""  # the contact book
+        if saved:  # known there
+            return saved  # use it
+        return next((row.get("grid", "") for row in self.heardlog.summary() if row.get("call") == call and row.get("grid")), "")  # the stations heard
+
+    def after_heard(self, call, grid, result):  # spotting and the prediction check (since 0.35; called from the working thread)
+        """Queue a PSK Reporter spot of `call`, and check the prediction for its path, as the settings say."""
+        grid = grid or self.known_grid(call)  # where it is, if known
+        dial = self.dial_hz()  # the dial frequency, Hz
+        spotter = self.spotter  # the spotter, when spotting is on
+        if spotter is not None and np.isfinite(result.snr_db):  # spotting, and a reading to give
+            spotter.add(call, dial + 1500.0 + result.offset_hz, result.snr_db, grid)  # queued (sent within about five minutes)
+        if self.settings.get("prop_check", True) and grid and self.settings["grid"]:  # checking predictions
+            name = band_of(dial / 1000.0)  # e.g. "40m"
+            if name:  # an amateur band
+                propcheck.check(call, self.settings["grid"], grid, f"{name[:-1]} m", result.snr_db, float(self.settings.get("prop_power_w") or self.settings.get("max_power_w") or 100), self.settings.get("prop_noise", "RURAL"))  # in the background
+
+    def follow_spotter(self):  # keep the spotter in step with the settings and send when due (since 0.35)
+        """Start, stop or tick the PSK Reporter spotter; called twice a second from follow_station."""
+        wanted = bool(self.settings.get("psk_spot")) and bool(self.settings["call"]) and bool(self.settings["grid"])  # spotting on, with this station known
+        if wanted and (self.spotter is None or (self.spotter.call, self.spotter.grid) != (self.settings["call"], self.settings["grid"])):  # needed, or this station changed
+            if self.spotter is not None:  # an old one
+                self.spotter.close()  # what it holds goes first
+            self.spotter = pskspot.Spotter(self.settings["call"], self.settings["grid"], SPEC_VERSION)  # a new one
+        elif not wanted and self.spotter is not None:  # turned off
+            self.spotter.close()  # what it holds goes first
+            self.spotter = None  # gone
+        if self.spotter is not None:  # on
+            if self.spotter.due():  # time to send
+                threading.Thread(target=self.spotter.tick, daemon=True).start()  # off the window's thread
+
     def note_heard(self, result):  # a frame from some station decoded (called from the working thread)
         call = (result.fields or {}).get("origin") or (result.origin if result.frame_type == 1 else "")  # the callsign it carries: in a beacon, an answer, an identification or a fully addressed message
         station = self.station  # the running station, if any
@@ -1362,6 +1399,7 @@ class Panel:  # the control panel window
         self.heard.put((call, grid, result.snr_db, kind, dict(result.fields or {}), band_of(self.dial_hz() / 1000.0)))  # pass it to the window, with the frame's flags and the band it was heard on
         self.heardlog.add(call, grid, result.snr_db, result.level, kind, round(self.dial_hz() / 1000.0, 1))  # into the 48-hour log
         self.marks[call] = (1500.0 + result.offset_hz, signal_width_hz(result.level), time.monotonic())  # and onto the scope
+        self.after_heard(call, grid, result)  # PSK Reporter and the prediction check (since 0.35)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], **{"from": call}, text=kind, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(),  # (continued)
                            report_db=getattr((result.fields or {}).get("report"), "snr_db", None))  # the logbook, from the advanced level up (report_db, how the sender heard this station, goes only to the contact book)
@@ -1485,6 +1523,7 @@ class Panel:  # the control panel window
 
     def follow_station(self):  # keep the message lists, the readings, the beacon and the logbook in step with the station
         self.show_note_events()  # long notes received, delivered, resent or failed (since 0.34)
+        self.follow_spotter()  # PSK Reporter spotting (since 0.35)
         while not self.heard.empty():  # every station heard since the last look
             call, grid, snr, kind, fields, band = self.heard.get()  # who, where, how strong, what it sent, its flags, and the band it was heard on
             if call in self.contacts and band and self.contacts[call].get("band") != band:  # a saved contact heard on another band
@@ -1564,8 +1603,11 @@ class Panel:  # the control panel window
                     self.show_status(f"LOST CONTACT with {station.partner}  -  probing at the slowest level to recover the link", "dark orange")  # amber
                 heard = "no reading yet"  # until the partner's first frame is measured
                 if station.history:  # there is a reading
-                    snr, fade = station.history[-1]  # the newest reading of the partner's signal
+                    snr, fade = station.history[-1][:2]  # the newest reading of the partner's signal (the third value, the spread, is shown below from the last frame)
                     heard = f"partner heard at {snr:+.0f} dB, {'steady' if fade <= 0.15 else 'fading'} ({fade:.2f})"  # strength, and whether it is fading
+                    spread = getattr(getattr(station, "last_result", None), "spread_hz", float("nan"))  # the Doppler spread of the partner's last frame (since 0.35)
+                    if spread == spread:  # read (not NaN)
+                        heard += f", spread {spread:.1f} Hz"  # shown too
                 self.readings.configure(text=f"Link:  {heard}     |     you send at L{station.tx_level}     |     partner sends at L{station.want}     |     to send: {len(station.outbox)}     received: {len(station.inbox)}")  # the link at a glance
             else:  # not in a contact
                 self.readings.configure(text="")  # nothing to report
@@ -2439,6 +2481,8 @@ class Panel:  # the control panel window
         ssn_note.grid(row=1, column=2, columnspan=7, sticky="w", pady=(6, 0))  # place it
         set_line = ttk.Label(top, text="", font="KestrelSmall")  # which prediction set is in use, and its date
         set_line.grid(row=1, column=0, sticky="w", padx=8)  # under the settings
+        now_line = ttk.Label(top, text=propcheck.describe_summary(), wraplength=900, justify="left", font="KestrelSmall")  # the bands now, and the prediction check (since 0.35)
+        now_line.grid(row=6, column=0, sticky="w", padx=8, pady=(0, 6))  # under the buttons
         advice = ttk.Label(top, text="", wraplength=760, justify="left")  # the suggestion
         advice.grid(row=2, column=0, sticky="w", padx=8, pady=(6, 4))  # above the table
         bands = list(propagation.band_frequencies())  # the bands predicted
@@ -2523,6 +2567,41 @@ class Panel:  # the control panel window
                     tree.see(item)  # and in view
             advice.configure(text=propagation.suggestion(rows, now) + "  " + "  ".join(f"{band} best at {', '.join(f'{h:02d}' for h in propagation.best_times(rows, band))} UTC." for band in bands if propagation.best_times(rows, band)))  # the suggestion now, and each band's best hours
 
+        def bands_now():  # the Check the bands now button (since 0.35)
+            far = to_grid.get().strip().upper()  # the far end
+            own = self.settings["grid"]  # this station
+            if not own:  # not set
+                messagebox.showinfo("Kestrel", "Set your own grid locator in Settings > Station first.", parent=top)  # say so
+                return  # nothing to do
+            now_line.configure(text="Checking the bands now (ionosondes, WSPR, PSK Reporter)...")  # say so
+
+            def job():  # in the background (three web services)
+                lines = []  # the answer
+                try:  # the ionosondes
+                    lines.append(skywatch.describe_window(skywatch.nvis_window(own, far or None)))  # the short-path window
+                except Exception as error:  # noqa: BLE001 - shown, not raised
+                    lines.append(f"Short-path window: could not be fetched ({error})")  # why
+                if far:  # a path to look at
+                    wspr, psk = {}, {}  # spots by band
+                    try:  # WSPR
+                        wspr = skywatch.wspr_activity(own, far)  # spots
+                    except Exception as error:  # noqa: BLE001
+                        lines.append(f"WSPR spots: could not be fetched ({error})")  # why
+                    try:  # PSK Reporter
+                        psk = skywatch.psk_activity(own, far)  # reports
+                    except Exception as error:  # noqa: BLE001
+                        lines.append(f"PSK Reporter: could not be fetched ({error})")  # why
+                    lines.append(skywatch.describe_activity(wspr, psk))  # by band
+                    busy = skywatch.busiest(wspr, psk)  # the band with most
+                    if busy:  # one
+                        lines.append(f"Most activity on this path now: {busy}")  # say so
+                else:  # no far end
+                    lines.append("Type the other station's grid to see band activity on the path.")  # what is needed
+                lines.append(propcheck.describe_summary())  # how good the predictions have been
+                top.after(0, lambda: now_line.configure(text="\n".join(lines)) if now_line.winfo_exists() else None)  # shown
+
+            threading.Thread(target=job, daemon=True).start()  # run it
+
         def update_online():  # the Update online button
             def job():  # in the background (the internet may be slow)
                 try:  # it may fail
@@ -2551,6 +2630,7 @@ class Panel:  # the control panel window
 
         ttk.Button(buttons, text="Predict", command=predict).pack(side="left")  # run it
         ttk.Button(buttons, text="Update online", command=update_online).pack(side="left", padx=(8, 0))  # fetch NOAA's predictions, and today's eSSN and space weather
+        ttk.Button(buttons, text="Check the bands now", command=lambda: bands_now()).pack(side="left", padx=(8, 0))  # ionosonde and spots (since 0.35)
         ttk.Button(buttons, text="Load update file...", command=load_file).pack(side="left", padx=(8, 0))  # a file sent by hand
         ttk.Button(buttons, text="Open updates folder", command=lambda: self.open_path(sunspots.updates_folder())).pack(side="left", padx=(8, 0))  # where update files go
         ttk.Button(buttons, text="Close", command=top.destroy).pack(side="right")  # close the window
@@ -3065,6 +3145,10 @@ class Panel:  # the control panel window
         note(logging, 4, f"Recordings go in {recordings_dir(data_dir())}, one WAV file per hour (about 86 MB an hour, kept 7 days).\nTurn this on for on-air tests: File > Decode a recording plays a file back through the receiver and lists every\nframe and every signal that was heard but could not be read. It takes effect the next time Listen or Monitor starts.")  # what it is for
         field(logging, 5, "signal_log", "Signal log (for analysis)", names=SIGNAL_NAMES, width=56)  # the detailed signal log
         note(logging, 6, f"The signal log goes in {os.path.join(LOG_FOLDER, 'signal')}, one file per UTC day: every signal the receiver\nlooked at, every frame (SNR, fading, offset, which header copy was read), every transmission and the radio's meters.\ntools/signal_report.py summarizes it. Off uses no disk space. It takes effect the next time Listen or Monitor starts.")  # what it is and what it costs
+        field(logging, 7, "psk_spot", "Report stations heard to PSK Reporter", names=PSK_NAMES, width=56)  # spotting (since 0.35)
+        note(logging, 8, "Each Kestrel station decoded (callsign, locator, frequency, SNR) goes to pskreporter.info as mode KESTREL, at most once\nin five minutes per station, so operators can see where their signals reach. Needs your callsign and grid. It takes effect at once.")  # what it does
+        field(logging, 9, "prop_check", "Check the propagation predictions", names=PROPCHECK_NAMES, width=56)  # the prediction check (since 0.35)
+        note(logging, 10, f"For each station heard with a known grid, once an hour per band, the P.533 prediction for its path is written\nbeside the SNR heard, in {propcheck.record_file()}. The Propagation window shows how close they have been.")  # what it does
         quick = page("Quick messages")  # the quick messages
         quick_items = [dict(item) for item in self.settings["quick"]]  # a working copy, kept only if Save is pressed
         quick.columnconfigure(0, weight=1)  # the list takes the width

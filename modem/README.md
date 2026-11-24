@@ -209,6 +209,10 @@ The steady column is where every test frame decoded. The fading columns are wher
 
 A fifth, faster level (L5, which needs a different waveform). The link rules that use these frames are in `link/`. Nets and store-and-forward are not built yet.
 
+## Doppler spread (`mfsk.tone_spread`, since 0.35)
+
+`tone_spread(band, tones, level, noise)` returns (spread in Hz, share beside the tones, leftover frequency error) for known tones: the share of their energy (less noise) in the two neighboring bins is matched against a table, worked out at import by numerical integration, of what a Gaussian Doppler spectrum of each width leaves there for a one-symbol transform. L3 and L4's own glides leave a small share (`GLIDE_SHARE`) taken off first. The sums run in the C++ library (`kes_tone_spread`, ABI 14) when it is in use. `frame._measure` fills `RxResult.spread_hz`; long frames get it in `longbeacon._fill` from the copy's kept band. `plan.pick_level(..., fast=True)` uses `MIN_SNR_FAST_FADING_DB` and `link/adapt.py` sets it when every recent reading's spread is in `FAST_SPREAD_HZ`.
+
 ## Smeared long-frame tones (`longbeacon.py`, since 0.34R1)
 
 `soft_at` keeps two readings of a long frame's body: each tone's own bin (`energies`) and each tone's bin plus the bin either side (`wide`). `decode_soft(center, wide)` decodes from the first and, only if that fails, from the second; `decode_at` and `LongCombiner` use it, so copies are added both ways. Doppler spread smears a 1.17 s tone into its neighbors: the three-bin reading gains about 2 dB at 1 Hz of spread, 4 dB at 2 Hz and 8 dB or more at 3 to 4 Hz, and trying the own bin first keeps its 2 dB advantage on a steady path. The margin (and so the SNR reported) is always read from the own bins. Measured with `tools/skywave_study.py`.

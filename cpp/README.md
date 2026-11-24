@@ -26,6 +26,7 @@ Interface 11 (0.31R2): the listener hands back every signature whose frame passe
 | `kes_read_header` | `modem/frame.py` `_read_header_how` | bit for bit | removes almost all the Python work of the header search |
 | `kes_ldpc_decode` | `modem/ldpc.py` `decode` | bit for bit (bits and verdict) | about 2.5x |
 | `kes_noise_profile` | `modem/mfsk.py` `noise_profile` | bit for bit | - |
+| `kes_tone_spread` (ABI 14, since 0.35) | `modem/mfsk.py` `tone_spread` (the sums behind the Doppler-spread reading) | to rounding | - |
 | `kes_pilot_fit` | `modem/mfsk.py` `pilot_frequency_fit` | to rounding (about 1e-13 Hz) | - |
 | `kes_viterbi_decode_known` | `modem/fec.py` `viterbi_decode(llrs, known)` | bit for bit | (expected-callsign decoding, 0.31R1) |
 | `kes_remove_steady` | `modem/notch.py` `remove_steady` | to rounding | (steady-signal notch, 0.31R1) |

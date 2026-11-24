@@ -47,6 +47,8 @@ const long kSamples[5] = {4800, 1620, 1080, 540, 270};  /* samples per tone, lev
 const double kMinSnr[5] = {-20.0, -16.0, -14.0, -11.0, -8.0};  /* weakest SNR per level, steady (MIN_SNR_DB) */
 const double kMinSnrFading[5] = {-8.0, -2.0, -8.0, -1.0, 0.0};  /* and fading (MIN_SNR_FADING_DB) */
 const double kFadeLimit = 0.15;  /* fading index above which a signal is fading (FADE_INDEX_LIMIT) */
+const double kMinSnrFastFading[5] = {-14.0, -8.0, -10.0, -1.0, 0.0};  /* and in fast fading, by measured Doppler spread (MIN_SNR_FAST_FADING_DB, since 0.35) */
+const double kFastSpreadLow = 0.5, kFastSpreadHigh = 2.5;  /* the measured spreads that count as fast fading (FAST_SPREAD_HZ) */
 const int kSizes[4] = {50, 100, 150, 200};  /* size classes in plain characters (SIZE_CLASSES) */
 const int kPreambleTones = 12;  /* PREAMBLE_TONES */
 const int kHeaderTones = 24;  /* both header copies (HEADER_SYMBOLS) */
@@ -282,8 +284,12 @@ bool is_fading(double fade) {  /* plan.py is_fading: a missing reading counts as
     return !(fade <= kFadeLimit);  /* written so not-a-number is fading */
 }  /* end of is_fading */
 
-long pick_level(double snr_db, bool fading) {  /* plan.py pick_level with a 2 dB margin */
-    const double *limits = fading ? kMinSnrFading : kMinSnr;  /* which table */
+bool is_fast(double spread) {  /* plan.py is_fast: a measured spread in the fast range (NaN is not) */
+    return kFastSpreadLow <= spread && spread <= kFastSpreadHigh;  /* comparisons with NaN are false */
+}  /* end of is_fast */
+
+long pick_level(double snr_db, bool fading, bool fast = false) {  /* plan.py pick_level with a 2 dB margin */
+    const double *limits = fading ? (fast ? kMinSnrFastFading : kMinSnrFading) : kMinSnr;  /* which table */
     long best = -1;  /* the fastest usable */
     for (long n = 0; n < 5; ++n) {  /* each level */
         if (snr_db >= limits[n] + 2.0) {  /* strong enough */
@@ -319,7 +325,13 @@ long cap_level(long level, const std::vector<long> &allowed) {  /* adapt.py cap_
     return any ? best : *std::min_element(allowed.begin(), allowed.end());  /* or the slowest allowed */
 }  /* end of cap_level */
 
-using History = std::vector<std::pair<double, double>>;  /* (SNR, fading index), newest last */
+struct Reading {  /* one frame's measurements (adapt.py history entries) */
+    double first;  /* SNR in dB */
+    double second;  /* fading index */
+    double spread;  /* Doppler spread in Hz, NaN when not read (since 0.35) */
+    Reading(double snr, double fade, double doppler = std::nan("")) : first(snr), second(fade), spread(doppler) {}  /* made from two or three values */
+};  /* end of Reading */
+using History = std::vector<Reading>;  /* (SNR, fading index, spread), newest last */
 
 long supported_level(const History &history, const std::vector<long> &allowed) {  /* adapt.py supported_level */
     size_t from = history.size() > kSnrLookback ? history.size() - kSnrLookback : 0;  /* the last few */
@@ -330,10 +342,12 @@ long supported_level(const History &history, const std::vector<long> &allowed) {
         }  /* end of the test */
     }  /* end of the readings */
     bool fading = false;  /* any fading frame? */
+    bool fast = true;  /* every frame read as fast fading? */
     for (const auto &h : history) {  /* all of them */
         fading = fading || is_fading(h.second);  /* one is enough */
+        fast = fast && is_fast(h.spread);  /* one slow or unread frame is enough to be careful */
     }  /* end of the readings */
-    return cap_level(pick_level(snr, fading), allowed);  /* the rule, held to shared levels */
+    return cap_level(pick_level(snr, fading, fast), allowed);  /* the rule, held to shared levels */
 }  /* end of supported_level */
 
 long wanted_level(const History &history, long current, long clean_run, bool failed, const std::vector<long> &allowed) {  /* adapt.py wanted_level */
@@ -875,7 +889,7 @@ struct KesStation {  /* its state and rules */
     Json report_of(const Json &r) {  /* a report on one frame outside a contact */
         double snr = real(r, "snr_db");  /* its SNR */
         bool ok = std::isfinite(snr);  /* measured? */
-        long level = ok ? supported_level(History{{snr, real(r, "fade_index")}}, levels) : 0;  /* the level it supports */
+        long level = ok ? supported_level(History{{snr, real(r, "fade_index"), real(r, "spread_hz")}}, levels) : 0;  /* the level it supports */
         return report(ok ? snr : kSnrFloor, real(r, "fade_index"), real(r, "offset_hz"), level);  /* the report */
     }  /* end of report_of */
 
@@ -889,7 +903,7 @@ struct KesStation {  /* its state and rules */
         last_result = r;  /* for the next report */
         double snr = real(r, "snr_db");  /* SNR */
         if (std::isfinite(snr)) {  /* usable */
-            history.emplace_back(snr, real(r, "fade_index"));  /* added */
+            history.emplace_back(snr, real(r, "fade_index"), real(r, "spread_hz"));  /* added */
             if (history.size() > kHistory) {  /* too many */
                 history.erase(history.begin(), history.end() - static_cast<long>(kHistory));  /* only the recent ones */
             }  /* end of the trim */
@@ -914,7 +928,7 @@ struct KesStation {  /* its state and rules */
         double snr = real(r, "snr_db");  /* SNR */
         history.clear();  /* older readings forgotten */
         if (std::isfinite(snr)) {  /* usable */
-            history.emplace_back(snr, real(r, "fade_index"));  /* this one */
+            history.emplace_back(snr, real(r, "fade_index"), real(r, "spread_hz"));  /* this one */
         }  /* end of the reading */
         last_result = r;  /* for the next report */
         clean_run = good_run = 0;  /* new runs */
@@ -1213,7 +1227,7 @@ struct KesStation {  /* its state and rules */
         }  /* end of the sender */
         double snr = real(r, "snr_db");  /* SNR */
         if (!sender.empty() && std::isfinite(snr)) {  /* named and measured */
-            heard_at[sender] = {now, report(snr, real(r, "fade_index"), real(r, "offset_hz"), supported_level(History{{snr, real(r, "fade_index")}}, levels))};  /* remembered */
+            heard_at[sender] = {now, report(snr, real(r, "fade_index"), real(r, "offset_hz"), supported_level(History{{snr, real(r, "fade_index"), real(r, "spread_hz")}}, levels))};  /* remembered */
         }  /* end of the reading */
         if (kind == kTypeAddressed) { return on_addressed(r, now); }  /* addressed message */
         if (kind == kTypeNotice) { return on_notice(r, now); }  /* mail notice */
@@ -2115,9 +2129,10 @@ struct KesStation {  /* its state and rules */
         if (name == "history") {  /* measurements */
             Json l = Json::list();  /* the list */
             for (const auto &h : history) {  /* each */
-                Json pair = Json::list();  /* (SNR, fading) */
+                Json pair = Json::list();  /* (SNR, fading, spread) */
                 pair.push(Json(h.first));  /* SNR */
                 pair.push(Json(h.second));  /* fading */
+                pair.push(Json(h.spread));  /* spread (since 0.35) */
                 l.push(pair);  /* added */
             }  /* end of the readings */
             return l;  /* the list */
@@ -2228,7 +2243,7 @@ struct KesStation {  /* its state and rules */
         if (name == "history") {  /* measurements */
             history.clear();  /* replaced */
             for (const auto &h : v.items()) {  /* each */
-                history.emplace_back(h.at(0).as_real(), h.at(1).as_real());  /* (SNR, fading) */
+                history.emplace_back(h.at(0).as_real(), h.at(1).as_real(), h.items().size() > 2 && h.at(2).is_number() ? h.at(2).as_real() : std::nan(""));  /* (SNR, fading, spread) */
             }  /* end of the readings */
             return;  /* done */
         }  /* end of history */

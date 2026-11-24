@@ -16,6 +16,9 @@ Everything in `modem/` and `link/` works on audio held in memory. This folder co
 | `runner.py` | `run_station`: runs one `link.Station` on real audio, in real time, with hooks the control panel uses to ask for a beacon or call and to log every frame |
 | `propagation.py` | HF propagation predictions by ITU-R P.533 (since 0.32): runs the ITU's ITURHFProp (built by `tools/build_prop.py` into `live/_prop/`, shipped in `prop\` when installed) for a path between two grid locators, one month, every hour, Kestrel's calling frequency on each band, 2.5 kHz bandwidth; returns median SNR, SNR on 9 days in 10, reliability (L0 works), MUF, dominant mode, the sky-wave condition it resembles (NVIS, one hop, two hops or more) and the level expected; the best band at an hour and a one-line suggestion |
 | `spaceweather.py` | Today's ionosphere and space weather (since 0.34R1), fetched only by Update online: KC2G's effective sunspot number (24-hour and 6-hour), NOAA's R/S/G scales and planetary K index, kept in `spaceweather.json` in the Kestrel data folder and used for six hours. `ssn_for(year, month)` gives the measured number for the current month and the prediction otherwise; `warnings()` lists flares (R1+), storms (Kp 5+) and a falling ionosphere |
+| `skywatch.py` | The bands now (since 0.35): `nvis_window(own, far)` the short-path MUF from the nearest fresh ionosonde (KC2G stations.json, secant law), `wspr_activity` and `psk_activity` the spots on the path in the last hour by band (wspr.live, PSK Reporter), answers reused for five minutes |
+| `propcheck.py` | Predictions checked against stations heard (since 0.35): `check(call, own, far, band, snr)` predicts the path in the background once an hour per station and band and writes both to prop_check.csv; `summary()` the bias and typical error |
+| `pskspot.py` | PSK Reporter spotting (since 0.35, off by default): `Spotter.add` queues a station heard, `tick` sends one IPFIX datagram about every five minutes to report.pskreporter.info:4739 |
 | `sunspots.py` | Predicted 12-month smoothed sunspot numbers for P.533 (since 0.32): the set shipped in `live/data/sunspots.json` (NOAA SWPC), one fetched with Update online, and update files (`sunspots*.json`) dropped into the `updates` folder of the Kestrel data folder; the set with the latest issue date is used, and `describe()` says which, with its date |
 | `notes.py` | `LongNotes`: long notes on the air (since 0.34): queues this station's notes, sends each when no contact is under way and the frequency is clear, waits 150 s after the last frame for the receipt and sends the note again if none comes (three tries in all); puts received frames together into whole notes (header plus text frames, kept 20 minutes), shows notes to this station or to ALL once in an hour, and answers notes to this station with a receipt. `run_station(..., notes=, on_note=)` drives it |
 | `contacts.py` | `ContactBook`: the operator's contact book (`contacts.json`): each saved station's details, last reading and a history of traffic with it (30 to 200 entries, default 120; all traffic or completed contacts only), fed by the logbook's events; grid locator distance and bearing (since 0.31R3) |
@@ -67,7 +70,7 @@ python tools/live_station.py --call Q1AAAA --grid EM93 --beacon --rig 127.0.0.1:
 
 ## Preselected frequencies
 
-`--band 80`, `--band 40`, `--band 30` or `--band 20` tunes the radio to Kestrel's calling frequency for that band (it needs `--rig`). From version 0.29 (spec Sections 6.9 and 6.10):
+`--band 80`, `--band 40`, `--band 30`, `--band 20`, `--band 17`, `--band 15`, `--band 10` or `--band 6` tunes the radio to Kestrel's calling frequency for that band (it needs `--rig`). From version 0.29 (spec Sections 6.9 and 6.10):
 
 | Band | Calling (dial, USB) | Channels 1 to 4 (dial) |
 |---|---|---|
@@ -75,6 +78,10 @@ python tools/live_station.py --call Q1AAAA --grid EM93 --beacon --rig 127.0.0.1:
 | 40 m | 7110.0 kHz | 7112.5, 7115.0, 7117.5, 7120.0 |
 | 30 m | 10147.0 kHz | 10144.5 (one channel only) |
 | 20 m | 14112.5 kHz | 14115.0, 14117.5, 14120.0, 14122.5 |
+| 17 m | 18092.5 kHz | 18090.0, 18095.0 (two channels only; since 0.35) |
+| 15 m | 21112.5 kHz | 21115.0, 21117.5, 21120.0, 21122.5 (since 0.35) |
+| 10 m | 28110.0 kHz | 28102.5, 28105.0, 28107.5, 28112.5 (since 0.35) |
+| 6 m | 50340.0 kHz | 50342.5, 50345.0, 50347.5, 50350.0 (since 0.35; not in the P.533 predictions, which stop at 30 MHz) |
 
 Upper sideband on every band: `RigCtl.set_data_mode` asks the radio for its data mode (USB-D) and falls back to plain USB when the radio has none. Lower sideband is not used.
 

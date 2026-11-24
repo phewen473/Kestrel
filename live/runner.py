@@ -107,6 +107,11 @@ def describe(result):  # one line about a received frame
     if not result.ok:  # it failed its check
         return f"heard a {name} at {level_name(result.level)} that failed its check ({result.snr_db:+.0f} dB)"  # say so
     line = f"heard {name} at {level_name(result.level)}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
+    spread = getattr(result, "spread_hz", float("nan"))  # the Doppler spread read from the tones (since 0.35)
+    if spread == spread:  # read (not NaN)
+        line += f", spread {spread:.1f} Hz"  # shown with the rest
+    if abs(result.drift_hz_s) >= 0.005:  # a drift worth mentioning (0.3 Hz a minute or more)
+        line += f", drift {result.drift_hz_s * 60:+.1f} Hz/min"  # how fast the frequency moved
     if result.frame_type == FRAME_TYPE_LONG and (result.fields or {}).get("copies", 1) > 1:  # a long beacon read by adding copies together
         line = line.replace("heard long beacon", f"heard long beacon ({result.fields['copies']} copies added together)").replace(", fading nan", "")  # say so
     if result.assisted:  # a weak control frame read only with help (since 0.31R1)

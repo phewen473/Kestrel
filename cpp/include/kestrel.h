@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 13  /* the interface described in this file (13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
+#define KES_ABI_VERSION 14  /* the interface described in this file (14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -143,6 +143,13 @@ KES_API int kes_ldpc_decode(const double *llrs, long k, const long *edge_bits, c
  * (rows x 32), the median of each symbol and `span` either side (mirrored at the ends) over ln 2, never
  * below a tenth of the whole frame's level; with tracking 0 (or a short frame), the whole frame's level. */
 KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int tracking, double *level);
+
+/* modem/mfsk.py tone_spread (since ABI 14): how far known tones spread into the bins beside them, the
+ * mark Doppler spread leaves. `band` is rows x cols energies (band_energies: tone m in column 1 + m * step),
+ * tones[r] the tone sent in row r, noise[r] that row's noise energy per bin. out[0] = share of the signal
+ * found in the two neighbors (0 to 1; -1 when no signal), out[1] = upper neighbor less lower over the
+ * signal (a leftover frequency error), out[2] = signal over noise summed over the rows (trust). 0, or -1. */
+KES_API int kes_tone_spread(const double *band, size_t rows, size_t cols, const long *tones, int step, const double *noise, double *out);
 
 /* modem/mfsk.py pilot_frequency_fit: measure the pilots (positions[i] tones after `start`, each sending
  * tone tones[i]) in stretches of about eight, each searched around where the last found the signal, on a

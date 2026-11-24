@@ -487,7 +487,7 @@ class Listener:  # the continuous receiver
             return  # kept for the next copy
         fields, margin, copies = out  # the beacon, how clearly it stood out, and how many copies it took
         result = RxResult(start=float(start), sync_quality=soft.quality, offset_hz=soft.offset_hz, drift_hz_s=soft.drift_hz_s, level=LONG_LEVEL, frame_type=FRAME_TYPE_LONG, header_copy="none (long beacon)", sample=soft.sample)  # a report for it, placed at the newest copy
-        longbeacon._fill(result, fields, margin, copies)  # the fields and the signal reading (per copy)
+        longbeacon._fill(result, fields, margin, copies, soft=soft)  # the fields and the signal reading (per copy; the spread from the newest copy, when strong enough)
         self.combined.append(Heard(result, self._slice(start, start + longbeacon.SAMPLES), self._number(max(start, 0))))  # hand it over with the newest copy's audio
 
     def _number(self, position):  # a place in the store, as a number in the stream

@@ -65,8 +65,11 @@ def missing():  # can predictions be made?
 
 
 def band_frequencies():  # what to predict
-    """Return {band name: center of Kestrel's signal on its calling frequency, in MHz}, lowest band first."""
-    return {f"{band} m": sum(signal_khz(dial)) / 2000.0 for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: item[1])}  # the middle of the signal (its low and high edges, in kHz, averaged, in MHz) on each calling frequency
+    """Return {band name: center of Kestrel's signal on its calling frequency, in MHz}, lowest band first (HF only: P.533 covers 2 to 30 MHz, so 6 m is left out)."""
+    return {f"{band} m": sum(signal_khz(dial)) / 2000.0 for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: item[1]) if dial < P533_TOP_KHZ}  # the middle of the signal (its low and high edges, in kHz, averaged, in MHz) on each HF calling frequency
+
+
+P533_TOP_KHZ = 30000.0  # Recommendation P.533 predicts sky-wave paths from 2 to 30 MHz (6 m openings are sporadic E and the like, which it does not model)
 
 
 def input_text(tx, rx, year, month, ssn, freqs_mhz, power_w, noise, data_folder):  # the program's input file

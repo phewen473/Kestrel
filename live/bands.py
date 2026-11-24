@@ -35,6 +35,10 @@ PRESETS_KHZ = {  # band name (meters) -> calling dial frequency in kHz, upper si
     "40": 7110.0,  # signal 7110.5 to 7112.5 kHz: above the Winlink and VARA segment (7100-7105) and VarAC (7105)
     "30": 10147.0,  # signal 10147.5 to 10149.5 kHz: the top of the band, above FT8, FT4, WSPR and most RTTY
     "20": 14112.5,  # signal 14113.0 to 14115.0 kHz: above the Winlink and VARA segment (to 14112) and VarAC (14105)
+    "17": 18092.5,  # signal 18093.0 to 18095.0 kHz (since 0.35): below FT8 (18100), FT4, JS8 and WSPR (18104) and the automatic segment (18105-18110), above most CW
+    "15": 21112.5,  # signal 21113.0 to 21115.0 kHz (since 0.35): above the automatic segment and WSPR (21090-21100), well below FT4 (21140)
+    "10": 28110.0,  # signal 28110.5 to 28112.5 kHz (since 0.35): above RTTY (28080-28100), below the automatic segment and WSPR (28120 up) and FT4 (28180); the beacons (28200-28300) are left alone
+    "6": 50340.0,  # signal 50340.5 to 50342.5 kHz (since 0.35): in the 6 m digital area, above FT8 (50313, 50323), FT4 and JS8 (50318) and MSK144 (50260, 50280)
 }  # end of the table
 
 WORKING_KHZ = {  # band name (meters) -> the numbered channels: dial frequencies in kHz, upper sideband, Channel 1 first
@@ -42,6 +46,10 @@ WORKING_KHZ = {  # band name (meters) -> the numbered channels: dial frequencies
     "40": (7112.5, 7115.0, 7117.5, 7120.0),  # signals 7113.0 to 7122.5 kHz, inside the U.S. data segment (to 7125)
     "30": (10144.5,),  # signal 10145.0 to 10147.0 kHz: the band is 50 kHz wide and full, so there is room for one channel only
     "20": (14115.0, 14117.5, 14120.0, 14122.5),  # signals 14115.5 to 14125.0 kHz, below where phone begins outside the U.S. (14125)
+    "17": (18090.0, 18095.0),  # signals 18090.5 to 18097.5 kHz: the 17 m data area is narrow, so two channels, one each side
+    "15": (21115.0, 21117.5, 21120.0, 21122.5),  # signals 21115.5 to 21125.0 kHz, inside the data segment for every class (21025-21200)
+    "10": (28102.5, 28105.0, 28107.5, 28112.5),  # signals 28103.0 to 28115.0 kHz, below the automatic segment (28120)
+    "6": (50342.5, 50345.0, 50347.5, 50350.0),  # signals 50343.0 to 50352.5 kHz, in the digital area
 }  # end of the table
 
 RADIO_MODES = {"PKTUSB": "USB-D", "USB": "USB"}  # the radio modes Kestrel uses, as Hamlib names them -> as operators know them (upper sideband only: data mode where the radio has one, plain USB where not)
@@ -55,6 +63,7 @@ AUTOMATIC_SEGMENTS_KHZ = (  # HF segments of 97.221(b), in kHz
 DATA_SEGMENTS_KHZ = (  # where U.S. amateurs may send data (RTTY and data) on HF, widest (Amateur Extra) limits, in kHz
     ("160", 1800.0, 2000.0), ("80", 3500.0, 3600.0), ("40", 7000.0, 7125.0), ("30", 10100.0, 10150.0), ("20", 14000.0, 14150.0),  # 160 to 20 meters
     ("17", 18068.0, 18110.0), ("15", 21000.0, 21200.0), ("12", 24890.0, 24930.0), ("10", 28000.0, 28300.0),  # 17 to 10 meters
+    ("6", 50100.0, 54000.0),  # 6 meters: data anywhere above the CW-only 50.0-50.1 MHz (since 0.35)
 )  # end of the table (General class starts 25 kHz higher on 80, 40, 20 and 15 meters)
 
 
@@ -124,7 +133,7 @@ USER_FILE = os.path.join(data_dir(), "frequencies.json")  # the operator's own l
 def builtin_frequencies():  # the presets, as list entries
     """Return the built-in calling frequencies as a list of entries (see all_frequencies), lowest band number last."""
     return [{"band": f"{band} m", "dial_khz": dial, "mode": "PKTUSB", "note": "Kestrel calling frequency", "builtin": True}  # one entry per preset
-            for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: -int(item[0]))]  # 80 m first, then 40 m, 30 m and 20 m
+            for band, dial in sorted(PRESETS_KHZ.items(), key=lambda item: -int(item[0]))]  # 80 m first, then 40, 30, 20, 17, 15, 10 and 6 m
 
 
 def user_frequencies(path=None):  # the operator's own entries

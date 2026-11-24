@@ -48,7 +48,7 @@ def main():  # the script itself
     parser.add_argument("--gain", type=float, default=0.5, help="transmit audio level, 0 to 1")  # how loud
     parser.add_argument("--ptt", default="none", choices=["none", "rig", "cat", "rts", "dtr"], help="how to key the transmitter (rig = through rigctld)")  # keying method
     parser.add_argument("--rig", default=None, help="address of Hamlib's rigctld, host:port (for example 127.0.0.1:4532)")  # rig control
-    parser.add_argument("--band", default=None, help="tune to Kestrel's preselected frequency for this band: 40, 30 or 20 (needs --rig)")  # a preset
+    parser.add_argument("--band", default=None, help="tune to Kestrel's preselected frequency for this band: 80, 40, 30, 20, 17, 15, 10 or 6 (needs --rig)")  # a preset
     parser.add_argument("--freq", type=float, default=None, help="dial frequency to tune the radio to, in kHz (needs --rig); overrides --band")  # where to tune
     parser.add_argument("--mode", default="PKTUSB", help="radio mode to select when --freq is given (default PKTUSB: upper sideband, data)")  # which mode
     parser.add_argument("--port", default=None, help="serial port for --ptt cat, rts or dtr")  # which port

@@ -132,6 +132,52 @@ def signal_report(known_e, noise):  # turn known-tone energies into SNR and a fa
     return signal / noise, max(extra, 0.0) / (signal * signal)  # the ratio, and the fading index (never negative)
 
 
+def _smear_table():  # Doppler spread (as a Gaussian width in bins) -> the share of a tone's energy found in the bins beside it
+    """Return (widths, shares): for a tone held one symbol and spread by a Gaussian Doppler spectrum of standard deviation `width` bins,
+    the expected share of its energy in the two neighboring bins out of the three. Worked out once, by numerical integration."""
+    widths = np.concatenate([[0.0], np.geomspace(0.01, 3.0, 120)])  # from none to three bins
+    u = np.linspace(-40.0, 40.0, 16001)  # frequency in bins, finely
+    shares = [0.0]  # no spread: nothing beside the tone
+    for s in widths[1:]:  # each width
+        psd = np.exp(-u ** 2 / (2 * s * s))  # the spread spectrum
+        e = [float(np.sum(psd * np.sinc(u - k) ** 2)) for k in (-1, 0, 1)]  # energy each bin collects (a one-symbol transform sees a sinc squared)
+        shares.append((e[0] + e[2]) / sum(e))  # the share beside the tone
+    return widths, np.array(shares)  # the table
+
+
+_SMEAR_WIDTHS, _SMEAR_SHARES = _smear_table()  # made once, when the modem is loaded
+GLIDE_SHARE = {3: 0.0034, 4: 0.0031}  # L3 and L4 glide between tones (since 0.32), which itself leaves this share of each tone's energy beside it on a steady path (measured with tools/spread_check.py); it is taken off before the spread is read
+SPREAD_TRUST = 30.0  # a spread reading needs the known tones' signal to add up to 30 times one bin's noise, or it is not given
+
+
+def tone_spread(band, tones, level, noise):  # how far known tones were smeared (since 0.35)
+    """Return (Doppler spread in Hz, share of the signal beside the tones, leftover frequency error in Hz) for known tones.
+
+    `band` comes from band_energies, `tones` holds the tone sent in each row
+    and `noise` the noise energy per bin (one value, or one per row). The
+    spread is read from how much of each tone's energy fell into the bins
+    beside it, against what a Gaussian Doppler spectrum of each width would
+    leave there (spread = twice the standard deviation, as ITU-R F.1487
+    measures it). It is NaN when the signal is too weak to tell.
+    """
+    done = native.tone_spread(band, tones, level.step, noise)  # the compiled version (since ABI 14)
+    if done is None:  # not in use: the same sums in Python
+        first = np.asarray(tones) * level.step  # column of the bin just below each tone
+        rows = np.arange(len(first))  # one row per symbol
+        n = np.broadcast_to(np.asarray(noise, dtype=float), (len(first),))  # noise per row
+        own = float(np.sum(band[rows, first + 1] - n))  # the tones' own bins, less noise
+        side = float(np.sum(band[rows, first] + band[rows, first + 2] - 2 * n))  # their neighbors, less noise
+        lean = float(np.sum(band[rows, first + 2] - band[rows, first]))  # above minus below
+        total = own + side  # the signal found
+        done = (min(max(side / total, 0.0), 1.0) if total > 0 else -1.0, lean / total if total > 0 else 0.0, total / float(np.sum(n)) if np.sum(n) > 0 else 0.0)  # as the library gives them
+    share, lean, trust = done  # the three readings
+    if share < 0 or trust < SPREAD_TRUST:  # nothing worth reporting
+        return float("nan"), float("nan"), float("nan")  # unknown
+    base = GLIDE_SHARE.get(level.number, 0.0)  # what the level's own glides between tones leave beside them on a steady path
+    width = float(np.interp(max(share - base, 0.0) / (1.0 - base), _SMEAR_SHARES, _SMEAR_WIDTHS))  # the Gaussian width that leaves the rest of that share beside the tones
+    return 2.0 * width * level.bin_hz, share, lean * level.bin_hz / 2.0  # spread in Hz, the share, and roughly how far off the tones sat
+
+
 def noise_level(tone_e):  # how strong the background noise is
     """Return the average noise energy per tone position.
 
