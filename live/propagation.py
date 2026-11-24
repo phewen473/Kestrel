@@ -28,6 +28,7 @@ import os  # file paths and the environment
 import subprocess  # runs the program
 import sys  # the platform
 import tempfile  # a scratch folder for each run
+import threading  # one map download at a time (since 0.38)
 
 from modem.levels import MIN_SNR_DB  # the weakest SNR each level decodes at (noise only)
 from modem.plan import pick_level  # the fastest level a signal supports
@@ -41,6 +42,20 @@ REQUIRED_SNR_DB = MIN_SNR_DB[0] + 2.0  # the reliability asked for: L0 with the 
 NVIS_ELEVATION_DEG = 60.0  # a dominant mode arriving at least this steeply counts as near vertical incidence
 CLOSEST_KM = 50.0  # P.533 needs some distance: a path shorter than this is predicted as this long (it is then mostly NVIS anyway)
 TIMEOUT_S = 120  # the longest a prediction may take
+SMALL_FILES = ["P1239-3 Decile Factors.txt"] + [f"COEFF{m:02d}W.txt" for m in range(1, 13)]  # the data files always shipped (under 3 MB in all)
+IONOS_BYTES = 11197844  # every month's ionosphere map is this long (11.2 MB)
+IONOS_SHA256 = {  # the twelve maps as the ITU publishes them (release v14.3), so a download can be checked before use (since 0.38)
+    1: "bc85f60176ab6c3ba87786991144746d5136b1b0d8c2954dac6e4c1d9ed73f29", 2: "8968d0d7f89488d2fda5ca5449e2625f1830b08652a628b4540c87cce4665395",  # (continued)
+    3: "b4f4505adce4be843a56914b9d1031e0fbb4b48d4f401d47aedaf77d66f25eb2", 4: "f5e00cdf933924737eb58440e75cf8aff6fad6c1c1ee8f1b46d7088f275a9293",  # (continued)
+    5: "5e9fac4ddda38730747ac3a8d621a1817f86d5cd18457d180c469e216cb11fcc", 6: "d9e565e5fabbd6c45e9b7832aa05765edcc21f94d79e4a01ca1b012acd29b46a",  # (continued)
+    7: "ef44f7dbbf5fce17b115fbb8ae4252959c90a462b96334ce722910ee94b5b422", 8: "c3fc2104df2e2b9608bc5c4c693d2a2e8a4b622a97152da10b4318b1c92f574e",  # (continued)
+    9: "0e1326da42f9cfd3b11d4540f14ba8870c0d88f8aa034d84e9f89f5138b74796", 10: "2a32b327d7fcc12bfa53e4668dcbf66a8b686bc6f0022de7617ca2802237b50a",  # (continued)
+    11: "81a9165f356a4b860278b05279f1b716501d40652c5b52a9f8e27815f30250d6", 12: "44e2ea84b3d2d169a3749d0e058319b739528e516b1a5e7fcffa09cdda89f29f",  # (continued)
+}  # end of the maps
+IONOS_URL = "https://raw.githubusercontent.com/ITU-R-Study-Group-3/ITU-R-HF/cd172be56dc04b154e5d2fa91cbaa6ecf5284305/P533/Data/ionos{month:02d}.bin"  # where a month's map is fetched from: the ITU's own repository, at the release the program was built from
+FETCH_TIMEOUT_S = 120  # the longest one map's download may take
+SHIP_MONTHS = 3  # an installer carries the maps of the month it was built and the next two; the rest are fetched when first needed (since 0.38; all twelve are 128 MB)
+_FETCHING = threading.Lock()  # one download at a time
 
 
 def engine_dir():  # where the ITU program is
@@ -54,14 +69,98 @@ def program():  # the ITU program itself
 
 
 def missing():  # can predictions be made?
-    """Return None when the ITU program and its data are present, else a sentence saying what is missing."""
+    """Return None when the ITU program and its always-shipped data are present, else a sentence saying what is missing.
+
+    The monthly ionosphere maps are not checked here: since 0.38 the
+    installer carries only a few months, and the others are fetched the
+    first time they are needed (see month_folder).
+    """
     if not os.path.isfile(program()):  # no program
         return f"The ITU-R P.533 program was not found ({program()}). From the source folder, run tools/build_prop.py."  # say so
     data = os.path.join(engine_dir(), "data")  # the data folder
-    for name in ["P1239-3 Decile Factors.txt"] + [f"ionos{m:02d}.bin" for m in range(1, 13)] + [f"COEFF{m:02d}W.txt" for m in range(1, 13)]:  # every data file
+    for name in SMALL_FILES:  # every small data file
         if not os.path.isfile(os.path.join(data, name)):  # one is missing
             return f"A data file of the ITU-R P.533 program is missing: {name}."  # say so
     return None  # all present
+
+
+def fetched_dir():  # where downloaded maps are kept
+    """Return the folder for ionosphere maps fetched on demand, with the small data files copied beside them (the ITU program reads all its data from one folder)."""
+    from .paths import data_dir  # the operator's own folder (written to; the installed folder may not be)
+    return os.path.join(data_dir(), "prop_data")  # in it
+
+
+def _good_map(path, month):  # is this file the ITU's map for that month?
+    """Return True when `path` is month `month`'s map: the right length and checksum."""
+    import hashlib  # the checksum
+    if not os.path.isfile(path) or os.path.getsize(path) != IONOS_BYTES:  # missing, or the wrong length
+        return False  # no
+    digest = hashlib.sha256()  # worked out in pieces
+    with open(path, "rb") as handle:  # read it
+        for piece in iter(lambda: handle.read(1 << 20), b""):  # a megabyte at a time
+            digest.update(piece)  # added
+    return digest.hexdigest() == IONOS_SHA256[month]  # the ITU's own
+
+
+def needs_download(month):  # will a prediction for this month fetch its map first?
+    """Return True when month `month`'s ionosphere map is neither shipped nor fetched yet (11.2 MB to download, once)."""
+    name = f"ionos{int(month):02d}.bin"  # its file
+    return not os.path.isfile(os.path.join(engine_dir(), "data", name)) and not os.path.isfile(os.path.join(fetched_dir(), name))  # in neither place
+
+
+def month_folder(month):  # the data folder to give the ITU program for a month
+    """Return a folder holding every data file a prediction for `month` needs, fetching that month's map first if it is not here (since 0.38).
+
+    The shipped folder is used when it holds the month's map. Otherwise the
+    map is downloaded from the ITU's repository into fetched_dir(), checked
+    against its published checksum, and the small data files are copied
+    beside it. Raises RuntimeError, saying why, when the download fails.
+    """
+    with _FETCHING:  # one fetch at a time (the Propagation window and the prediction check may ask together)
+        return _month_folder(int(month))  # the folder
+
+
+def _month_folder(month):  # month_folder's work, inside its lock
+    """See month_folder."""
+    shipped = os.path.join(engine_dir(), "data")  # the installed data
+    name = f"ionos{month:02d}.bin"  # the map
+    if os.path.isfile(os.path.join(shipped, name)):  # shipped with the program
+        return shipped  # use it as it is
+    folder = fetched_dir()  # downloaded maps
+    os.makedirs(folder, exist_ok=True)  # made if need be
+    for small in SMALL_FILES:  # the small files, copied beside the maps once
+        target = os.path.join(folder, small)  # there
+        if not os.path.isfile(target):  # not yet
+            import shutil  # copying
+            shutil.copy2(os.path.join(shipped, small), target)  # copied
+    path = os.path.join(folder, name)  # where the map goes
+    if os.path.isfile(path) and _good_map(path, month):  # fetched before, and sound
+        return folder  # use it
+    _download_map(month, path)  # fetch it
+    return folder  # ready
+
+
+def _download_map(month, path):  # fetch one month's map
+    """Download month `month`'s ionosphere map to `path`, checking it; raise RuntimeError, saying why, if it cannot be fetched or does not check."""
+    import urllib.error  # download errors
+    import urllib.request  # the download
+    part = path + ".part"  # written here first, so a broken download never looks finished
+    try:  # the network may fail
+        request = urllib.request.Request(IONOS_URL.format(month=month), headers={"User-Agent": "Kestrel (amateur radio digital mode)"})  # the request
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_S) as response, open(part, "wb") as handle:  # fetched...
+            while True:  # ...in pieces
+                piece = response.read(1 << 20)  # a megabyte
+                if not piece:  # all of it
+                    break  # done
+                handle.write(piece)  # kept
+    except (urllib.error.URLError, OSError, TimeoutError) as error:  # no connection, refused, or cut off
+        if os.path.exists(part):  # a piece of it
+            os.remove(part)  # thrown away
+        raise RuntimeError(f"the ionosphere map for month {month} could not be downloaded ({error}); predictions for that month need an internet connection the first time") from None  # say why
+    if not _good_map(part, month):  # the wrong file, or damaged on the way
+        os.remove(part)  # thrown away
+        raise RuntimeError(f"the ionosphere map downloaded for month {month} did not match the ITU's published file, so it was not used")  # say so
+    os.replace(part, path)  # finished: in its place
 
 
 def band_frequencies():  # what to predict
@@ -152,10 +251,11 @@ def predict(from_grid, to_grid, year, month, ssn, power_w=100.0, noise="RURAL", 
     bands = bands or band_frequencies()  # the bands to predict
     if noise not in NOISE_CHOICES:  # an unknown noise setting
         noise = "RURAL"  # the usual one
+    data_folder = month_folder(month)  # the month's data, its map fetched first if it is not here (since 0.38)
     with tempfile.TemporaryDirectory(prefix="kestrel-prop-") as work:  # a scratch folder, removed afterwards
         infile, outfile = os.path.join(work, "path.in"), os.path.join(work, "path.csv")  # the two files
         with open(infile, "w", encoding="ascii") as handle:  # write the input
-            handle.write(input_text(tx, rx, year, month, ssn, list(bands.values()), power_w, noise, os.path.join(engine_dir(), "data")))  # the settings
+            handle.write(input_text(tx, rx, year, month, ssn, list(bands.values()), power_w, noise, data_folder))  # the settings
         env = dict(os.environ)  # the program's environment
         bin_dir = os.path.dirname(program())  # where its libraries are
         if not sys.platform.startswith("win"):  # Linux: the libraries are found through the loader's path

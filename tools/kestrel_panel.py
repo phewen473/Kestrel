@@ -2876,7 +2876,8 @@ class Panel:  # the control panel window
             self.settings.update(prop_power_w=f"{watts:g}", prop_noise=code, prop_ssn_override=ssn_box.get().strip())  # remembered
             self.save_settings()  # kept
             state["busy"] = True  # running
-            advice.configure(text=f"Predicting {self.settings['grid']} to {grid}, {month.get()}, sunspot number {ssn:.0f}...")  # say so
+            fetch = " (first downloading that month's ionosphere map from the ITU, 11 MB, once)" if propagation.needs_download(mon) else ""  # a month not shipped with the program (since 0.38)
+            advice.configure(text=f"Predicting {self.settings['grid']} to {grid}, {month.get()}, sunspot number {ssn:.0f}{fetch}...")  # say so
             out = queue.Queue()  # the answer comes back through this
 
             def job():  # the background part (the ITU program takes a second or two)

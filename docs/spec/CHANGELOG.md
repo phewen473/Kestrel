@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.38R1 (draft) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.38).
+- **Smaller installer.** The P.533 engine's twelve monthly ionosphere maps are 128 MB (11.2 MB each) and made the installer 134 MB, over GitHub's 100 MB file limit. The installer now carries the maps of the month it is built and the next two (tools/build_prop.py, SHIP_MONTHS); a prediction for any other month first downloads that month's map from the ITU's own repository (the release the engine is built from), checks its length and SHA-256 against the published file, and keeps it in the data folder (prop_data) for next time (live/propagation.py month_folder). The Propagation window says when it is downloading; with no connection it says that month needs one the first time. The source folder keeps all twelve. Tests: tests/test_prop_months.py.
+- The installer and its checksum are kept in the repository's install/ folder (the current version only), as well as on the release page.
+
 ## 0.38 (draft) - November 24, 2026
 
 - **Signal version 0.38.** Stations following 0.37 or earlier cannot read 0.38 long beacons and long notes, nor 0.38 stations theirs, and read a beacon with power steps as noise. Everything else is unchanged.

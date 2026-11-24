@@ -21,8 +21,7 @@ build/
 dist/
 # the compiled modem library, built by tools/build_native.py (the installer builds its own)
 modem/_native/
-# the finished setup program, ready to install (kept on the build computer, published as a release, not in Git)
-install/
+# the finished setup program is kept in install/ and in Git (the current version only, since 0.38R1)
 # the propagation engine, built by tools/build_prop.py (the installer builds its own)
 live/_prop/
 # run logs from the study tools (local records, not results)

@@ -87,11 +87,24 @@ def compile_all(src, bin_dir, env):  # the three parts
             raise SystemExit("compiling the ITU engine failed")  # stop
 
 
+SHIP_MONTHS = 3  # an installer carries this many months' ionosphere maps, from the month it is built (live/propagation.py SHIP_MONTHS; a test checks they agree): the rest are fetched when first needed (since 0.38)
+
+
+def ship_months(target, months=None, today=None):  # which months' maps to copy
+    """Return the month numbers (1-12) whose ionosphere maps go to `target`: all twelve for the source folder's live/_prop, otherwise `months` (default SHIP_MONTHS) from this month on, wrapping past December."""
+    import time  # the date
+    if months is None:  # not said
+        months = 12 if os.path.abspath(target) == os.path.abspath(TARGET) else SHIP_MONTHS  # the source folder keeps all; an installer, a few
+    start = (today or time.localtime()).tm_mon  # this month
+    return sorted({(start - 1 + k) % 12 + 1 for k in range(max(1, min(12, months)))})  # this month and the next ones
+
+
 def main():  # fetch, build and copy
     """Fetch the pinned ITU source, build the engine and copy it and its data to live/_prop/; return 0 on success."""
     parser = argparse.ArgumentParser(description="Build the ITU-R P.533 propagation engine for Kestrel")  # describe the tool
     parser.add_argument("--source", default="", help="a Git copy of the ITU-R-HF repository already at the pinned commit")  # optional
     parser.add_argument("--target", default=TARGET, help="where to put the engine (default live/_prop)")  # optional
+    parser.add_argument("--months", type=int, default=None, help=f"how many months' ionosphere maps to copy, from this month on (default: all 12 for live/_prop, {SHIP_MONTHS} for any other target, such as an installer)")  # optional (since 0.38)
     args = parser.parse_args()  # read the options
     env = dict(os.environ)  # the environment the compiler runs in
     if sys.platform.startswith("win"):  # Windows
@@ -111,7 +124,7 @@ def main():  # fetch, build and copy
     os.makedirs(data_dir)  # the data folder
     compile_all(src, bin_dir, env)  # build
     data = os.path.join(src, "P533", "Data")  # the ITU's data files
-    wanted = [f"ionos{m:02d}.bin" for m in range(1, 13)] + [f"COEFF{m:02d}W.txt" for m in range(1, 13)] + ["P1239-3 Decile Factors.txt"]  # what the predictions read
+    wanted = [f"ionos{m:02d}.bin" for m in ship_months(args.target, args.months)] + [f"COEFF{m:02d}W.txt" for m in range(1, 13)] + ["P1239-3 Decile Factors.txt"]  # what the predictions read (the installer: only a few months' maps, since 0.38)
     for name in wanted:  # each one
         shutil.copy2(os.path.join(data, name), os.path.join(data_dir, name))  # copy it
     with open(os.path.join(args.target, "SOURCE.txt"), "w", encoding="utf-8") as handle:  # where it came from
