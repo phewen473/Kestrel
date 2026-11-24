@@ -15,7 +15,7 @@ Makes a clean Kestrel signal sound like it crossed a real HF path, so the modem 
 
 ## Named conditions
 
-These are the mid-latitude test conditions of ITU-R Recommendation F.1487, so results can be compared with published figures for other modes.
+These are the sky-wave test conditions of ITU-R Recommendation F.1487 (Annex 3: two independently fading paths of equal strength, Gaussian Doppler spread), so results can be compared with published figures for other modes. `SKYWAVE` lists the four a mid-latitude station such as one in the south-eastern United States meets on its own paths: `good`, `moderate`, `poor` and `nvis`.
 
 | Name | Doppler spread | Delay between paths | F.1487 name |
 |---|---|---|---|
@@ -23,6 +23,13 @@ These are the mid-latitude test conditions of ITU-R Recommendation F.1487, so re
 | `good` | 0.1 Hz | 0.5 ms | mid-latitude quiet |
 | `moderate` | 0.5 Hz | 1 ms | mid-latitude moderate |
 | `poor` | 1 Hz | 2 ms | mid-latitude disturbed |
+| `nvis` | 1 Hz | 7 ms | mid-latitude disturbed, near vertical incidence (short hops on 80 and 40 m) |
+| `low_quiet` | 0.5 Hz | 0.5 ms | low latitude, quiet |
+| `low_moderate` | 1.5 Hz | 2 ms | low latitude, moderate |
+| `low_disturbed` | 10 Hz | 6 ms | low latitude, disturbed |
+| `high_quiet` | 0.5 Hz | 1 ms | high latitude, quiet |
+| `high_moderate` | 10 Hz | 3 ms | high latitude, moderate |
+| `high_disturbed` | 30 Hz | 7 ms | high latitude, disturbed |
 
 ## Example
 

@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.31R4 (draft) - 23 November 2026
+
+- **Nothing sent has changed. The signal version stays 0.30.** Nothing in the specification changes either.
+- The reference program: colour controls on both scopes, so each operator can suit the waterfall to their eyesight. View > Waterfall colours offers seven colour sets (the classic black, blue, yellow and red; two sets made to be read with colour blindness; heat; grey; grey reversed; high contrast), and a third slider beside Floor and Range, **Colour**, shifts where the colours change (up: weaker signals already reach the bright colours; down: only strong ones do). Both are remembered with the other settings.
+- Test tools (no effect on the program): the channel simulator gained every ITU-R F.1487 condition, among them mid-latitude disturbed near vertical incidence (7 ms between the two paths, 1 Hz spread), and `tools/waveform_study.py` compares candidate transmit waveforms (smoothed tone changes, Gray-coded tones, other tone spacings) by spectrum and by decoding on the sky-wave conditions. Nothing from it is adopted yet.
+
 ## 0.31R3 (draft) - 22 November 2026
 
 - **Nothing sent has changed. The signal version stays 0.30.** Nothing in the specification changes either.

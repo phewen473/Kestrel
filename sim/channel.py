@@ -15,12 +15,21 @@ from scipy.signal import hilbert  # builds the complex (analytic) form of a real
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that SNR figures are quoted in
 
-CONDITIONS = {  # named channel conditions: (Doppler spread in Hz, delay between paths in ms)
+CONDITIONS = {  # named channel conditions: (Doppler spread in Hz, delay between paths in ms), all from ITU-R F.1487 Annex 3
     "awgn": None,  # noise only: no fading at all
-    "good": (0.1, 0.5),  # ITU-R F.1487 mid-latitude quiet
-    "moderate": (0.5, 1.0),  # ITU-R F.1487 mid-latitude moderate
-    "poor": (1.0, 2.0),  # ITU-R F.1487 mid-latitude disturbed
+    "good": (0.1, 0.5),  # mid-latitude quiet (sky wave, the old names kept for the existing tools)
+    "moderate": (0.5, 1.0),  # mid-latitude moderate
+    "poor": (1.0, 2.0),  # mid-latitude disturbed
+    "nvis": (1.0, 7.0),  # mid-latitude disturbed, near vertical incidence (short sky-wave hops on 80 and 40 m): the longest echo a mid-latitude station meets
+    "low_quiet": (0.5, 0.5),  # low latitude, quiet (for paths towards the tropics)
+    "low_moderate": (1.5, 2.0),  # low latitude, moderate
+    "low_disturbed": (10.0, 6.0),  # low latitude, disturbed
+    "high_quiet": (0.5, 1.0),  # high latitude, quiet (for paths across the auroral zone)
+    "high_moderate": (10.0, 3.0),  # high latitude, moderate
+    "high_disturbed": (30.0, 7.0),  # high latitude, disturbed
 }  # end of the table
+
+SKYWAVE = ("good", "moderate", "poor", "nvis")  # the sky-wave conditions a mid-latitude station (the south-eastern United States) meets on its own paths, mildest first
 
 
 def _analytic(x):  # real signal -> complex signal

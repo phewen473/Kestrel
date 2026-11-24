@@ -69,7 +69,8 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "rig_model": "", "cat_port": "", "cat_baud": "38400", "cat_handshake": "none", "radio_mode": "auto", "rigctld": "", "keep_open": False, "working": 0,  # (continued: rig control, contacts)
             "start_mode": "listen", "beacon_every_min": 5, "beacon_type": "short", "listen_first": True, "beacon_autostop_min": 120, "auto_answer": False, "available": True, "carry_mail": True,  # (continued: operating)
             "log_level": "basic", "record_rx": False, "signal_log": "off", "theme": "system", "font_family": "Segoe UI", "font_size": "9", "layout": {},
-            "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)  # (continued: logging, recording and looks)
+            "scope_rx_floor": -5.0, "scope_rx_range": 55.0, "scope_tx_floor": -70.0, "scope_tx_range": 70.0,  # (continued: where each scope's picture starts, and how many dB it covers)
+            "scope_rx_colour": 50.0, "scope_tx_colour": 50.0, "scope_palette": "Classic",  # (continued: where each waterfall's colours change, and the set of colours used)  # (continued: logging, recording and looks)
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
@@ -212,10 +213,38 @@ SCOPE_HELP = ("Transmit (top): the audio Kestrel is sending to the radio, in dB 
               "Receive (bottom): the audio from the radio. The trace is signal strength above the noise in dB; the waterfall under it is the last few seconds, newest at the top.\n\n"  # the receive scope
               "Across both: audio frequency in Hz below, and on the receive scope the radio frequency each point is on, in kHz, above. Dashed lines mark the Kestrel band, 500 to 2500 Hz. Stations decoded in the last minute are labelled.\n\n"  # the scales
               "Floor and Range (the sliders beside each scope): Floor sets the level at the bottom of the trace and the black of the waterfall; raise it to hide noise, lower it to see weaker signals. Range sets how many dB lie between the bottom and the top; fewer dB gives more contrast. Double-click a slider to reset it.\n\n"  # the sliders
+              "Colour (the third slider) and View > Waterfall colours: choose a set of colours that suits your eyes (two sets are made to be read with colour blindness, two are grey only), then move Colour to shift where the colours change. Up: weaker signals already reach the bright colours. Down: only strong signals do. Double-click it to put it back in the middle.\n\n"  # the colour controls
               "Zoom: click a signal or its label, turn the mouse wheel, or pick a width in the View box. Right click, or Full view, shows everything again.\n\n"  # zooming
               "Sizes: drag the dividers between the panels to shrink one and grow another. View > Reset the panel sizes puts them back.")  # the dividers
 
-SCOPE_LIMITS = {"rx": ((-30.0, 30.0), (10.0, 90.0)), "tx": ((-110.0, -20.0), (10.0, 100.0))}  # the Floor and Range sliders' ends, in dB: receive floor relative to the noise, transmit floor below full scale
+SCOPE_LIMITS = {"rx": ((-30.0, 30.0), (10.0, 90.0), (0.0, 100.0)), "tx": ((-110.0, -20.0), (10.0, 100.0), (0.0, 100.0))}  # the Floor, Range and Colour sliders' ends: Floor and Range in dB (receive floor relative to the noise, transmit floor below full scale); Colour from 0 to 100
+PALETTES = {  # the waterfall colour sets offered in View > Waterfall colours: name -> colour stops from weakest (0) to strongest (1), as (place, (red, green, blue))
+    "Classic": [(0.0, (0, 0, 40)), (0.35, (0, 40, 200)), (0.7, (255, 255, 0)), (1.0, (255, 60, 0))],  # black, blue, yellow, red (the colours used before 0.31R4)
+    "Colour-blind safe (blue to yellow)": [(0.0, (0, 32, 77)), (0.25, (54, 70, 107)), (0.5, (124, 123, 120)), (0.75, (196, 177, 102)), (1.0, (255, 234, 70))],  # dark blue through grey to yellow: one rising brightness, readable with red-green colour blindness
+    "Colour-blind safe (purple to yellow)": [(0.0, (68, 1, 84)), (0.25, (59, 82, 139)), (0.5, (33, 145, 140)), (0.75, (94, 201, 98)), (1.0, (253, 231, 37))],  # purple, blue, green, yellow: brightness rises steadily, readable with most colour blindness
+    "Heat (black, red, yellow, white)": [(0.0, (0, 0, 0)), (0.4, (180, 0, 0)), (0.75, (255, 200, 0)), (1.0, (255, 255, 255))],  # a fire's colours: strong contrast, no blue
+    "Grey (black to white)": [(0.0, (0, 0, 0)), (1.0, (255, 255, 255))],  # brightness only, no colour at all
+    "Grey, reversed (white to black)": [(0.0, (255, 255, 255)), (1.0, (0, 0, 0))],  # dark signals on a light background
+    "High contrast (black, white, yellow)": [(0.0, (0, 0, 0)), (0.5, (255, 255, 255)), (1.0, (255, 255, 0))],  # weak signals turn white quickly, strong ones yellow
+}  # end of the table
+
+
+def make_palette(name, colour):  # the 256 colours of one waterfall
+    """Return a 256 x 3 array of colours for the colour set `name`, with the Colour slider at `colour` (0 to 100; 50 = the set as drawn).
+
+    The slider moves where the colours change: above 50 the brighter colours are
+    reached by weaker signals (weak signals stand out), below 50 only strong
+    signals reach them (a quieter picture). It does this by bending the
+    brightness scale: brightness b is shown as b ** g, with g from 4 (slider at 0)
+    to 1/4 (slider at 100).
+    """
+    stops = PALETTES.get(name, PALETTES["Classic"])  # the chosen set (the classic one if the name is unknown)
+    bend = 2.0 ** ((50.0 - float(colour)) / 25.0)  # the power applied to brightness: 1 at the middle of the slider
+    steps = np.linspace(0.0, 1.0, 256) ** bend  # the 256 brightness steps, bent
+    places = [p for p, _ in stops]  # where each colour stop sits
+    return np.stack([np.interp(steps, places, [c[k] for _, c in stops]) for k in range(3)], axis=1).astype("uint8")  # red, green and blue, each interpolated between the stops
+
+
 VIEW_WIDTHS = {"Full (0-3000 Hz)": 3000.0, "1000 Hz wide": 1000.0, "500 Hz wide": 500.0, "200 Hz wide": 200.0}  # the scope widths offered, by name
 
 
@@ -506,6 +535,11 @@ class Panel:  # the control panel window
         for choice in theme.CHOICES:  # system, light, dark
             looks.add_radiobutton(label=THEME_NAMES[choice], underline=0, value=choice, variable=self.theme_var, command=lambda c=choice: self.set_theme(c))  # one each
         view.add_cascade(label="Theme", underline=0, menu=looks)  # put it in the View menu
+        self.palette_var = tk.StringVar(value=self.settings.get("scope_palette") if self.settings.get("scope_palette") in PALETTES else "Classic")  # the waterfall colour set chosen (the classic one if the saved name is unknown)
+        colours = tk.Menu(view, tearoff=False)  # the Waterfall colours submenu
+        for name in PALETTES:  # every colour set offered
+            colours.add_radiobutton(label=name, value=name, variable=self.palette_var, command=self.palette_chosen)  # one each
+        view.add_cascade(label="Waterfall colours", underline=0, menu=colours)  # put it in the View menu
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -553,8 +587,7 @@ class Panel:  # the control panel window
         self.scope_w, self.trace_h, self.fall_h, self.low_hz, self.top_hz = 420, 60, 50, 0.0, 3000.0  # the receive scope's width in points, the heights of its trace and waterfall, and the lowest and highest frequencies shown
         self.tx_w, self.tx_top, self.tx_trace_h, self.tx_fall_h = 420, 14, 30, 16  # the transmit scope's width, where its trace begins (under a line of words), and the heights of its trace and waterfall
         self.left, self.right, self.above, self.below = 40, 40, 16, 18  # margins for the scales: dB on the left, seconds on the right, radio kHz above, audio Hz below
-        steps = np.linspace(0.0, 1.0, 256)  # the 256 brightness steps of the waterfalls
-        self.palette = np.stack([np.interp(steps, [0, 0.35, 0.7, 1.0], channel) for channel in ([0, 0, 255, 255], [0, 40, 255, 60], [40, 200, 0, 0])], axis=1).astype("uint8")  # their colours: black, blue, yellow, red
+        self.palettes = {}  # each waterfall's 256 colours ("rx" or "tx" -> array), made from the colour set and that scope's Colour slider
         self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # the receive waterfall picture, newest line at the top
         self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # the transmit waterfall picture
         self.line_s = 0.10  # seconds between waterfall lines, measured as the scope runs
@@ -563,7 +596,7 @@ class Panel:  # the control panel window
         self.tx_was = False  # whether a transmission was under way at the last look
         self.scope_db = {}  # each scope's Floor and Range slider settings, as Tk variables: ("rx" or "tx", "floor" or "range") -> DoubleVar
         for which in ("rx", "tx"):  # the receive and transmit scopes
-            for part in ("floor", "range"):  # the bottom of the picture, and how many dB it covers
+            for part in ("floor", "range", "colour"):  # the bottom of the picture, how many dB it covers, and where the waterfall's colours change
                 self.scope_db[which, part] = tk.DoubleVar(value=float(self.settings.get(f"scope_{which}_{part}", DEFAULTS[f"scope_{which}_{part}"])))  # as last left
         self.panes["scopes"] = scopes = ttk.PanedWindow(parent, orient="vertical")  # the two scopes, one above the other, with a divider to drag between them
         parent.add(scopes, weight=3)  # between the log and the meters
@@ -607,12 +640,13 @@ class Panel:  # the control panel window
         self.scope.bind("<Configure>", self.scope_resized)  # and so does the receive scope
 
     def _scope_sliders(self, parent, which):  # the Floor and Range sliders of one scope ("rx" or "tx")
-        """Return a frame holding two vertical sliders: Floor sets the level at the bottom of the trace and the black of the waterfall; Range sets how many dB lie between that and the top."""
-        box = ttk.Frame(parent)  # the two sliders side by side
+        """Return a frame holding three vertical sliders: Floor sets the level at the bottom of the trace and the black of the waterfall; Range sets how many dB lie between that and the top; Colour shifts where the waterfall's colours change (since 0.31R4)."""
+        box = ttk.Frame(parent)  # the three sliders side by side
         box.rowconfigure(1, weight=1)  # the sliders take the height
         words = {"floor": ("Floor", "Raise it to hide more noise (blacker waterfall); lower it to see weaker signals.\nDouble-click to reset."),  # what each slider is for
-                 "range": ("Range", "Fewer dB: more contrast, weak signals stand out; more dB: strong signals are not flattened.\nDouble-click to reset.")}  # (continued)
-        for column, part in enumerate(("floor", "range")):  # the two sliders
+                 "range": ("Range", "Fewer dB: more contrast, weak signals stand out; more dB: strong signals are not flattened.\nDouble-click to reset."),  # (continued)
+                 "colour": ("Colour", "Up: weaker signals reach the bright colours; down: only strong ones do. The colours themselves: View > Waterfall colours.\nDouble-click to reset.")}  # (continued)
+        for column, part in enumerate(("floor", "range", "colour")):  # the three sliders
             low, high = SCOPE_LIMITS[which][column]  # its ends
             ttk.Label(box, text=words[part][0], font="KestrelTiny").grid(row=0, column=column)  # its name above it
             slider = ttk.Scale(box, orient="vertical", from_=high, to=low, length=40, variable=self.scope_db[which, part], command=lambda value: self.scope_db_moved())  # up is a higher floor, or a wider range
@@ -625,15 +659,30 @@ class Panel:  # the control panel window
         self.scope_db_moved(redraw=False)  # show the starting values
         return box  # for the caller to place
 
-    def scope_db_moved(self, redraw=True):  # a Floor or Range slider has moved
+    def scope_db_moved(self, redraw=True):  # a Floor, Range or Colour slider has moved
         for (which, part), var in self.scope_db.items():  # every slider
-            value = round(var.get())  # whole dB
+            value = round(var.get())  # whole dB (or whole steps, for Colour)
             self.settings[f"scope_{which}_{part}"] = float(value)  # remembered with the other settings
             label = getattr(self, f"scope_{which}_{part}_text", None)  # its value label, once made
             if label is not None:  # made already
-                label.configure(text=f"{value:+d}" if part == "floor" else f"{value}")  # the floor with its sign, the range as a plain number
+                label.configure(text=f"{value:+d}" if part == "floor" else f"{value}")  # the floor with its sign, the range and colour as plain numbers
+        self.make_palettes()  # each waterfall's colours, for its Colour slider and the colour set chosen
         if redraw:  # the sliders exist and the scales need to follow
             self.draw_scales()  # new dB marks on both scopes
+
+    def make_palettes(self):  # (re)make both waterfalls' colours
+        """Make the 256 colours of each waterfall from the colour set chosen in View > Waterfall colours and that scope's Colour slider."""
+        name = self.palette_var.get()  # the colour set chosen
+        for which in ("rx", "tx"):  # the receive and transmit waterfalls
+            self.palettes[which] = make_palette(name, self.scope_db[which, "colour"].get())  # its colours
+
+    def palette_chosen(self):  # View > Waterfall colours: a colour set was picked
+        """Use the colour set just chosen on both waterfalls, remember it, and recolour what is already on show."""
+        self.settings["scope_palette"] = self.palette_var.get()  # remembered with the other settings
+        self.make_palettes()  # the new colours
+        self.fall[:] = self.palettes["rx"][0]  # the receive waterfall starts afresh in the new "nothing there" colour, so old lines in the old colours do not linger
+        self.tx_fall[:] = self.palettes["tx"][0]  # and so does the transmit waterfall
+        self.save_settings()  # keep the choice
 
     def reset_scope_db(self, which, part):  # a double click on a slider
         self.scope_db[which, part].set(DEFAULTS[f"scope_{which}_{part}"])  # back to the usual setting
@@ -647,7 +696,7 @@ class Panel:  # the control panel window
         if (width, trace, room - trace) == (self.scope_w, self.trace_h, self.fall_h):  # nothing has changed
             return  # leave the picture alone
         self.scope_w, self.trace_h, self.fall_h = width, trace, max(8, room - trace)  # the new sizes
-        self.fall = np.zeros((self.fall_h, self.scope_w, 3), dtype="uint8")  # a fresh waterfall of that size
+        self.fall = np.full((self.fall_h, self.scope_w, 3), self.palettes["rx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" colour
         self.scale_khz = None  # the radio-frequency labels must be redrawn
         self.draw_scales()  # and the scales
 
@@ -657,7 +706,7 @@ class Panel:  # the control panel window
         if (width, trace, room - trace) == (self.tx_w, self.tx_trace_h, self.tx_fall_h):  # nothing has changed
             return  # leave the picture alone
         self.tx_w, self.tx_trace_h, self.tx_fall_h = width, trace, max(4, room - trace)  # the new sizes
-        self.tx_fall = np.zeros((self.tx_fall_h, self.tx_w, 3), dtype="uint8")  # a fresh waterfall of that size
+        self.tx_fall = np.full((self.tx_fall_h, self.tx_w, 3), self.palettes["tx"][0], dtype="uint8")  # a fresh waterfall of that size, in the "nothing there" colour
         self.draw_scales()  # and the scales
 
     def tx_y(self, db):  # where a level in dB below full scale falls on the transmit trace
@@ -713,7 +762,7 @@ class Panel:  # the control panel window
         points = np.column_stack((self.left + np.arange(self.tx_w), self.tx_top + self.tx_trace_h - 2 - bright * (self.tx_trace_h - 4))).ravel().tolist()  # the trace's corners
         self.tx_canvas.coords(self.tx_line, *points)  # move the trace
         self.tx_fall = np.roll(self.tx_fall, 1, axis=0)  # push the waterfall down one line
-        self.tx_fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
+        self.tx_fall[0] = self.palettes["tx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the transmit waterfall's colours
         self.tx_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.tx_w, self.tx_fall_h) + self.tx_fall.tobytes(), format="PPM")  # the picture, rebuilt
         self.tx_canvas.itemconfigure(self.tx_item, image=self.tx_image)  # show it
 
@@ -793,7 +842,7 @@ class Panel:  # the control panel window
                 points = np.column_stack((self.left + np.arange(self.scope_w), self.above + self.trace_h - 3 - bright * (self.trace_h - 8))).ravel().tolist()  # the trace's corners
                 self.scope.coords(self.trace, *points)  # move the trace
                 self.fall = np.roll(self.fall, 1, axis=0)  # push the waterfall down one line
-                self.fall[0] = self.palette[(bright * 255).astype(int)]  # and paint the newest line at the top
+                self.fall[0] = self.palettes["rx"][(bright * 255).astype(int)]  # and paint the newest line at the top, in the receive waterfall's colours
                 self.fall_image = tk.PhotoImage(data=b"P6 %d %d 255\n" % (self.scope_w, self.fall_h) + self.fall.tobytes(), format="PPM")  # the picture, rebuilt
                 self.scope.itemconfigure(self.fall_item, image=self.fall_image)  # show it
             self.scope.delete("time")  # the seconds scale is redrawn each time, since the line rate is measured
