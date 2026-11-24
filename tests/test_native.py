@@ -209,7 +209,7 @@ def test_notch_matches_python(python_only):  # the steady-signal notch (0.31R1)
 def test_viterbi_with_known_bits_matches_python(python_only):  # the decoder with expected callsigns (0.31R1)
     from modem.fec import conv_encode, viterbi_decode  # the code under test
     rng = np.random.default_rng(16)  # repeatable
-    for length in (75, 124, 192):  # beacon, answer and notice bodies (with their check values)
+    for length in (75, 139, 192):  # beacon, answer (with its locator since 0.33) and notice bodies (with their check values)
         bits = rng.integers(0, 2, length + 16)  # random data
         llrs = (1.0 - 2.0 * conv_encode(bits)) + rng.normal(size=2 * (length + 22)) * 2.5  # very noisy
         known = -np.ones(length + 16, dtype=np.int8)  # nothing known...

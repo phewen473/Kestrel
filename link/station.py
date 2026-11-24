@@ -52,7 +52,7 @@ LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the s
 
 def reply_slot(level):  # how long one reply slot lasts after a beacon at a given level
     """Return the length in seconds of a reply slot after a beacon sent at `level`: an answer at that level plus a short gap."""
-    return control_seconds(FRAME_TYPE_ANSWER, level) + REPLY_SLOT_GAP_S  # 42 s after an L0 beacon, 11.3 s after an L2 beacon
+    return control_seconds(FRAME_TYPE_ANSWER, level) + REPLY_SLOT_GAP_S  # 44.8 s after an L0 beacon, 11.9 s after an L2 beacon (since 0.33)
 
 
 @dataclass  # a plain record
@@ -546,7 +546,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.tx_level = result.level if result.level in self.allowed else min(self.allowed)  # answer at the beacon's own level: hearing it shows the path carries that level
         self.last_ident = now  # the answer carries this station's callsign
         self._say(now, f"heard {self.partner} at {result.snr_db:+.0f} dB; answering, asking for L{self.want}")  # explain
-        audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level)  # the answer frame
+        audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level, grid=self.grid)  # the answer frame, with this station's locator (since 0.33)
         wait = slot * slot_s + slots_left * slot_s + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
         tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}")  # wait for the lock to be confirmed
         tx.delay = slot * slot_s  # hold the answer back until its slot
@@ -987,7 +987,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             report = heard[1]  # it goes with the call, so the called station can start at the right level
         else:  # never heard, or long ago
             report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0)  # no measurement, asking for L0
-        audio = build_answer(self.partner, self.call, report, self.levels, mail_check=True, level=self.tx_level, directed=True)  # an answer frame marked as a directed call, asking for any mail the called station holds for this one
+        audio = build_answer(self.partner, self.call, report, self.levels, mail_check=True, level=self.tx_level, directed=True, grid=self.grid)  # an answer frame marked as a directed call, asking for any mail the called station holds for this one
         return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
 
     def _notice(self, now):  # a mail notice to send just before a beacon, or None
@@ -1138,7 +1138,7 @@ def _build(frame):  # a frame description from the library -> its audio
     if kind == "ident":  # an identification
         return build_ident(frame["call"], frame["link"], final=frame["final"], level=frame["level"])  # built
     if kind == "answer":  # an answer or a directed call
-        return build_answer(frame["dest"], frame["origin"], ChannelReport(**frame["report"]), tuple(frame["levels"]), mail_check=frame["mail_check"], level=frame["level"], directed=frame["directed"])  # built
+        return build_answer(frame["dest"], frame["origin"], ChannelReport(**frame["report"]), tuple(frame["levels"]), mail_check=frame["mail_check"], level=frame["level"], directed=frame["directed"], grid=frame.get("grid", ""))  # built, with the sender's locator (since 0.33)
     if kind == "beacon":  # a beacon
         return build_beacon(frame["call"], frame["grid"], tuple(frame["levels"]), listening=frame["listening"], mail_check=frame["mail_check"], holds_mail=frame["holds_mail"], level=frame["level"], wide=frame["wide"])  # built
     if kind == "notice":  # a mail notice

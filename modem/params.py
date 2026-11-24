@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.32"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.32"  # the specification version in which the on-air behavior last changed (0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
+SPEC_VERSION = "0.33"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.33"  # the specification version in which the on-air behavior last changed (0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 RAMP_S = 0.010  # every transmission fades in and out over this long, along a raised cosine (since 0.32), so it starts and stops without a click
@@ -63,6 +63,7 @@ FRAME_TYPE_NOTICE = 7  # header value: a mail notice, sent just before a beacon 
 HASH_BITS = 16  # bits of a short code standing for a callsign or a message ID in a mail notice
 NOTICE_SLOTS = 3  # entries of each list in a mail notice: stations mail is held for, delivery receipts, stations heard
 GRID_BITS = 15  # bits of a four-character grid locator
+NO_GRID = (1 << GRID_BITS) - 1  # the value an answer sends when its sender has no locator set (all ones; real locators run 0 to 32399)
 LEVEL_MASK_BITS = 8  # one bit per speed level 0 to 7, listing the levels a station can use
 LEVEL_BITS = 3  # bits of a speed level number
 PART_BITS = 3  # bits of a part number
@@ -76,7 +77,7 @@ OFFSET_STEP_HZ = 2  # the frequency offset is sent in steps of 2 Hz
 REPORT_BITS = SNR_BITS + FADE_BITS + OFFSET_BITS + LEVEL_BITS  # a whole channel report: 18 bits
 CONTROL_BITS = {  # body length of each control frame, before its check value
     FRAME_TYPE_BEACON: CALL_BITS + GRID_BITS + LEVEL_MASK_BITS + 4,  # callsign, locator, levels, four flags: 75 bits
-    FRAME_TYPE_ANSWER: 2 * CALL_BITS + REPORT_BITS + LEVEL_MASK_BITS + 2,  # two callsigns, report, levels, two flags: 124 bits
+    FRAME_TYPE_ANSWER: 2 * CALL_BITS + GRID_BITS + REPORT_BITS + LEVEL_MASK_BITS + 2,  # two callsigns, the sender's locator (since 0.33), report, levels, two flags: 139 bits
     FRAME_TYPE_ACK: LINK_ID_BITS + MSG_ID_BITS + PART_BITS + ACK_STATUS_BITS + REPORT_BITS,  # link, message, part, verdict, report: 48 bits
     FRAME_TYPE_IDENT: CALL_BITS + LINK_ID_BITS + 4,  # callsign, link number, four flags: 61 bits
     FRAME_TYPE_NOTICE: CALL_BITS + 3 * NOTICE_SLOTS * HASH_BITS,  # callsign, then three lists of three short codes: held for, receipts, heard: 192 bits

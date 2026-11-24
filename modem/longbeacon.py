@@ -51,7 +51,7 @@ COMBINE_APART_S = 120.0  # copies closer in time than this are the same transmis
 COMBINE_MOST = 4  # at most this many copies are added together
 COMBINE_PARTNERS = 6  # a new copy is tried with at most this many kept copies (the clearest on its frequency)
 COMBINE_MEMORY = 200  # at most this many copies are kept
-MIN_SNR_DB = -25.6  # weakest SNR (2.5 kHz, noise only) at which every test long beacon decoded (40 a point, 21 November 2026; nine in ten at -26.6, nine in ten at -18.6 in the worst fading)
+MIN_SNR_DB = -25.6  # weakest SNR (2.5 kHz, noise only) at which every test long beacon decoded (40 a point, November 21, 2026; nine in ten at -26.6, nine in ten at -18.6 in the worst fading)
 
 
 def _layout():  # the body's shape

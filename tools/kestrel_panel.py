@@ -1375,6 +1375,10 @@ class Panel:  # the control panel window
             call, grid, snr, kind, fields, band = self.heard.get()  # who, where, how strong, what it sent, its flags, and the band it was heard on
             if call in self.contacts and band and self.contacts[call].get("band") != band:  # a saved contact heard on another band
                 self.contacts.put(call, band=band)  # remember the band (and keep it in the file)
+            known = (self.contacts.get(call, {}).get("grid", "") or "").strip()  # the locator saved for a contact, if any
+            if call in self.contacts and grid and known[:4].upper() != grid[:4].upper():  # a saved contact sent a locator that is new or different (the propagation window works from it)
+                self.contacts.put(call, grid=grid)  # keep the locator it sent (a finer six-character one typed by hand stays while the square agrees)
+                self.say(f"{call}'s grid locator is {grid}" + (f" (was {known})" if known else "") + "; saved in its contact record")  # tell the operator
             if band and any(self.to_send.set(row, "to") == call for row in self.to_send.get_children()):  # a station there are messages for
                 self.refresh_send_bands()  # show the band it was just heard on
             if kind in ("beacon", "answer"):  # a beacon or an answer says whether its sender takes contacts

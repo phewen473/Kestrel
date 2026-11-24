@@ -157,7 +157,7 @@ All of these are now written into the specification (sections 4 and 5).
 | `notch.py` | Steady signals (carriers) notched out of the whole band before searching and decoding (since 0.31R1) |
 | `native.py` | The bridge to the compiled library (`cpp/`): blanker, notch, Viterbi decoder, tone-band measurement, pattern search, fine timing, header reading, pilot tracking, noise tracking, the LDPC decoder, the whole body decoder, the continuous receiver, the transmitter, and (since interface 8) the packing of text, addresses, control fields and check values run compiled when it is present; each returns None otherwise, or when the library refuses, and the Python code runs instead (and raises its own error where there is one). `KESTREL_NATIVE=0` switches it off; `set_threads(n)` limits its threads |
 
-## Measured results for L0 under fading (18 November 2026)
+## Measured results for L0 under fading (November 18, 2026)
 
 From `tools/snr_sweep.py`: 40 random 40-character messages per point, each with a random frequency offset of up to 20 Hz. SNR is in 2.5 kHz. Tables and charts are in `results/`.
 

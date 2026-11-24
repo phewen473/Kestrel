@@ -53,9 +53,10 @@ const int kLengthBits = 8;  /* the character count (LENGTH_BITS) */
 const size_t kMaxChars = 200;  /* longest message (MAX_CHARS) */
 const int kSizes[4] = {50, 100, 150, 200};  /* the four size classes, in plain characters (SIZE_CLASSES) */
 const int kAddressBits[2] = {kLinkBits + kLevelBits + kMsgBits, 2 * kCallBits + kMsgBits + kHopBits + kLifeBits};  /* address block of a link frame (28) and an addressed frame (120) (ADDRESS_BITS) */
-const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4, 2 * kCallBits + kReportBits + kMaskBits + 2,  /* beacon 75, answer 124 (CONTROL_BITS)... */
+const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4, 2 * kCallBits + kGridBits + kReportBits + kMaskBits + 2,  /* beacon 75, answer 139 (with its sender's locator since 0.33) (CONTROL_BITS)... */
                              kLinkBits + kMsgBits + kPartBits + kStatusBits + kReportBits, kCallBits + kLinkBits + 4, 0, kCallBits + 3 * kSlots * kHashBits};  /* ...ack 48, ident 61, notice 192 (types 0, 1 and 6 have none) */
 const char kFields[] = "ABCDEFGHIJKLMNOPQR";  /* grid locator field letters (control.py FIELDS) */
+const unsigned long long kNoGrid = (1ULL << kGridBits) - 1;  /* an answer's "no locator set" (NO_GRID: all ones; real locators run 0 to 32399) */
 
 /* Python's str.strip() whitespace, for the ASCII range: tab to carriage return, the four separators 0x1c-0x1f, and space. */
 bool is_space(unsigned char c) {  /* one character */
@@ -556,12 +557,21 @@ KES_API long kes_pack_control(int frame_type, const KesFields *f, uint8_t *out) 
         v.push_back(static_cast<uint8_t>(f->holds_mail));  /* holds mail for others */
         v.push_back(static_cast<uint8_t>(f->wide));  /* wide reply window */
         break;  /* done */
-    case 3:  /* an answer: two callsigns, a report, levels, two flags */
+    case 3: {  /* an answer: two callsigns, the sender's locator, a report, levels, two flags */
         if (!clean_call(f->dest, a) || !clean_call(f->origin, b)) {  /* not addresses */
             return -1;  /* refuse */
         }  /* end of the check */
         call_bits(a, v);  /* to whom */
         call_bits(b, v);  /* from whom */
+        std::string g;  /* the locator, tidied */
+        if (!strip_upper(f->grid, g)) {  /* not ASCII */
+            return -1;  /* refuse */
+        }  /* end of the check */
+        if (g.empty()) {  /* none set */
+            put(v, kNoGrid, kGridBits);  /* "no locator" */
+        } else if (!grid_bits(f->grid, v)) {  /* not a locator */
+            return -1;  /* refuse */
+        }  /* end of the locator */
         if (!report_bits(f->snr_db, f->fade_index, f->offset_hz, f->want_level, v) || f->levels < 0 || f->levels > 255) {  /* a bad report or level list */
             return -1;  /* refuse */
         }  /* end of the check */
@@ -569,6 +579,7 @@ KES_API long kes_pack_control(int frame_type, const KesFields *f, uint8_t *out) 
         v.push_back(static_cast<uint8_t>(f->mail_check));  /* wants its mail */
         v.push_back(static_cast<uint8_t>(f->directed));  /* a directed call */
         break;  /* done */
+    }  /* end of the answer */
     case 4:  /* an acknowledgment: link, message, part, verdict, report */
         if (f->link < 0 || f->link >= (1L << kLinkBits) || f->msg_id < 0 || f->msg_id >= (1L << kMsgBits) || f->part < 0 || f->part >= (1L << kPartBits) ||
             f->status < 0 || f->status >= (1L << kStatusBits)) {  /* a field does not fit */
@@ -645,7 +656,11 @@ KES_API int kes_unpack_control(int frame_type, const uint8_t *bits, size_t n, Ke
         }  /* end of the check */
         copy_call(a, f->dest);  /* to whom */
         copy_call(b, f->origin);  /* from whom */
-        const uint8_t *rest = bits + 2 * kCallBits;  /* after the callsigns */
+        const uint8_t *place = bits + 2 * kCallBits;  /* the locator, after the callsigns */
+        if (get(place, kGridBits) != kNoGrid && !bits_grid(place, f->grid)) {  /* neither "none" nor a locator: damaged */
+            return -1;  /* refuse */
+        }  /* end of the locator ("none" leaves it empty) */
+        const uint8_t *rest = place + kGridBits;  /* after the locator */
         read_report(rest, f);  /* the report */
         f->levels = static_cast<int>(get(rest + kReportBits, kMaskBits));  /* the levels */
         f->mail_check = rest[kReportBits + kMaskBits];  /* wants its mail */

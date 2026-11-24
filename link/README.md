@@ -7,7 +7,7 @@ Nothing here touches a radio. A `Station` is handed the audio it heard and the t
 ## A contact, step by step
 
 1. **Beacon.** The calling station sends a beacon at the middle level (L2), and at once again at the slowest level (L0) if nobody answers (spec 0.23).
-2. **Answer.** A listening station answers at the level the beacon came at, in a reply slot sized for that level (11.3 s at L2, 42 s at L0). The answer says how well the beacon was heard and which speed level the answering station wants. If the return path is too weak for that level, the answer is lost, the caller tries again at L0, and the answer then goes at L0.
+2. **Answer.** A listening station answers at the level the beacon came at, in a reply slot sized for that level (11.9 s at L2, 44.8 s at L0). The answer says how well the beacon was heard and which speed level the answering station wants. If the return path is too weak for that level, the answer is lost, the caller tries again at L0, and the answer then goes at L0.
 3. **Lock.** The calling station confirms with a short acknowledgment carrying its own report. Both are now locked.
 4. **Messages.** The station holding the turn sends its messages. Every message frame is acknowledged, and every acknowledgment carries a fresh channel report.
 5. **Turn.** When the sender has nothing left it offers the turn. The partner either starts sending or says it has nothing either.
@@ -57,7 +57,7 @@ These are first settings, chosen in simulation and meant to be tuned on the air.
 | Silence before a waiting station gives up the lock | 300 s |
 | Identification | every 9 minutes at most |
 
-## What the simulation showed (18 November 2026)
+## What the simulation showed (November 18, 2026)
 
 Run `python tools/link_demo.py --scenario <name>`; charts are in `results/`.
 

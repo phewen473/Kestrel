@@ -197,9 +197,9 @@ def build_beacon(call, grid, levels=tuple(range(len(LEVELS))), listening=True, m
     return build_control(FRAME_TYPE_BEACON, control.pack_beacon(call, grid, levels, listening, mail_check, holds_mail, wide), level)  # pack the fields and send
 
 
-def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0, directed=False):  # "I hear you" (or, with directed, "I am calling you")
-    """Return the audio of `origin`'s answer to a beacon from `dest`, carrying a report of how the beacon was received; with `directed`, a directed call to `dest`."""
-    return build_control(FRAME_TYPE_ANSWER, control.pack_answer(dest, origin, report, levels, mail_check, directed), level)  # pack the fields and send
+def build_answer(dest, origin, report, levels=tuple(range(len(LEVELS))), mail_check=False, level=0, directed=False, grid=""):  # "I hear you" (or, with directed, "I am calling you")
+    """Return the audio of `origin`'s answer to a beacon from `dest`, carrying a report of how the beacon was received; with `directed`, a directed call to `dest`. `grid` is the sender's locator (since 0.33; "" if none is set)."""
+    return build_control(FRAME_TYPE_ANSWER, control.pack_answer(dest, origin, report, levels, mail_check, directed, grid), level)  # pack the fields and send
 
 
 def build_ack(link, msg_id, part, status, report, level=0):  # "got it" / "send it again" / "already have it"

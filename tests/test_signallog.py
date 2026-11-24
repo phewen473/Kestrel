@@ -34,7 +34,7 @@ def test_signal_log_off_writes_nothing(tmp_path):  # the default: no disk space 
 def test_signal_log_lines_are_plain_json(tmp_path):  # every line can be read back
     from live.signallog import SignalLog  # the log
 
-    clock = [1795280000.0]  # a fixed time, 21 November 2026
+    clock = [1795280000.0]  # a fixed time, November 21, 2026
     log = SignalLog(str(tmp_path), prefix="kestrel_second", mode="on", clock=lambda: clock[0])  # a second panel's log
     log.session_start("monitor", call="Q1AAAA", dial_khz=7101.5)  # a run starts
     log.note("a value that is not a number", snr_db=float("nan"), count=np.int64(3), level=np.float32(1.25))  # numpy values and NaN
@@ -63,7 +63,7 @@ def test_search_candidates_are_logged_once_per_signal(tmp_path):  # a long frame
 def test_clips_stay_under_the_size_cap(tmp_path):  # long sessions must not fill the disk
     from live.signallog import SignalLog  # the log
 
-    clock = [1795280000.0]  # 21 November 2026
+    clock = [1795280000.0]  # November 21, 2026
     log = SignalLog(str(tmp_path), mode="clips", clock=lambda: clock[0])  # keeping clips
     old = tmp_path / "clips" / "2026-10-01"  # a day folder far older than 14 days
     old.mkdir(parents=True)  # make it
@@ -150,7 +150,7 @@ def test_signal_report_summarizes_a_log(tmp_path):  # tools/signal_report.py
     import signal_report  # the report tool
     from live.signallog import SignalLog  # the log
 
-    clock = [1795280000.0]  # 21 November 2026, 16:53 UTC
+    clock = [1795280000.0]  # November 21, 2026, 16:53 UTC
     log = SignalLog(str(tmp_path), mode="on", clock=lambda: clock[0])  # on
 
     class Result:  # a stand-in receiver report with the fields the log reads

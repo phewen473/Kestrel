@@ -14,7 +14,7 @@ from .address import bits_to_call, call_to_bits  # callsign <-> 48 bits
 from .bits import bits_to_int, int_to_bits  # number <-> bits helpers
 from .params import (  # frame format numbers
     ACK_STATUS_BITS, CALL_BITS, CONTROL_BITS, FADE_BITS, FADE_STEPS_PER_UNIT, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER,  # (continued)
-    FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_NOTICE, GRID_BITS, HASH_BITS, NOTICE_SLOTS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
+    FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_NOTICE, GRID_BITS, HASH_BITS, NO_GRID, NOTICE_SLOTS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
     OFFSET_BITS, OFFSET_STEP_HZ, PART_BITS, REPORT_BITS, SNR_BITS, SNR_FLOOR_DB,  # (continued)
 )  # end of the import list
 
@@ -105,16 +105,27 @@ def pack_beacon(call, grid, levels, listening=True, mail_check=False, holds_mail
     return np.concatenate([call_to_bits(call), grid_to_bits(grid), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # callsign, locator, levels, flags
 
 
-def pack_answer(dest, origin, report, levels, mail_check=False, directed=False):  # answer fields -> 124 bits
-    """Return the body bits of an answer frame: who is answering (or calling) whom, how the other station was last received, what the sender can do.
+def answer_grid_bits(grid):  # the sender's locator in an answer -> 15 bits
+    """Return the 15 locator bits of an answer: the locator, or all ones when the sender has none set."""
+    return grid_to_bits(grid) if (grid or "").strip() else int_to_bits(NO_GRID, GRID_BITS)  # a locator, or "none"
+
+
+def answer_bits_grid(bits):  # 15 bits of an answer -> the sender's locator
+    """Return the locator carried by an answer, "" when it says none, or raise ValueError when the bits are neither."""
+    return "" if bits_to_int(bits) == NO_GRID else bits_to_grid(bits)  # none, or a locator (anything else is damage)
+
+
+def pack_answer(dest, origin, report, levels, mail_check=False, directed=False, grid=""):  # answer fields -> 139 bits
+    """Return the body bits of an answer frame: who is answering (or calling) whom, from where, how the other station was last received, what the sender can do.
 
     With `directed` the frame is a directed call (Section 6.11) rather than a reply to a beacon.
+    `grid` is the sender's four-character locator (since 0.33), or "" if it has none set.
     """
-    done = native.pack_control(FRAME_TYPE_ANSWER, dest=dest, origin=origin, report=report, levels=levels, mail_check=mail_check, directed=directed)  # compiled, when the library is in use
+    done = native.pack_control(FRAME_TYPE_ANSWER, dest=dest, origin=origin, grid=grid, report=report, levels=levels, mail_check=mail_check, directed=directed)  # compiled, when the library is in use
     if done is not None:  # it was
         return done  # the same bits
     flags = [int(mail_check), int(directed)]  # wants its mail / a directed call
-    return np.concatenate([call_to_bits(dest), call_to_bits(origin), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, report, levels, flags
+    return np.concatenate([call_to_bits(dest), call_to_bits(origin), answer_grid_bits(grid), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, locator, report, levels, flags
 
 
 def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 48 bits
@@ -165,8 +176,9 @@ def unpack(frame_type, bits):  # body bits -> named fields
         return {"origin": bits_to_call(bits[:CALL_BITS]), "grid": bits_to_grid(rest[:GRID_BITS]), "levels": bits_to_levels(rest[GRID_BITS:GRID_BITS + LEVEL_MASK_BITS]),  # (continued)
                 "listening": bool(flags[0]), "mail_check": bool(flags[1]), "holds_mail": bool(flags[2]), "wide": bool(flags[3])}  # who, where, what it can do, what it wants
     if frame_type == FRAME_TYPE_ANSWER:  # an answer to a beacon
-        rest = bits[2 * CALL_BITS:]  # what follows the two callsigns
-        return {"dest": bits_to_call(bits[:CALL_BITS]), "origin": bits_to_call(bits[CALL_BITS:2 * CALL_BITS]), "report": unpack_report(rest[:REPORT_BITS]),  # (continued)
+        grid = answer_bits_grid(bits[2 * CALL_BITS:2 * CALL_BITS + GRID_BITS])  # the sender's locator, after the two callsigns
+        rest = bits[2 * CALL_BITS + GRID_BITS:]  # what follows the callsigns and the locator
+        return {"dest": bits_to_call(bits[:CALL_BITS]), "origin": bits_to_call(bits[CALL_BITS:2 * CALL_BITS]), "grid": grid, "report": unpack_report(rest[:REPORT_BITS]),  # (continued)
                 "levels": bits_to_levels(rest[REPORT_BITS:REPORT_BITS + LEVEL_MASK_BITS]), "mail_check": bool(rest[REPORT_BITS + LEVEL_MASK_BITS]),  # (continued)
                 "directed": bool(rest[REPORT_BITS + LEVEL_MASK_BITS + 1])}  # who to whom, the report, the levels, the two flags
     if frame_type == FRAME_TYPE_ACK:  # an acknowledgment
@@ -190,7 +202,7 @@ def _named(frame_type, f):  # the library's fields -> the same named fields unpa
         return {"origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "levels": levels,  # (continued)
                 "listening": bool(f.listening), "mail_check": bool(f.mail_check), "holds_mail": bool(f.holds_mail), "wide": bool(f.wide)}  # who, where, what it can do, what it wants
     if frame_type == FRAME_TYPE_ANSWER:  # an answer
-        return {"dest": f.dest.decode("ascii"), "origin": f.origin.decode("ascii"), "report": report, "levels": levels,  # (continued)
+        return {"dest": f.dest.decode("ascii"), "origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "report": report, "levels": levels,  # (continued)
                 "mail_check": bool(f.mail_check), "directed": bool(f.directed)}  # who to whom, the report, the levels, the two flags
     if frame_type == FRAME_TYPE_ACK:  # an acknowledgment
         return {"link": f.link, "msg_id": f.msg_id, "part": f.part, "status": f.status, "report": report}  # which frame, the verdict, the report

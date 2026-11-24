@@ -52,7 +52,7 @@ Since library interface 7 the listener's audio store, its stream numbers and its
 
 `AudioOut.abort()` cuts the transmission being played short (the panel's Stop calling key); `play()` returns within a fiftieth of a second and the runner takes the transmitter off. `bands.band_of(dial_khz)` names the amateur band of a dial frequency ("20m"), for the panel's Band columns.
 
-`signallog.Guarded(log, say)` wraps a SignalLog so that a fault inside it is reported once (with a `signal_log_fault_...txt` file beside the log) and the station carries on; the panel uses it. (On 22 Nov 2026 a long-beacon candidate, traced at level 7, made the log index the five speed levels and stopped the station with "tuple index out of range"; fixed, and guarded against.)
+`signallog.Guarded(log, say)` wraps a SignalLog so that a fault inside it is reported once (with a `signal_log_fault_...txt` file beside the log) and the station carries on; the panel uses it. (On November 22, 2026 a long-beacon candidate, traced at level 7, made the log index the five speed levels and stopped the station with "tuple index out of range"; fixed, and guarded against.)
 
 ## Rig control
 
@@ -98,7 +98,7 @@ python tools/live_station.py --call Q1AAAA --grid EM92 --beacon --in <cable 2 ou
 
 Batch files or shell scripts that name your callsign, sound devices and serial port belong in a folder called `local/` at the top of the repository. Git ignores that folder, so station details never reach the public repository.
 
-## What the first live test showed (18 November 2026)
+## What the first live test showed (November 18, 2026)
 
 Two copies of `live_station.py` on one PC, joined by two virtual audio cables, made a complete contact in real time: beacon, answer, lock, two messages one way and one the other, and the closing identifications, in 2 minutes 17 seconds. Nothing was lost.
 
@@ -117,6 +117,6 @@ Five lessons from testing; the first four are now built in:
 
 ## Not done yet
 
-- **Messages between real radios, and a real distance.** Two radios in one room have locked at L4 and closed properly (18 November 2026), but no text was sent, and nothing has been tried over a path with real noise and fading.
+- **Messages between real radios, and a real distance.** Two radios in one room have locked at L4 and closed properly (November 18, 2026), but no text was sent, and nothing has been tried over a path with real noise and fading.
 - **Hearing while transmitting.** The station ignores its input while it transmits, and for the moment after.
 - **Timing on a busy computer.** The station allows 10 seconds beyond a reply's own length before deciding it was lost.

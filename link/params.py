@@ -7,8 +7,8 @@ tuned once Kestrel is tested on the air.
 TURNAROUND_S = 1.0  # pause between hearing a frame and transmitting the reply, in seconds
 REPLY_MARGIN_S = 3.0  # extra time a station waits for a reply beyond the reply's own length
 BEACON_TRIES = 5  # beacons sent without an answer before the station gives up
-REPLY_SLOT_S = 42.0  # length of one reply slot after an L0 beacon: an answer at L0 (39.6 s) plus a short gap
-REPLY_SLOT_GAP_S = 2.4  # the gap: a reply slot is an answer at the beacon's level plus this (42 s at L0, 11.3 s at L2)
+REPLY_SLOT_S = 44.8  # length of one reply slot after an L0 beacon: an answer at L0 (42.4 s since 0.33) plus a short gap
+REPLY_SLOT_GAP_S = 2.4  # the gap: a reply slot is an answer at the beacon's level plus this (44.8 s at L0, 11.9 s at L2)
 CALLUP_LEVEL = 2  # a call-up (beacon or directed call) is tried first at this level; if it brings no reply, it is sent again at L0
 EXPECT_S = 300.0  # a station that just beaconed, or just called a station, accepts a directed call (from anyone after a beacon, from that station after a call) for this long, even when it does not answer calls by itself
 HEARD_FOR_CALL_S = 600.0  # a directed call carries the caller's reading of the called station if it heard that station within this many seconds
