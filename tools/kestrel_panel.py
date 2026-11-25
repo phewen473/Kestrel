@@ -619,7 +619,7 @@ class Panel:  # the control panel window
         Tooltip(send, "Send (Enter): to the station in To, in the contact; to ALL as a broadcast (F11); or as a long note when As says so. Shift+Enter starts a new line.")  # help
         self.tabs = ttk.Notebook(lists)  # the lists, as tabs on one card (since 0.41)
         lists.add(self.tabs, weight=2)  # on the right, wider
-        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "Signal", 58), ("time", "Heard (local)", 110), ("text", "Sending", 90), ("mail", "Status", 150), ("utc", "UTC", 56)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
+        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "SNR", 44), ("time", "Heard", 96), ("text", "Sending", 64), ("mail", "Status", 96), ("utc", "UTC", 48)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
         self.received = self._list(self.tabs, 1, "Received", (("time", "Received (local)", 110), ("who", "From", 110), ("text", "Message", 260), ("utc", "UTC", 56)))  # incoming messages and broadcasts
         self.to_send = self._list(self.tabs, 2, "To send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 190), ("utc", "UTC", 64)))  # outgoing messages, who each is for, and how far each has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
@@ -643,7 +643,7 @@ class Panel:  # the control panel window
         ttk.Button(keep, text="Save", command=self.save_contact).pack(side="left")  # keep the selected callsign for later
         ttk.Button(keep, text="Remove", command=self.remove_from_list).pack(side="left", padx=2)  # off this list; a contact record is kept (since 0.39; was Remove contact)
         ttk.Button(keep, text="Contacts", command=self.contacts_window).pack(side="left", padx=2)  # the contact records: view, search, change, delete (since 0.39)
-        ttk.Button(keep, text="48 hours", command=self.heard_window).pack(side="left", padx=2)  # the longer record
+        ttk.Button(keep, text="48 h", command=self.heard_window).pack(side="left", padx=2)  # the longer record (shorter label so it fits at 1024 wide, since 0.42)
         self.stations.bind("<Double-1>", lambda event: self.station_detail_window())  # a double-click opens a window with everything shown about the station, in full (since 0.40; its Contact record button opens the record, as a double-click did before)
         self.received.bind("<Double-1>", lambda event: self.message_detail_window())  # a double-click opens the message in a window of its own, to read in full (since 0.40)
         self.station_menu = tk.Menu(root, tearoff=False)  # the menu a right click on a station brings up
@@ -1491,7 +1491,7 @@ class Panel:  # the control panel window
     def _meters(self, parent):  # the receive and transmit level meters, each with its slider
         self.levels_frame = frame = ttk.LabelFrame(parent, text="Levels")  # the box around them
         parent.add(frame, weight=0)  # on the right, keeping its own width when the window grows
-        self.meter_h, self.meter_w = 150, 30  # the size of each meter
+        self.meter_h, self.meter_w = 118, 30  # the size of each meter (shorter since 0.42, so the help under them fits at 768 high)
         self.rx_meter = self._meter(frame, 0, "Receive\n(radio to PC)")  # the receive meter
         self.tx_meter = self._meter(frame, 2, "Transmit\n(PC to radio)")  # the transmit meter
         self.rx_value = tk.DoubleVar(value=0.5)  # the receive slider's position
@@ -1506,7 +1506,7 @@ class Panel:  # the control panel window
         self.rx_text.grid(row=2, column=0, columnspan=2, pady=(2, 0))  # under the receive meter
         self.tx_text = ttk.Label(frame, text="", font="KestrelSmall", justify="center", width=14, anchor="center")  # the transmit readings in words
         self.tx_text.grid(row=2, column=2, columnspan=2, pady=(2, 0))  # under the transmit meter
-        ttk.Label(frame, text="Aim for the green band.\nRed or CLIP: lower the\nradio's USB audio output.", font="KestrelSmall", justify="center").grid(row=3, column=0, columnspan=4, pady=(4, 4))  # how to use them
+        ttk.Label(frame, text="Aim for the green band.\nRed or CLIP: lower the\nradio's USB audio.", font="KestrelSmall", justify="center").grid(row=3, column=0, columnspan=4, pady=(4, 4))  # how to use them
         self.find_rx_level()  # find Windows' level control for the receive device
 
     def _meter(self, frame, column, title):  # one vertical meter, scaled -60 to 0 dBFS
