@@ -9,6 +9,14 @@ to 1, and its other 65 bits are laid out as one of three kinds:
     note header  kind 0 (2) | origin callsign (48) | destination code (12) | text frames - 1 (3)
     note text    kind 1 (2) | origin code (12) | part 0-7 (3) | 8 characters of 6 bits (48)
     receipt      kind 2 (2) | origin callsign, the receiving station (48) | destination code, the note's sender (12) | spare (3)
+    long call-up kind 3 (2) | origin callsign (48) | destination code (12) | phase (2) | traffic waiting (1)   (since signal 0.41)
+
+A long call-up is a directed call, its answer, or an "operator away" reply,
+sent as a long frame so that two stations can make contact on a fading path
+too weak for the short levels (which need about -8 dB when the signal fades;
+the long frame reads down to about -22 dB). Phase 0 is a call, 1 an answer
+(the called station accepts), 2 "not available"; phase 3 is not used. The
+traffic bit says the caller has a message waiting for the called station.
 
 A code is 12 bits standing for a callsign (the low 12 bits of the CRC-16
 of its 48 address bits; 0 is kept for ALL). A note is a header and one to
@@ -38,7 +46,9 @@ MOST_PARTS = 8  # text frames in a note at most (4 before 0.39)
 MOST_CHARS = CHARS * MOST_PARTS  # the longest note: 64 characters (28 before 0.39)
 CHARSET = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,?!'\"/:;-+=()@#&*%$<>_[]^|"  # the 64 characters a note can carry, in code order (space is 0, so padding is spaces)
 assert len(CHARSET) == 1 << CHAR_BITS and len(set(CHARSET)) == len(CHARSET)  # exactly 64, all different
-HEADER, TEXT, RECEIPT = 0, 1, 2  # the three kinds (3 is not used)
+HEADER, TEXT, RECEIPT, CALLUP = 0, 1, 2, 3  # the four kinds (CALLUP since signal 0.41; before that 3 was not used)
+PHASE_BITS = 2  # bits of a long call-up's phase (since 0.41)
+PHASES = ("call", "answer", "away")  # a long call-up's phases in code order: a call, the called station's answer, its "operator not available" reply (since 0.41)
 FIELD_BITS = 65  # the field bits a note frame uses (the 66th, the long beacon's spare, is 1)
 ALL_CODE = 0  # the code that means every station
 
@@ -95,7 +105,12 @@ def unpack(bits):  # 65 field bits -> a dict, or raise ValueError
         if any(rest[60:]):  # the spare bits must be 0
             raise ValueError("spare bits set")  # noise
         return {"note": "receipt", "origin": bits_to_call(rest[:48]), "dest_code": bits_to_int(rest[48:60]), "long": True}  # who received it, and whose note it was
-    raise ValueError("unused note kind")  # kind 3 is not sent
+    if kind == CALLUP:  # a long call-up (since 0.41)
+        phase = bits_to_int(rest[60:60 + PHASE_BITS])  # call, answer or away
+        if phase >= len(PHASES):  # phase 3 is not sent
+            raise ValueError("unused call-up phase")  # noise
+        return {"note": "callup", "origin": bits_to_call(rest[:48]), "dest_code": bits_to_int(rest[48:60]), "phase": PHASES[phase], "traffic": bool(rest[60 + PHASE_BITS]), "long": True}  # who calls (or answers), whom, which phase, and whether traffic waits
+    raise ValueError("unused note kind")  # every kind is covered above; kept for safety
 
 
 def note_fields(origin, dest, text):  # a whole note -> the field bits of each of its frames
@@ -121,3 +136,19 @@ def build_receipt(origin, dest):  # a receipt -> audio
     """Return the audio of a receipt from `origin` for a note sent by `dest`, about a minute long."""
     from .longbeacon import build_from_fields  # the long beacon's transmitter
     return build_from_fields(np.concatenate([pack_receipt(origin, dest), np.ones(1, dtype=np.uint8)]))  # its 65 bits, the note flag, then the long beacon's frame
+
+
+def pack_callup(origin, dest, phase, traffic=False):  # a long call-up -> 65 bits (since 0.41)
+    """Return the field bits of a long call-up from `origin` to `dest` (a callsign): `phase` is "call", "answer" or "away"; `traffic` says a message waits for `dest`."""
+    if phase not in PHASES:  # not one of the three
+        raise ValueError(f"a long call-up's phase is one of {PHASES}")  # refuse
+    if clean_call(dest) == "ALL":  # a call-up names one station
+        raise ValueError("a long call-up is to one station, not ALL")  # refuse
+    return np.concatenate([int_to_bits(CALLUP, KIND_BITS), call_to_bits(origin), int_to_bits(code_for(dest), CODE_BITS),  # kind, origin, destination code
+                           int_to_bits(PHASES.index(phase), PHASE_BITS), np.array([1 if traffic else 0], dtype=np.uint8)])  # phase and the traffic bit (65 bits in all)
+
+
+def build_callup(origin, dest, phase, traffic=False):  # a long call-up -> audio (since 0.41)
+    """Return the audio of a long call-up (see pack_callup), about a minute long."""
+    from .longbeacon import build_from_fields  # the long beacon's transmitter
+    return build_from_fields(np.concatenate([pack_callup(origin, dest, phase, traffic), np.ones(1, dtype=np.uint8)]))  # its 65 bits, the note flag, then the long beacon's frame

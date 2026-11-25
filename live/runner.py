@@ -8,13 +8,14 @@ and a sound-card output. Nothing in the link rules knows the difference.
 import re  # finds callsigns and levels in log lines
 import time  # the real clock
 
-from link.params import TURNAROUND_S  # pause between hearing a frame and replying
+from link.params import LONG_AFTER_CALLS, TURNAROUND_S  # short calls before a long call, to a station heard only in long frames (since 0.41); pause between hearing a frame and replying
 from modem.levels import level_name  # L0 to L4, or LB
 from modem.powersteps import SECONDS as POWER_STEPS_S  # how long the power steps before a beacon last (since 0.38)
 from modem.params import CONTROL_BITS, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, and the long beacon's frame type and level number
 
 from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener, likely_kestrel  # the continuous receiver, and its test for a near miss that is likely a real Kestrel frame
+from .notes import note_pieces  # a message cut into long notes (since 0.41)
 
 KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon", 7: "mail notice"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
@@ -27,6 +28,20 @@ def status_for(line):  # the station's state, as far as one log line shows it
     operator can see at a glance whether the station is listening, calling,
     locked with a partner or finished.
     """
+    found = re.search(r"long contact made with (\S+):", line)  # a long contact (since 0.41)
+    if found:  # yes
+        return f"LOCKED with {found.group(1)}  -  long frames (traffic as long notes)", "dark green"  # locked, the slow sure way
+    found = re.search(r"calling (\S+) with long frames|no answer from (\S+) to the long call", line)  # a long call under way (since 0.41)
+    if found:  # yes
+        return f"CALLING {found.group(1) or found.group(2)} with long frames  -  about a minute each", "dark blue"  # say who
+    found = re.search(r"long call from (\S+): answering", line)  # answering a long call (since 0.41)
+    if found:  # yes
+        return f"ANSWERING {found.group(1)} with a long frame", "dark blue"  # say who
+    found = re.search(r"NO CONTACT: (\S+) did not answer", line)  # the long calls went unanswered (since 0.41)
+    if found:  # yes
+        return f"NO ANSWER from {found.group(1)} (long calls)", "black"  # nobody there
+    if "long contact with" in line and "ended" in line:  # a long contact lapsed (since 0.41)
+        return "LONG CONTACT ENDED", "black"  # finished
     found = re.search(r"locked with (\S+); told to send at L(\d)(?:, asking for L(\d))?", line)  # the lock was made
     if found:  # yes
         receive = f", receiving at L{found.group(3)}" if found.group(3) else ""  # the level asked of the partner, when the line gives it
@@ -130,12 +145,59 @@ def note_line(event):  # one line about a long note's progress (since 0.34)
     if kind == "received":  # a note arrived
         origin, dest, text = rest  # from whom, to whom, what
         return f"long note received from {origin}" + (" to ALL" if dest == "ALL" else "") + f": {text}"  # with its text (it is for this station or for everyone)
+    if kind == "link":  # a long call-up's progress (since 0.41)
+        return rest[1]  # its words
+    if kind == "locked":  # a long contact was made (since 0.41)
+        return f"long contact made with {rest[0]}: traffic goes as long notes (about a minute a frame)"  # say so (status_for shows LOCKED)
+    if kind == "moved":  # a waiting message handed over as long notes (since 0.41)
+        partner, _to, text, pieces = rest  # to whom, the old address, the text, and the notes it became
+        return f"message for {partner} goes as {len(pieces)} long note(s): {text}"  # say so
     dest, text, tries = rest  # to whom, what, and how many tries
     words = {"delivered": f"long note to {dest} delivered (receipt received; {tries} tr{'y' if tries == 1 else 'ies'})",  # (continued)
              "resending": f"no receipt from {dest} for the long note; sending it again (try {tries}; copies are added together at the other end)",  # (continued)
              "failed": f"long note to {dest} NOT delivered: no receipt after {tries} tries",  # (continued)
              "sent": f"long note sent to {dest}"}  # what each event says
     return words.get(kind, f"long note: {event}")  # the line
+
+
+def has_traffic_for(station, call):  # is a message waiting for a station? (since 0.41)
+    """Return True if `station` has a waiting message for `call` or for whoever its partner is (works for the compiled station too)."""
+    return any(to is None or to == call for to in (station.outbox_to or []))  # an address that fits
+
+
+def short_calls_failing(station, notes, now):  # stop short calls early? (since 0.41)
+    """Return the callsign being called when the short calls should give way to a long call now, else None.
+
+    That is when this station is making a directed call, has sent at least
+    LONG_AFTER_CALLS of them (L2, then L0), the wait for the last one's reply
+    is over, and the called station has lately been heard only in long frames
+    (on a fading path the short levels need about -8 dB; the long frame reads
+    down to about -22 dB). A waiting broadcast or long beacon keeps the
+    short calls going (stopping them would drop those frames too).
+    """
+    if station.role != "caller" or station.pending != "confirm" or (station.calls or 0) < LONG_AFTER_CALLS:  # not calling, or not yet tried enough
+        return None  # carry on
+    if now <= (station.deadline or 0.0):  # still waiting for a reply to the last call
+        return None  # carry on
+    target = station.target  # the station being called
+    if not target or not notes.heard_recently(target, now) or station.broadcasts or station.long_waiting is not None:  # not heard in long frames lately, or frames that a stop would drop
+        return None  # the short calls run their course
+    return target  # give way to a long call
+
+
+def hand_to_notes(station, notes, partner, now):  # a long contact was made: send waiting messages as long notes (since 0.41)
+    """Take `station`'s waiting messages for `partner` (or for whoever its partner is) out of its outbox and queue them as long notes; return ("moved", ...) events."""
+    events = []  # what was handed over
+    for text, to in list(zip(station.outbox or [], station.outbox_to or [])):  # each waiting message, oldest first
+        if to not in (None, partner):  # for another station
+            continue  # stays where it is
+        pieces = note_pieces(text)  # the long notes it becomes (64 characters each, capitals)
+        if not pieces or not station.unqueue(text, to):  # nothing a note can carry, or already under way
+            continue  # left alone
+        for piece in pieces:  # each piece
+            notes.queue(partner, piece, now)  # a long note to the partner
+        events.append(("moved", partner, to, text, pieces))  # for the operator and the panel's list
+    return events  # what happened
 
 
 LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states of a contact in progress
@@ -306,6 +368,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     told = 0  # how many lines of the station's own log have been passed on
     last_sent = [-1e9]  # when this station's last transmission ended (in a list so the inner function can change it)
     lost = 0  # how many times the sound card has reported losing audio, as of the last look
+    gave_up = [None]  # a callsign the short calls just failed to reach, for a long call to follow (in a list so the loop can change it; since 0.41)
 
     def now():  # seconds since the start
         return time.monotonic() - started  # the station's clock
@@ -360,7 +423,9 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             if on_heard is not None and result.ok:  # somebody was heard clearly
                 on_heard(result)  # let the caller note who
             if notes is not None and result.ok and (result.fields or {}).get("note"):  # a long-note frame (since 0.34)
-                notes.heard(result.fields, now())  # put it with the rest of its note, or take the receipt
+                notes.heard(result.fields, now())  # put it with the rest of its note, or take the receipt (or, since 0.41, a long call-up)
+            elif notes is not None and result.ok and result.frame_type == FRAME_TYPE_LONG:  # a long beacon (since 0.41)
+                notes.saw((result.fields or {}).get("origin", ""), now())  # its sender is reachable with long frames
             reply = station.handle(result, now())  # what the link rules say to do
             if reply is not None:  # something to send
                 time.sleep(TURNAROUND_S)  # give the other station time to switch to receive
@@ -380,6 +445,16 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         if tx is not None:  # yes
             transmit(tx)  # send it
         if notes is not None:  # long notes (since 0.34)
+            notes.available = bool(getattr(station, "available", True))  # a long call is answered only while the operator takes contacts (since 0.41)
+            target = short_calls_failing(station, notes, now())  # a station the short calls are not reaching, but heard lately in long frames (since 0.41)
+            if target:  # yes: stop the short calls early...
+                station.cancel(now())  # the station goes back to listening (its log says the calls were stopped)
+                stamp(f"short calls to {target} stopped after {LONG_AFTER_CALLS}: {target} is heard only in long frames")  # why
+                gave_up[0] = target  # ...and call it with long frames below
+            if gave_up[0]:  # short calls to a station went unanswered (since 0.41)
+                target, gave_up[0] = gave_up[0], None  # taken
+                if notes.calling is None and notes.heard_recently(target, now()):  # no long call under way, and that station has been heard in long frames lately
+                    notes.long_call(target, now(), traffic=has_traffic_for(station, target))  # call it with long frames
             notes.tick(now())  # resend notes whose receipt has not come
             free = station.state == "IDLE" and getattr(station, "pending", None) is None  # no contact under way and nothing awaited
             due = notes.due(now()) if free else None  # "receipt", "note" or None
@@ -391,12 +466,17 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                     notes.on_air(what, number, len(frames))  # which frame is going, for the progress shown
                     transmit(frame)  # send it
                 notes.sent(what, now())  # wait for the receipt, or report a note to ALL sent
+            for event in [e for e in notes.events if e[0] == "locked"]:  # a long contact was made (since 0.41)
+                notes.events.extend(hand_to_notes(station, notes, event[1], now()))  # this station's waiting messages for the partner go as long notes
             for event in notes.events:  # what happened
                 stamp(note_line(event))  # tell the operator
                 if on_note is not None:  # someone keeps a record
                     on_note(event)  # pass it on
             notes.events.clear()  # told
         for line in station.log[told:]:  # the station's own notes since last time
+            found = re.search(r"no answer from (\S+)", line)  # short calls given up (since 0.41)
+            if found:  # yes
+                gave_up[0] = found.group(1)  # a long call may follow, next time round
             say("          " + line)  # pass them on
             if logging:  # a signal log is kept
                 signal_log.link(line)  # keep them there too

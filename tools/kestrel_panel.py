@@ -2666,6 +2666,20 @@ class Panel:  # the control panel window
                 self.received.yview_moveto(1.0)  # keep it in view
                 self.root.bell()  # a sound, as for other messages
                 continue  # next event
+            if kind in ("link", "locked"):  # a long call-up's progress or a long contact made (since 0.41): already in the Activity log and the status band
+                if kind == "locked":  # a contact made
+                    self.root.bell()  # a sound, so the operator knows
+                continue  # next event
+            if kind == "moved":  # a waiting message now goes as long notes (since 0.41)
+                partner, to, text, pieces = rest  # to whom, its old address, its text, the notes it became
+                for row in self.to_send.get_children():  # find its row in Messages to send
+                    values = self.to_send.item(row, "values")  # time, to, band, text, state
+                    if len(values) >= 5 and values[3] == text and values[1] in (to or "partner", partner, "partner") and not str(values[4]).startswith(("delivered", "sent", "long note")):  # this message, still waiting
+                        self.to_send.set(row, "state", f"long note: waiting ({len(pieces)} note{'s' if len(pieces) > 1 else ''})")  # say what happens to it now
+                        for piece in pieces:  # each note it became
+                            self.note_rows[(partner, piece)] = row  # its progress shows on this row
+                        break  # one row
+                continue  # next event
             dest, text, tries = rest  # the note's address, text and tries so far
             row = self.note_rows.get((dest, text))  # its row in Messages to send
             words = {"delivered": f"long note: DELIVERED (try {tries}/{LONG_NOTE_TRIES})", "failed": f"long note: NOT delivered ({tries} tries)", "sent": "long note: sent to ALL"}.get(kind)  # its final state (progress while under way comes from status above)

@@ -35,6 +35,7 @@ MOVE_SETTLE_S = 3.0  # after a move is agreed, the proposing station waits this 
 MOVE_TRIES = 2  # times a move is proposed without a reply before the proposer goes to the working frequency anyway to look for its partner
 MOVE_WAIT_S = 150.0  # a station that has moved and hears nothing from its partner on the working frequency for this long gives up the lock
 CALL_TRIES = 5  # times a directed call is sent without a reply before the calling station gives up
+LONG_AFTER_CALLS = 2  # when the called station has lately been heard only in long frames, short calls given up after this many (L2, then L0), so a long call can follow sooner (since 0.41)
 BROADCAST_LEVEL = 0  # the speed level a broadcast to everyone is sent at unless the operator chooses another (the slowest reaches the furthest)
 BROADCAST_LIFE_HOURS = 2  # lifetime written into a broadcast frame (it is not forwarded, so the shortest value is used)
 WORKING_IDLE_S = 180.0  # on a working frequency, a contact with no message traffic for this long is closed and both stations return to the calling frequency
