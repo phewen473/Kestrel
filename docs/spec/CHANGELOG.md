@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.41 (draft) - November 25, 2026
+
+- **Signal version 0.41: the long call-up (Section 6.18).** The long-note frame's kind 3, unused before, carries a directed call, its answer, or a "not available" reply, in a long frame of about a minute, read down to about -22 dB. On November 24 the partner was measured at -11 to -14 dB on a fading path: long beacons decoded all night, short calls almost never (the short levels need about -8 dB when the signal fades). Short calls to a station heard only in long frames now stop after two (L2, then L0) and a long call follows; after five unanswered short calls a long call follows too if the station was heard in long frames within the hour. Once a long contact is made, waiting messages go as long notes. Stations following 0.40 or earlier read a long call-up as noise.
+- **Idle timeout, Keep-Alive and the 10-second warning (Section 6.19, reference program).** A contact with no messages for 3 minutes ends (on the calling frequency too); both operators are warned 10 seconds before, with Keep going and Disconnect (replacing the one-minute notice to the station that proposed a move). Keep-Alive, a setting that replaces Keep contact open, adds 3 minutes on a working channel only, once.
+- **Sound output (reference program).** One output stream stays open for the whole run instead of a new one for every transmission; opening and closing streams on a USB radio sound card is the likely cause of the received audio lost while transmitting (up to 5.9 s in 90 minutes). The signal log's clock line now separates audio lost while sending from audio lost while receiving.
+- **Panel.** A new layout that fits 1024x768: a status band and a contact bar (partner, how each side hears the other, speed, traffic, the idle countdown); one toolbar; a message panel with a multi-line box, a character countdown and one Send button (To can be ALL; As chooses a normal message or a long note); the lists as tabs with counts, each time shown in local time with a UTC column; a shorter transmit scope; the Activity log in a window of its own (View > Activity window, Ctrl+Shift+A; warnings open it), with its newest line at the bottom of the main window; hover help on every control, with the shortcut keys named there; shorter frequency labels.
+- Tests: tests/test_longcall.py, tests/test_idle.py, and the output stream in tests/test_panel_parts.py.
+
 ## 0.40R3 (draft) - November 25, 2026
 
 - Nothing sent changed (signal version stays 0.40); reference program only. Found in a review of the 0.40R2 fix.

@@ -16,6 +16,7 @@ from modem.params import CONTROL_BITS, FRAME_TYPE_LONG, LONG_LEVEL  # which fram
 from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener, likely_kestrel  # the continuous receiver, and its test for a near miss that is likely a real Kestrel frame
 from .notes import note_pieces  # a message cut into long notes (since 0.41)
+from .idle import IDLE_S, KEEPALIVE_TEXT  # the contact's idle limit, and Keep-Alive's message (since 0.41)
 
 KIND = {0: "message", 1: "addressed message", 2: "beacon", 3: "answer", 4: "acknowledgment", 5: "identification", 6: "long beacon", 7: "mail notice"}  # frame type -> plain name
 LIVE_REPLY_MARGIN_S = 10.0  # extra time a live station waits for a reply: the receiver looks through its audio once a second, and sound cards add delay
@@ -293,7 +294,7 @@ def log_tick(signal_log, source):  # the signal log's regular lines
     signal_log.tick(level=level, lost=getattr(source, "lost", None))  # the log decides whether a line is due
 
 
-def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None, notes=None, on_note=None, on_progress=None):  # the live loop
+def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=False, should_stop=None, retune=None, on_heard=None, on_frame=None, on_transmit=None, on_tick=None, on_near=None, signal_log=None, dial_khz=None, listen_first=True, expect=None, notes=None, on_note=None, on_progress=None, idle=None, on_idle=None):  # the live loop (idle and on_idle since 0.41: the contact's idle timeout, Keep-Alive and the 10-second warning; see live/idle.py)
     """Run `station` until its contact ends (or for ever with `stay_on`), or until `limit_s` seconds pass.
 
     `source` has read() and flush() (see audio.AudioIn), `sink` has
@@ -369,6 +370,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     last_sent = [-1e9]  # when this station's last transmission ended (in a list so the inner function can change it)
     lost = 0  # how many times the sound card has reported losing audio, as of the last look
     gave_up = [None]  # a callsign the short calls just failed to reach, for a long call to follow (in a list so the loop can change it; since 0.41)
+    inbox_seen = [0]  # how many received messages the idle watch has looked at (since 0.41)
 
     def now():  # seconds since the start
         return time.monotonic() - started  # the station's clock
@@ -441,6 +443,25 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         margin = LIVE_REPLY_MARGIN_S + (POWER_STEPS_S if getattr(station, "power_steps", False) else 0.0)  # replies to a beacon sent after its power steps come that much later than the link rules time them (since 0.38)
         if margin != margin_set[0]:  # changed (the operator may turn the steps on or off while running)
             station.reply_margin = margin_set[0] = margin  # allowed for
+        if idle is not None:  # the contact's idle timeout is watched here (since 0.41)
+            inbox = station.inbox or []  # complete messages received
+            if len(inbox) < inbox_seen[0]:  # the list was emptied (a new contact)
+                inbox_seen[0] = 0  # start again
+            for text in inbox[inbox_seen[0]:]:  # the new ones
+                if str(text).strip().upper() == KEEPALIVE_TEXT:  # the partner's Keep-Alive
+                    idle.keepalive_seen(now())  # it does not earn another extension here
+            inbox_seen[0] = len(inbox)  # looked at
+            action = idle.check(station, now())  # extend, warn, end, or nothing
+            if action is not None and action[0] == "extend":  # Keep-Alive: one short message restarts both stations' timers
+                station.queue(KEEPALIVE_TEXT, action[1])  # to the partner
+                stamp(f"Keep-Alive: {KEEPALIVE_TEXT} sent to {action[1]} (the working channel is held about 3 more minutes)")  # tell the operator
+            elif action is not None and action[0] == "warn":  # ten seconds to go
+                stamp(f"contact with {action[1]} ends in {action[2]:.0f} s for lack of traffic: Keep going or Disconnect")  # tell the operator
+                if on_idle is not None:  # the panel asks the operator
+                    on_idle(action[1], action[2])  # with Keep going and Disconnect
+            elif action is not None and action[0] == "end":  # the calling frequency's limit reached
+                stamp(f"no messages for {IDLE_S / 60:.0f} minutes; ending the contact with {action[1]}")  # tell the operator
+                station.end()  # close it properly, with identification
         tx = station.poll(now())  # anything to send without having heard something?
         if tx is not None:  # yes
             transmit(tx)  # send it
