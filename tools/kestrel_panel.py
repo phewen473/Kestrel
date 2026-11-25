@@ -151,6 +151,20 @@ def load_settings():  # read the remembered settings
     return settings  # the settings to use
 
 
+def unsent_messages(job):  # what a run that has ended still owes the queue (since 0.40R2)
+    """Return [(text, callsign or "")] for the messages a run took and did not send: those never handed to a station (job["messages"]) and those a station still holds (job["holder"]); both are cleared, so a second call returns nothing."""
+    back = []  # the messages to give back
+    holder = job.get("holder")  # the station that was handed the messages, if the run got that far and did not take them back itself
+    if holder is not None:  # it still holds some
+        try:  # the station may be in a bad way after a problem
+            back += [(left, to or "") for left, to in zip(list(holder.outbox), list(holder.outbox_to))]  # what it had not sent, each with its address
+        except Exception:  # noqa: BLE001 - it could not say
+            pass  # nothing more can be recovered from it
+    back += list(job.get("messages") or [])  # and any never handed to a station at all (the run failed before it had one)
+    job["holder"], job["messages"] = None, []  # given back once
+    return back  # for the panel's queue
+
+
 MACHINE_KEYS = ("audio_in", "audio_out", "rig", "port", "cat_port", "rigctld", "layout")  # settings that belong to one computer: its sound cards, ports, the rig program's place and the window layout (since 0.37)
 SETTINGS_KIND = "kestrel-settings"  # what an exported settings file says it is (since 0.37)
 
@@ -2076,6 +2090,9 @@ class Panel:  # the control panel window
             grid = self.contacts.get(station.partner, {}).get("grid", "") or (self.stations.set(self.heard_rows[station.partner], "grid") if station.partner in self.heard_rows else "")  # its grid locator, if known
             self.contact = {"call": station.partner, "start": time.time(), "end": time.time(), "dial_khz": self.dial_hz() / 1000.0, "grid": grid, "sent": 0, "received": 0, "best_level": 0, "snr": None}  # the contact so far
             self.logbook.write("contact start", direction="--", station=self.settings["call"], **{"from": self.settings["call"]}, to=station.partner, text=f"locked; role {station.role}", dial_khz=round(self.dial_hz() / 1000.0, 1), rig=self.rig_name(), power_w=self.power_w())  # the logbook
+            named, anyone = self.waiting_for(station.partner)  # the rows in Messages to send that could go in this contact
+            held = sum(1 for to in list(station.outbox_to) if to is None or to == station.partner)  # and what the station itself holds for this partner
+            self.say(f"locked with {station.partner}: {held} message(s) ready to send to it" + (f" (the list shows {named + anyone} waiting: the difference is a fault, please report it)" if named + anyone > held else ""))  # say what will go, and flag a list that disagrees with the station (since 0.40R2)
             self.send_antenna(station.partner)  # this station's antenna to the other, once (since 0.40)
         if in_contact:  # under way
             self.contact["end"] = time.time()  # it lasts at least until now
@@ -4237,6 +4254,7 @@ class Panel:  # the control panel window
                 watcher.mail, watcher.carries = self.mailroom, False  # it reads mail notices (a receipt for one of this station's messages still counts) but never holds mail
                 self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, watcher  # the received list follows it
                 self.outbox = job["messages"] + self.outbox  # messages wait for the next time Listen runs
+                job["messages"] = []  # given back (the tidy-up below must not give them back twice; since 0.40R2)
                 self.say("monitoring: receive only, nothing will be transmitted")  # opening line
                 while not self.stop.is_set():  # until stopped
                     for heard in feed_from(listener, source):  # every frame that has completed
@@ -4262,12 +4280,14 @@ class Panel:  # the control panel window
             station.carries = bool(job.get("carry_mail", True))  # whether it holds mail for other stations
             for text, to in job["messages"]:  # the queued messages
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
+            job["messages"], job["holder"] = [], station  # the station holds them now; if the run stops with a problem the tidy-up below takes them back from it (since 0.40R2)
             self.marked, self.shown, self.shown_b, self.tracked = 0, 0, 0, station  # the lists follow this station from its beginning
             self.station = station  # from here on, newly queued messages go straight to this station
             run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
                         signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event, on_progress=self.frames.update)  # the live loop, until stopped, with the signal log, the listen-first check and the callsigns it expects
             self.station = None  # the run is over; later messages wait for the next one
             self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
+            job["holder"] = None  # taken back (since 0.40R2)
             if rig is not None and station.offset_hz:  # the run was stopped while on a working frequency
                 rig.set_frequency(base_hz)  # put the radio back on the calling frequency
                 self.say("radio back on the calling frequency")  # confirm
@@ -4288,6 +4308,7 @@ class Panel:  # the control panel window
             self.mode = "off"  # nothing is running now
             self.root.after(0, lambda: self.mode_var.set("off"))  # show it (from the window's own thread)
         finally:  # always tidy up
+            self.outbox = unsent_messages(job) + self.outbox  # messages this run took and did not send go back in the queue, however it ended (before 0.40R2 a run that failed to start, or stopped with a problem, lost them while their rows still said "waiting")
             if self.signal_log is not None:  # a signal log was started
                 self.signal_log.session_end(mode=mode)  # close the run in it
                 self.signal_log = None  # no log until the next run

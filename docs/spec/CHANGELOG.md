@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.40R2 (draft) - November 24, 2026
+
+- Nothing sent changed (signal version stays 0.40); reference program only.
+- **Fix: queued messages that never went.** Starting Listen hands the queued messages to that run. A run that failed to start (rig control could not open the radio, a sound device missing) or stopped with a problem never gave them back: their rows stayed in Messages to send as "waiting", but no later run held them, so they were not sent when a contact with their station locked. Now every run gives back what it took and did not send, however it ends (tools/kestrel_panel.py unsent_messages). Messages already stranded this way in a running panel come back when the panel is closed and reopened (the saved queue is read again).
+- When a contact locks, the Activity log says how many messages are ready to go to that station, and says so if the list shows more waiting than the station holds.
+- Tests: tests/test_unsent.py.
+
 ## 0.40R1 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.40); reference program only.
