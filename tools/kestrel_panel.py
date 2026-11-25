@@ -57,6 +57,7 @@ from live import propagation, sunspots  # HF propagation predictions (ITU-R P.53
 from live import antennas  # the antenna types offered in Settings > Station (since 0.39R2)  # noqa: E402
 from live import power_hold  # holding the output power by the drive, and spotting a sag (since 0.40R1)  # noqa: E402
 from modem.control import beacon_rig, beacon_watts  # the rig type and watts as a beacon carries them (since 0.40)  # noqa: E402
+from live import chain  # chained messages: up to 1,000 characters in numbered pieces (since 0.42)  # noqa: E402
 from live import updates  # checking GitHub for a newer release, and installing it when asked (since 0.42)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
@@ -71,6 +72,7 @@ from modem.longbeacon import LONG  # the long beacon's tone length and spacing  
 from modem.longnote import CHARS as LONG_NOTE_FRAME_CHARS, MOST_CHARS as LONG_NOTE_CHARS, note_fields  # long notes: characters per frame, the most in a note, and the check that a note can be sent (since 0.34)  # noqa: E402
 from live.idle import IDLE_S, KEEP_GOING_TEXT, IdleWatch  # the contact's idle timeout, the warning's Keep going message, and the watcher (since 0.41)  # noqa: E402
 from live.notes import MOST_TRIES as LONG_NOTE_TRIES, LongNotes  # how many tries a long note gets, and sending long notes, receipts and resends, and putting received ones together (since 0.34)  # noqa: E402
+from modem.params import FRAME_TYPE_ACK, FRAME_TYPE_ANSWER  # the frames that carry the partner's report of this station (since 0.42)  # noqa: E402
 from modem.params import FRAME_TYPE_BEACON, LONG_LEVEL, M_TONES, SIGNAL_VERSION, SPEC_VERSION  # (the beacon's frame type, since 0.40) tones per frame, the signal's version and the document's version  # noqa: E402
 
 PROFILE = ""  # the name given with --profile, if any (set in main)
@@ -461,6 +463,7 @@ class Panel:  # the control panel window
         self.actions_lock = threading.Lock()  # the window adds requests while the station thread takes them
         self.outbox_lock = threading.Lock()  # one thread at a time may hand the message queue between the window and a running station (since 0.40R3)
         self.outbox = []  # messages queued while no station is running, as (text, callsign it is for or "")
+        self.held, self.joiner, self.chain_rows, self.move_offsets, self.move_ok, self.held_told = [], chain.Joiner(), {}, [], False, set()  # chained messages: pieces held for a working channel, the receiver's joiner, its rows, the working channels and whether the radio can move, what was said (since 0.42)
         self.shown_b = 0  # how many of the tracked station's received broadcasts are already in the list
         self.station = None  # the station that is running now, when there is one, so a message can be handed straight to it
         self.tracked = None  # the station whose messages the lists are following (kept after it stops, for a last look)
@@ -930,8 +933,8 @@ class Panel:  # the control panel window
         if self.send_as.get() == SEND_AS[1]:  # a long note
             words = f"{LONG_NOTE_CHARS - len(text.rstrip())} of {LONG_NOTE_CHARS} characters left in a long note"  # its own limit
         else:  # a normal message
-            parts = max(1, -(-len(text.rstrip()) // FRAME_CHARS))  # transmissions it takes, 200 characters each
-            words = f"{MESSAGE_MOST - len(text)} characters left  -  {parts} transmission{'s' if parts > 1 else ''}"  # what is left, and how many transmissions
+            parts = len(chain.split(text)) if chain.needs_chain(text.strip()) else 1  # messages it takes: one, or the pieces of a chained message (since 0.42)
+            words = f"{MESSAGE_MOST - len(text)} characters left  -  " + (f"{parts} parts, sent on a working channel" if parts > 1 else "1 message")  # what is left, and how it goes
         self.count_label.configure(text=words, foreground=self.colors["warn_fg"] if self.send_as.get() == SEND_AS[1] and len(text.rstrip()) > LONG_NOTE_CHARS else "")  # in the warning color when a long note is too long
 
     # ---- the scopes ----
@@ -2089,12 +2092,37 @@ class Panel:  # the control panel window
 
     def log_frame(self, result):  # every report from the receiver (called from the working thread), for the verbose log
         self.frames.station_result(result)  # the frame strip: a frame that passed with an earlier copy added, and the message's sender (since 0.37)
+        self.note_their_report(result)  # the partner's report of this station's signal, for the contact bar (since 0.42)
         if not self.logbook.wants("frame"):  # not logging at that level
             return  # nothing to do
         name = KIND.get(result.frame_type, "frame")  # the kind of frame
         rx = self.audio.level()[0] if self.audio is not None else None  # the input level
         self.logbook.write("frame", direction="RX", station=self.settings["call"], text=f"{name} {'decoded' if result.ok else 'failed: ' + str(result.reason)}", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=level_name(result.level), snr_db=result.snr_db, fade=result.fade_index, offset_hz=result.offset_hz, rig=self.rig_name(), rx_input_dbfs=rx, detail=describe(result))  # every detail
+
+    def note_their_report(self, result):  # keep the partner's report of how it hears this station (called from the working thread; since 0.42)
+        """Answers addressed to this station and acknowledgments inside a contact carry the other station's measurement of this
+        station's last frame (SNR, fading, the level it asks for); keep the newest, with the time and who sent it."""
+        fields = getattr(result, "fields", None) or {}  # the frame's control fields, if it is a control frame
+        report = fields.get("report") if result.ok else None  # its channel report
+        if report is None:  # not a frame that carries one
+            return  # nothing to keep
+        station = self.station  # the running station
+        own = self.settings["call"].strip().upper()  # this station's callsign
+        if result.frame_type == FRAME_TYPE_ANSWER and (fields.get("dest") or "").upper() == own:  # an answer or directed call to this station
+            sender = (fields.get("origin") or "").upper()  # who measured this station
+        elif result.frame_type == FRAME_TYPE_ACK and station is not None and station.partner and fields.get("link") == self.station_link(station):  # an acknowledgment inside this station's contact
+            sender = station.partner  # the partner measured this station
+        else:  # someone else's
+            return  # not about this station
+        self.their_report = (time.time(), sender, float(report.snr_db), float(report.fade_index), int(report.want_level))  # when, who, the SNR, the fading index, the level asked for
+
+    def station_link(self, station):  # the running contact's link number, or None (since 0.42)
+        """Return the station's link number; None if the station cannot say (it is read through the compiled library when in use)."""
+        try:  # the compiled station answers through its library
+            return station.link  # the short link number both stations put in their frames
+        except Exception:  # not available
+            return None  # unknown
 
     def note_near(self, result):  # a Kestrel signature heard but not readable (called from the working thread)
         self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
@@ -2295,7 +2323,22 @@ class Panel:  # the control panel window
                 self.shown_b += 1  # one more shown
             while self.shown < len(station.inbox):  # a message has arrived since the last look
                 text = station.inbox[self.shown]  # the message
-                self.received.insert("", "end", values=(time.strftime(HEARD_TIME), station.partner, text))  # add it to the received list
+                whole, so_far, got, expected = self.joiner.feed(station.partner, text)  # a piece of a chained message waits for the rest (since 0.42)
+                if expected > 1:  # a piece of a chained message
+                    shown = whole if whole is not None else f"{so_far}   [{got} of {expected} parts so far]"  # the message so far
+                    row = self.chain_rows.get(station.partner)  # its row, if it has one
+                    if row is not None and self.received.exists(row):  # it does
+                        self.received.set(row, "text", shown)  # brought up to date
+                    else:  # the first piece
+                        self.chain_rows[station.partner] = self.received.insert("", "end", values=(time.strftime(HEARD_TIME), station.partner, shown))  # a row of its own
+                    self.received.yview_moveto(1.0)  # keep the newest row in view
+                    if whole is None:  # more to come
+                        self.shown += 1  # this piece is accounted for
+                        continue  # the logbook gets the whole message once it is complete
+                    self.chain_rows.pop(station.partner, None)  # the chain is complete
+                    text = whole  # the whole message, for the logbook
+                else:  # an ordinary message
+                    self.received.insert("", "end", values=(time.strftime(HEARD_TIME), station.partner, text))  # add it to the received list
                 self.received.yview_moveto(1.0)  # keep the newest row in view
                 snr = station.history[-1][0] if station.history else None  # the latest reading of the partner's signal
                 if self.contact is not None:  # in a contact
@@ -2319,6 +2362,7 @@ class Panel:  # the control panel window
                     if spread == spread:  # read (not NaN)
                         heard += f", spread {spread:.1f} Hz"  # shown too
                 self.fill_contact_bar(station, heard)  # the contact bar (since 0.41; one line of text before)
+                self.release_held(station)  # chained messages for this partner go once on a working channel (since 0.42)
             else:  # not in a contact
                 self.fill_contact_bar(None, "")  # nothing to report
         self.follow_beacon()  # the repeating beacon's label, and its automatic stop
@@ -2336,7 +2380,12 @@ class Panel:  # the control panel window
             far = distance_bearing(self.settings["grid"], grid) if grid else None  # how far
             values["partner"] = f"{partner}  {grid}" + (f"  {far[0]:,.0f} mi" if far else "")  # who, where, how far
             values["you_hear"] = heard.replace("partner heard at ", "") if heard else "-"  # how this station hears the partner
-            values["they_hear"] = f"asks for L{station.tx_level}"  # the partner's report of this station shows in the level it asks for (an SNR figure needs the planned report in the signal)
+            report = getattr(self, "their_report", None)  # the partner's latest report of this station, if any (since 0.42)
+            if report is not None and report[1] == partner and time.time() - report[0] < 600:  # from this partner, within ten minutes
+                fade = report[3]  # its fading index (NaN when not measured)
+                values["they_hear"] = f"{report[2]:+.0f} dB, " + ("steady" if fade == fade and fade <= 0.15 else "fading") + f"  \u00b7  asks L{report[4]}"  # how the partner hears this station, from its own report
+            else:  # no report yet
+                values["they_hear"] = f"asks for L{station.tx_level}"  # the level it asks for says something until the first report arrives
             values["speed"] = f"L{station.tx_level} you  \u00b7  L{station.want} them"  # the two levels
             values["traffic"] = f"{len(station.outbox)} to send  \u00b7  {len(station.inbox)} in"  # the messages
             left = self.idle_watch.remaining if self.idle_watch is not None else None  # seconds before the contact ends with no messages
@@ -2649,11 +2698,16 @@ class Panel:  # the control panel window
 
     def queue_text(self, text, to):  # queue a message for a station (or for whoever the partner is)
         """Queue `text` for `to` (a callsign, or "" for the partner); return True if it was accepted."""
+        if to == "ALL" and chain.needs_chain(text):  # a long broadcast: it would need the calling frequency (since 0.42)
+            messagebox.showinfo("Kestrel", f"A broadcast to ALL can be at most {chain.PIECE_MOST} characters; this one has {len(text)}.\n\nLonger messages go only to one station, on a working channel.", parent=self.root)  # say so
+            return False  # refused
         if to == "ALL":  # ALL chosen in the To box: that is a broadcast, which nobody acknowledges
             return self.broadcast_text(text)  # sent as one, after the usual check
         if to and to == self.settings["call"].strip().upper():  # the message is addressed to this station itself
             messagebox.showinfo("Kestrel", f"{to} is this station's own callsign.\n\nPut the other station's callsign in the To box, or leave it blank to send to whoever the partner is.", parent=self.root)  # say so, and what to do
             return False  # refused
+        if chain.needs_chain(text):  # longer than one message: a chained message (since 0.42)
+            return self.queue_chain(text, to)  # held for a working channel
         self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", self.band_for(to), text, "waiting"))  # show it in the list
         self.to_send.yview_moveto(1.0)  # keep the newest row in view
         with self.outbox_lock:  # so a run that is starting or ending cannot miss this message (since 0.40R3)
@@ -2666,6 +2720,47 @@ class Panel:  # the control panel window
                 self.say(f"queued for the next contact{' with ' + to if to else ''}: {text}")  # confirm
         self.save_outbox()  # a waiting message is kept even if the panel is closed
         return True  # accepted
+
+    def queue_chain(self, text, to):  # a message longer than one frame (since 0.42)
+        """Cut `text` into numbered pieces and hold them until the contact with `to` is on a working channel; return True."""
+        if len(text) > chain.MOST:  # longer than a chained message may be
+            messagebox.showinfo("Kestrel", f"A message can be at most {chain.MOST} characters; this one has {len(text)}.", parent=self.root)  # say so
+            return False  # refused
+        pieces = chain.split(text)  # the pieces, each with its "(k/n) " prefix
+        for piece in pieces:  # one row each, so each piece's progress shows
+            self.to_send.insert("", "end", values=(time.strftime("%H:%M:%S"), to or "partner", self.band_for(to), piece, "waiting for a working channel"))  # in the list
+        self.to_send.yview_moveto(1.0)  # keep the newest row in view
+        self.held.append({"to": to, "pieces": pieces})  # held here until the contact is on a working channel
+        self.say(f"long message for {to or 'the partner'}: {len(pieces)} parts, sent once the contact is on a working channel")  # explain
+        self.save_outbox()  # kept if the panel is closed
+        return True  # accepted
+
+    def release_held(self, station):  # hand held pieces to the station when they may go (called with the window's own thread, since 0.42)
+        """Chained messages go only on a working channel: hand them over once there; on the calling frequency, ask for a move."""
+        if not self.held or station.state not in LOCKED or not station.partner:  # nothing held, or no contact
+            return  # nothing to do
+        for item in list(self.held):  # every held chain
+            if item["to"] and item["to"] != station.partner:  # for someone else
+                continue  # not now
+            if station.offset_hz:  # the contact is on a working channel
+                with self.outbox_lock:  # the same lock as every other hand-over
+                    for piece in item["pieces"]:  # in order
+                        station.queue(piece, to=item["to"] or None)  # into the station
+                        self._advance_held(piece)  # its row now says waiting
+                self.held.remove(item)  # handed over
+                self.say(f"long message: {len(item['pieces'])} parts handed over on the working channel")  # explain
+            elif self.move_ok and self.move_offsets and not station.moved and not station.move_to_hz:  # on the calling frequency, and a move is possible
+                station.move_to_hz = self.move_offsets[0]  # propose Channel 1 before any more traffic
+                self.say(f"long message waiting: proposing a move to a working channel ({self.move_offsets[0] / 1000.0:+.1f} kHz)")  # explain
+            elif not self.move_ok and station.partner not in self.held_told:  # the radio cannot be retuned
+                self.held_told.add(station.partner)  # say it once per partner
+                self.say(f"long message for {station.partner} waits: it goes only on a working channel, and changing frequency needs rig control (Settings > Radio)")  # explain
+
+    def _advance_held(self, piece):  # a held piece has been handed to the station (since 0.42)
+        for row in self.to_send.get_children():  # oldest first
+            if self.to_send.set(row, "text") == piece and self.to_send.set(row, "state") == "waiting for a working channel":  # this piece's row
+                self.to_send.set(row, "state", "waiting")  # it now waits in the station, like any message
+                return  # only that one
 
     def send_menu_at(self, event):  # a right click anywhere in the list of messages to send
         row = self.to_send.identify_row(event.y)  # the message under the pointer, if any
@@ -2812,6 +2907,13 @@ class Panel:  # the control panel window
                 notes = self.notes_for()  # this station's long notes
                 self.ask_station(lambda station, to=to, text=text: notes.cancel(to, text) or True, f"long note to {to} taken back: {text}")  # dropped in the station's own thread (a frame already on the air finishes)
                 self.note_rows.pop((to, text), None)  # no longer followed
+            if state == "waiting for a working channel":  # a piece of a chained message held here (since 0.42)
+                for item in self.held:  # the held chains
+                    if text in item["pieces"]:  # this piece's chain
+                        item["pieces"].remove(text)  # taken out
+                self.held = [item for item in self.held if item["pieces"]]  # chains with nothing left are dropped
+                self.say(f"removed: {text}")  # confirm
+                state = ""  # nothing more to take back
             if state.startswith("waiting"):  # not yet started (it may also be with carriers, who will still deliver their copies)
                 address = "" if to == "partner" else to  # the address as the queue holds it
                 if self.station is not None:  # a station is running and holds the queue
@@ -4526,8 +4628,11 @@ class Panel:  # the control panel window
         job["in"] = device_named(self.settings["audio_in"], "input") if self.settings["audio_in"] else None  # the input device, looked up by name at this moment
         job["out"] = device_named(self.settings["audio_out"], "output") if self.settings["audio_out"] else None  # the output device, likewise
         job["messages"], self.outbox = self.outbox, []  # the queued messages now belong to this run
+        self.held += [{"to": to, "pieces": [words]} for words, to in job["messages"] if chain.parse(words)]  # pieces of chained messages are held for a working channel (since 0.42)
+        job["messages"] = [(words, to) for words, to in job["messages"] if not chain.parse(words)]  # the rest go as usual
         offsets = working_offsets_hz(job["entry"])  # the working frequencies that go with the calling frequency
         job["move_hz"] = offsets[self.working.current() - 1] if self.working.current() > 0 else None  # the one chosen, or none
+        self.move_offsets = list(offsets)  # every working channel, for a chained message that needs one (since 0.42)
         return job  # ready for the working thread
 
     def run(self, mode, job):  # the working thread: runs the monitor or the listening station
@@ -4590,6 +4695,7 @@ class Panel:  # the control panel window
             station = Station(job["call"], job["grid"], close_when_done=False)  # the link rules for this station; since 0.41 a contact is held until End contact or the idle timeout (3 minutes, 6 with Keep-Alive on a working channel), which replaced Keep contact open
             self.idle_watch = IdleWatch(keep_alive=lambda: bool(self.settings.get("keep_alive")))  # the idle timeout, Keep-Alive (read from Settings each time) and the 10-second warning (since 0.41)
             station.move_to_hz = job["move_hz"] if rig is not None else None  # the working frequency to propose once locked (only when the radio can be retuned)
+            self.move_ok = rig is not None  # whether a chained message can ask for a working channel (since 0.42)
             base_hz = job["entry"]["dial_khz"] * 1000.0  # the calling frequency, in hertz
             retune = (lambda offset: rig.set_frequency(base_hz + offset)) if rig is not None else None  # how to move the radio to a working frequency and back
             station.listen()  # answers directed calls...
