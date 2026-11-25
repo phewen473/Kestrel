@@ -111,3 +111,11 @@ def test_helper_waits_installs_silently_and_restarts():  # the batch file
     assert 'Kestrel.exe" "--profile" "second"' in text  # starts again with the same profile
     lines = [line for line in text.split("\r\n") if line and not line.startswith(("@", "REM", ":", ")", "  REM"))]  # the working lines
     assert lines  # there are some
+
+
+def test_repository_read_from_the_notice_file(tmp_path):  # the project's address is written once, in NOTICE
+    notice = tmp_path / "NOTICE.txt"  # a credit file
+    notice.write_text("Kestrel\nhttps://github.com/example-owner/Kestrel\nmore text\n", encoding="utf-8")  # with a project address
+    assert updates.repository([str(tmp_path / "missing"), str(notice)]) == "example-owner/Kestrel"  # found in the second place
+    assert updates.repository([str(tmp_path / "missing")]) is None  # no file: unknown
+    assert updates.releases_page("example-owner/Kestrel").endswith("/example-owner/Kestrel/releases")  # the page built from it

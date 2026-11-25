@@ -19,9 +19,7 @@ import tempfile  # where the setup program is downloaded
 import time  # when the last check was
 import urllib.request  # talking to GitHub
 
-REPOSITORY = "phewen473/Kestrel"  # the public repository releases are published in
-RELEASES_URL = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=20"  # the newest releases, drafts excluded for anyone not signed in
-RELEASES_PAGE = f"https://github.com/{REPOSITORY}/releases"  # the page an operator can open in a browser
+NOTICE_ADDRESS = re.compile(r"https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)")  # the project's public address, as the NOTICE file gives it
 DAY_S = 24 * 3600  # one day, in seconds
 TIMEOUT_S = 15  # how long to wait for GitHub before giving up quietly
 CHECK_CHOICES = ("off", "startup", "daily")  # Settings > Updates > Check for updates
@@ -29,6 +27,36 @@ NOTIFY_CHOICES = ("all", "signal")  # Settings > Updates > Notify me about
 INSTALL_CHOICES = ("notify", "ask")  # Settings > Updates > When an update is found (automatic installing waits for release signing)
 SETUP_NAME = re.compile(r"^Kestrel-Setup-([0-9][0-9A-Za-z.]*)-[0-9a-f]{5,40}\.exe$")  # the setup program's file name: version and commit
 SIGNAL_WORDS = re.compile(r"signal(?:\s+version)?\s+v?([0-9]+\.[0-9]+)", re.IGNORECASE)  # "signal 0.41" or "Signal version 0.41" in a release's title or notes
+
+
+def notice_files():  # where the NOTICE file may be
+    """Return the places the originator credit is kept: docs/NOTICE.txt beside the installed program, or NOTICE in the source folder."""
+    from .paths import app_dir  # the program's folder, installed or not
+    return [os.path.join(app_dir(), "docs", "NOTICE.txt"), os.path.join(app_dir(), "NOTICE")]  # installed, then the source folder
+
+
+def repository(files=None):  # the public repository releases are published in
+    """Return "owner/name" of the public repository, read from the NOTICE file's project address (kept there, with the
+    originator credit, so the address is written in one place); None when no NOTICE file can be read."""
+    for name in files or notice_files():  # each place it may be
+        try:  # it may be missing
+            with open(name, encoding="utf-8") as handle:  # the credit
+                found = NOTICE_ADDRESS.search(handle.read())  # its project address
+        except OSError:  # not there
+            continue  # try the next place
+        if found:  # an address
+            return found.group(1).removesuffix(".git")  # owner and name
+    return None  # unknown
+
+
+def releases_url(repo=None):  # GitHub's list of the newest releases
+    """Return the address of the releases list for `repo` (read from NOTICE when not given)."""
+    return f"https://api.github.com/repos/{repo or repository()}/releases?per_page=20"  # drafts are not listed for anyone not signed in
+
+
+def releases_page(repo=None):  # the page an operator can open in a browser
+    """Return the releases page for `repo` (read from NOTICE when not given)."""
+    return f"https://github.com/{repo or repository()}/releases"  # the public page
 
 
 def version_key(text):  # turn "0.40R3", "v0.41" or "0.41" into something that sorts
@@ -56,7 +84,7 @@ def describe(release):  # the parts of one GitHub release that matter here
         return None  # skipped
     version = SETUP_NAME.match(setup).group(1)  # the version, from the file name (more reliable than the tag)
     return {"tag": release.get("tag_name", ""), "version": version, "signal": signal_of(release),  # what it is
-            "test": bool(release.get("prerelease")), "page": release.get("html_url") or RELEASES_PAGE,  # whether it is a test release, and its page
+            "test": bool(release.get("prerelease")), "page": release.get("html_url") or releases_page(),  # whether it is a test release, and its page
             "setup_name": setup, "setup_url": assets[setup], "sha_url": assets.get(setup + ".sha256", ""),  # the setup program and its published hash
             "notes": (release.get("body") or "").strip()}  # what changed
 
@@ -91,8 +119,13 @@ def due(setting, last_check, now, started_now):  # whether to check now
     return False  # off
 
 
-def fetch(url=RELEASES_URL, timeout=TIMEOUT_S, opener=None):  # GitHub's release list
+def fetch(url=None, timeout=TIMEOUT_S, opener=None):  # GitHub's release list
     """Return the list of releases from GitHub (raises OSError or ValueError on failure; the caller stays quiet about it)."""
+    if url is None:  # the usual list
+        repo = repository()  # from NOTICE
+        if repo is None:  # no NOTICE file to read it from
+            raise OSError("the NOTICE file, which gives the project's address, was not found")  # a quiet failure, like no internet
+        url = releases_url(repo)  # the list
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "Kestrel-update-check"})  # GitHub asks every caller to name itself
     with (opener or urllib.request.urlopen)(request, timeout=timeout) as reply:  # ask
         return json.loads(reply.read().decode("utf-8"))  # the list
