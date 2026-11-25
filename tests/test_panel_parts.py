@@ -119,9 +119,70 @@ def test_sound_output_can_be_cut_short(monkeypatch):  # the Stop calling key tak
     fake = types.SimpleNamespace(play=lambda *a, **k: calls.append("play"), get_stream=lambda: stream, stop=lambda: calls.append("stop"), wait=lambda: calls.append("wait"))  # the stand-in library
     monkeypatch.setitem(sys.modules, "sounddevice", fake)  # used by play()
     out = AudioOut()  # the output
+    out.persistent = False  # this test covers the stream opened for each transmission (the way before 0.41; see the next test for the stream kept open)
     threading.Timer(0.2, out.abort).start()  # the operator presses Esc after a fifth of a second
     started = time.monotonic()  # when playing began
     out.play(np.zeros(12000 * 2))  # two seconds of audio
     assert time.monotonic() - started < 1.0 and calls == ["play", "stop"] and not out.playing  # back almost at once, the sound stopped, nothing playing
     out.abort()  # pressing it again with nothing playing
     assert not out.cut  # does nothing
+
+
+class _FakeOutputStream:  # stands in for sounddevice.OutputStream: a thread that asks for audio as a sound card would (since 0.41)
+    opened = 0  # how many streams were opened, across all instances
+
+    def __init__(self, samplerate, channels, dtype, device, callback, latency):  # opened as live/audio.py opens it
+        _FakeOutputStream.opened += 1  # count it
+        self.callback = callback  # who fills the buffers
+        self.latency = 0.01  # seconds of audio held in the "sound card"
+        self.taken = []  # every buffer filled, in order
+        self.running = False  # not started yet
+
+    def start(self):  # begin asking for audio
+        import threading  # the sound card's own thread
+        self.running = True  # started
+        threading.Thread(target=self._run, daemon=True).start()  # ask in the background
+
+    def _run(self):  # a buffer of 480 samples every millisecond: about ten times faster than real time, to keep the test short
+        import time  # the pace
+        import numpy as np  # buffers
+        while self.running:  # until stopped
+            out = np.ones((480, 1), dtype="float32")  # filled with ones, so silence written into it shows
+            self.callback(out, 480, None, None)  # the program fills it
+            self.taken.append(out[:, 0].copy())  # and it is "played"
+            time.sleep(0.001)  # the next buffer
+
+    def stop(self):  # stop asking
+        self.running = False  # the thread ends
+
+    def close(self):  # release the device
+        self.running = False  # nothing more
+
+
+def test_sound_output_stream_stays_open_between_transmissions(monkeypatch):  # one output stream for the whole run, so the shared input is not disturbed (since 0.41)
+    import sys  # to stand in for the sound-card library
+    import threading  # the operator's key arrives from another thread
+    import types  # a stand-in module
+
+    import numpy as np  # numerical arrays
+
+    from live.audio import AudioOut, CARD_RATE, LEAD_S, TAIL_S  # the output under test, and its padding
+    _FakeOutputStream.opened = 0  # a fresh count
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(OutputStream=_FakeOutputStream))  # used by _open()
+    out = AudioOut(None, 0.5)  # the output
+    tone = np.full(1200, 0.5)  # a tenth of a second of steady audio at the modem's rate
+    out.play(tone)  # the first transmission opens the stream
+    out.play(tone)  # the second uses the same one
+    assert _FakeOutputStream.opened == 1 and out.stream is not None and not out.playing  # opened once, still open, nothing playing
+    sent = np.concatenate(out.stream.taken)  # everything the "sound card" played
+    loud = int(np.sum(np.abs(sent) > 0.2))  # the samples of the two tones (silence between them is written as zeros, not left as ones)
+    assert abs(loud - 2 * 1200 * 4) < 100  # both tones went out whole, at the card's rate (give or take the rate converter's soft edges)
+    assert np.all(sent[-480:] == 0.0)  # and the stream plays silence after them
+    threading.Timer(0.05, out.abort).start()  # the operator presses Esc shortly after the next transmission starts
+    out.play(np.full(12000 * 20, 0.5))  # twenty seconds of audio (two seconds at the test's pace)
+    assert not out.playing and out.queued is None  # back early, with nothing left to send
+    stream = out.stream  # the stream
+    out.close()  # the run ends
+    assert out.stream is None and not stream.running  # closed
+    out.close()  # closing again does nothing
+    assert LEAD_S > 0 and TAIL_S > 0 and CARD_RATE == 48000  # the padding the count above relies on is in place

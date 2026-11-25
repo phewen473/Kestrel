@@ -194,7 +194,8 @@ class SignalLog:  # writes the signal log
         if now >= self.next_clock and self.timeline is not None and self.timeline.t0 is not None:  # the clock line is due, and there is a timeline
             self.next_clock = now + CLOCK_EVERY_S  # the next one
             sample = self.timeline.samples  # the newest sample number
-            self.write("clock", sample=sample, sample_utc=self.sig_utc(sample), drift_s=round(now - self.timeline.utc_of(sample), 3))  # the sound card's clock against the computer's
+            self.write("clock", sample=sample, sample_utc=self.sig_utc(sample), drift_s=round(now - self.timeline.utc_of(sample), 3),  # the sound card's clock against the computer's: audio lost while receiving shows here (since 0.40R1 a transmission's loss is made good straight after it)
+                       tx_gaps=getattr(self.timeline, "gaps", None), tx_gap_s=round(getattr(self.timeline, "gap_s", 0.0), 3))  # how often, and how much in all, the input fell behind during transmissions (since 0.41): with drift_s, tells loss while sending from loss while receiving
         if now >= self.next_audio:  # the audio line is due
             self.next_audio = now + AUDIO_EVERY_S  # the next one
             rms, peak = level if level is not None else (None, None)  # the input level, if known

@@ -4331,6 +4331,8 @@ class Panel:  # the control panel window
             self.station = None  # no station is running any more, whatever happened
             self.poller_stop.set()  # stop reading the radio's meters
             self.tx_active = False  # the transmitter is off
+            if self.sink is not None:  # an output was set up (since 0.41 it holds its stream open for the whole run)
+                self.sink.close()  # release the sound card
             self.sink = None  # nothing to transmit with
             if ptt is not None:  # a transmit switch was opened
                 ptt.close()  # make sure the transmitter is off

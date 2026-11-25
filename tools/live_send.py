@@ -70,6 +70,7 @@ def main():  # the script itself
     finally:  # ...the transmitter must come off
         ptt.unkey()  # transmitter off
         ptt.close()  # release the serial port
+        sink.close()  # release the output stream (held open since 0.41)
     print("Done.", flush=True)  # finished
 
 

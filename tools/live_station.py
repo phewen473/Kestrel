@@ -97,6 +97,7 @@ def main():  # the script itself
         print("stopped by operator", flush=True)  # say so
     finally:  # always
         ptt.close()  # make sure the transmitter is off
+        sink.close()  # release the output stream (held open for the whole run since 0.41)
         source.close()  # release the sound device
     print(f"delivered {len(station.delivered)} message(s); {len(station.outbox)} still waiting", flush=True)  # the outcome for sent traffic
     for text in station.inbox:  # everything received

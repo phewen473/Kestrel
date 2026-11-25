@@ -7,6 +7,7 @@ is imported only when needed, so the rest of Kestrel runs without it.
 """
 
 import queue  # hands audio from the sound card's thread to the main program
+import threading  # a lock between the program and the sound card's output thread (since 0.41)
 import time  # when a transmission began to play, for the transmit scope
 
 import numpy as np  # numerical arrays
@@ -177,6 +178,45 @@ class AudioOut:  # the transmitting side of the sound card
         self.sending = None  # the audio now being played, at the card's rate, for a transmit scope
         self.started = 0.0  # when it began to play (time.monotonic)
         self.cut = False  # set by abort(): the transmission under way stops at once
+        self.stream = None  # the output stream, opened at the first transmission and kept open until close() (since 0.41)
+        self.lock = threading.Lock()  # guards the hand-over of audio between play() and the sound card's thread (since 0.41)
+        self.queued = None  # the audio the stream is playing, at the card's rate (since 0.41)
+        self.at = 0  # how many of its samples the sound card has taken so far (since 0.41)
+        self.persistent = True  # keep one stream open; set False to open a fresh stream for every transmission, as before 0.41
+
+    def _open(self):  # open the output stream once, and keep it (since 0.41)
+        """Open the output stream if it is not open. Opening and closing a stream for every transmission made some
+        USB radio sound cards drop received audio on the shared input (up to 5.9 s in 90 minutes in the November 24,
+        2026 logs), so the stream now stays open, playing silence between transmissions."""
+        if self.stream is not None:  # already open
+            return  # nothing to do
+        import sounddevice as sd  # the sound-card library
+        self.stream = sd.OutputStream(samplerate=CARD_RATE, channels=1, dtype="float32", device=self.device, callback=self._feed, latency="high")  # one channel at the card's rate, fed by _feed, with generous buffering
+        self.stream.start()  # running from now on: silence until there is something to send
+
+    def _feed(self, out, frames, when, status):  # called by the sound card whenever it wants more audio (since 0.41)
+        """Fill `out` with the next stretch of the transmission, or with silence when nothing is being sent."""
+        with self.lock:  # play() and abort() change the audio from another thread
+            audio, at = self.queued, self.at  # what is playing and how far it has got
+            if audio is None:  # nothing to send
+                out.fill(0.0)  # silence
+                return  # done
+            piece = audio[at:at + frames]  # the next stretch
+            out[:len(piece), 0] = piece  # into the sound card's buffer
+            out[len(piece):, 0] = 0.0  # silence after the end
+            self.at = at + len(piece)  # how far it has got now
+            if self.at >= len(audio):  # all of it handed over
+                self.queued = None  # nothing more to send
+
+    def close(self):  # stop the output (since 0.41)
+        """Stop and close the output stream, if open. Safe to call more than once."""
+        stream, self.stream = self.stream, None  # take it, so a second call does nothing
+        if stream is not None:  # one was open
+            try:  # the device may already have gone
+                stream.stop()  # stop
+                stream.close()  # release the device
+            except Exception:  # a sound-card error on the way out
+                pass  # nothing more can be done about it
 
     def spectrum(self, top_hz=3000.0, points=512, low_hz=0.0):  # what is going out right now, for a transmit scope
         """Return the spectrum of the audio being played at this moment (`points` levels in dBFS from `low_hz` to `top_hz`), or None when nothing is playing."""
@@ -198,7 +238,26 @@ class AudioOut:  # the transmitting side of the sound card
         self.last_peak_db = level_dbfs(samples)[1]  # how close to full scale it goes, for the transmit meter
         self.sending, self.started = samples, time.monotonic()  # let a transmit scope follow it
         self.playing, self.cut = True, False  # the transmission is on its way, not cut short
-        try:  # whatever happens...
+        if self.persistent:  # the stream kept open between transmissions (since 0.41)
+            try:  # whatever happens...
+                self._open()  # open it the first time
+                with self.lock:  # hand the audio to the sound card's thread
+                    self.queued, self.at = samples, 0  # from the start
+                while not self.cut:  # until the operator stops it, or it has all gone
+                    with self.lock:  # look at how far the sound card has got
+                        done = self.queued is None  # all of it handed over
+                    if done:  # yes
+                        break  # stop looking
+                    time.sleep(0.02)  # look fifty times a second
+                if self.cut:  # stopped by the operator
+                    with self.lock:  # take the rest back
+                        self.queued = None  # silence from the next buffer on (the caller then takes the transmitter off)
+                else:  # it ran to its end
+                    time.sleep(self.stream.latency)  # the last buffer handed over is still in the sound card: let it play out before the transmitter comes off
+            finally:  # ...note that it has ended
+                self.playing, self.cut = False, False  # no longer playing, and ready for the next transmission
+            return  # done
+        try:  # whatever happens... (a fresh stream for every transmission, as before 0.41)
             sd.play(samples, CARD_RATE, device=self.device, blocking=False, latency="high")  # start playing, with generous buffering
             stream = sd.get_stream()  # the stream it plays on
             while stream.active and not self.cut:  # until it ends, or the operator stops it
