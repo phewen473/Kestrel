@@ -69,6 +69,16 @@ It checks the libraries, the sound system and rigctld, and writes the
 result to kestrel_check.txt in %LOCALAPPDATA%\Kestrel.
 
 
+UPDATES
+-------
+Kestrel checks once a day whether a newer version has been published
+(Settings > Updates; Help > Check for updates asks at once). When there
+is one, it says so, and says plainly if the new version changes the
+signal (then both stations must update to hear each other). Install now
+downloads it, checks it, waits until no contact is under way, closes
+Kestrel (waiting messages are kept), installs it and starts Kestrel again.
+
+
 A SECOND RADIO
 --------------
 Start menu > Kestrel > "Kestrel - second radio" opens a second panel

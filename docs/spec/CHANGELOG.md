@@ -1,5 +1,16 @@
 # Kestrel specification changelog
 
+## 0.42 (draft) - November 25, 2026
+
+- **Nothing sent changes: the signal version stays 0.41,** and 0.41 and 0.42 stations work together.
+- **Chained messages (Section 6.20).** Up to 1,000 characters, sent as up to nine ordinary messages that begin "(k/n) ", only on a working channel (a station on the calling frequency proposes a move first). The receiving 0.42 panel joins them, showing the message as it fills in; a 0.41 station shows the pieces one by one. Before this the 0.41 panel's message box took 1,000 characters but the station refused anything over 200.
+- **The other station's report of this station** (Section 6.4): every answer and acknowledgment has always carried the receiver's SNR, fading index and wanted level for the sender's last frame; the reference program now shows it in the contact bar as "They hear you" (it showed only the wanted level).
+- **Chat window** (reference program): the conversation with the partner as a running exchange, with a tick on each line once acknowledged; a line is sent only on Enter or Send.
+- **Updates (Section 6.21, reference program).** Settings > Updates and Help > Check for updates: a daily check of the public release list, a notice that says plainly when a release changes the signal, and Install now (download, SHA-256 check, close, silent install, restart) only with the operator's approval and only when idle. The setup program installs for the current user (no administrator prompt) and offers to remove an older all-users copy.
+- **Panel**: everything fits at 1024x768 (Stations heard headings, the 48 h button, the level meters' help).
+- Not in this version: fading-resistant short frames. The fading penalty of the short levels comes from slow fading (fades as long as a frame), which coding within a frame cannot remove; time diversity across transmissions will be designed from on-air fade measurements. The traffic-waiting notice in the call and faster traffic between locked stations need signal changes and are left for a later signal version.
+- Tests: tests/test_chain.py, tests/test_updates.py.
+
 ## 0.41 (draft) - November 25, 2026
 
 - **Signal version 0.41: the long call-up (Section 6.18).** The long-note frame's kind 3, unused before, carries a directed call, its answer, or a "not available" reply, in a long frame of about a minute, read down to about -22 dB. On November 24 the partner was measured at -11 to -14 dB on a fading path: long beacons decoded all night, short calls almost never (the short levels need about -8 dB when the signal fades). Short calls to a station heard only in long frames now stop after two (L2, then L0) and a long call follows; after five unanswered short calls a long call follows too if the station was heard in long frames within the hour. Once a long contact is made, waiting messages go as long notes. Stations following 0.40 or earlier read a long call-up as noise.

@@ -6,7 +6,10 @@ that has nothing else on it.
 ## Windows (`windows/`)
 
 The result is one setup program, `Kestrel-Setup-<version>-<commit>.exe`.
-It installs Kestrel under Program Files for all users, with Start-menu
+It installs Kestrel for the current user, under
+%LOCALAPPDATA%\Programs\Kestrel (since 0.42; no administrator prompt, so
+Kestrel can update itself, and it offers to remove an older all-users copy
+from Program Files), with Start-menu
 entries (Kestrel, Kestrel - second radio, Getting started, Uninstall), an
 optional desktop shortcut, and an entry under Settings > Apps for
 removing it. It needs 64-bit Windows 10 or 11 and nothing else: Kestrel
