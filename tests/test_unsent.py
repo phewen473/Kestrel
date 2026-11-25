@@ -26,3 +26,16 @@ def test_run_stopped_with_a_problem_while_the_station_held_them():  # a fault in
 
 def test_normal_end_gives_nothing_twice():  # the run took its messages back itself
     assert unsent_messages({"messages": [], "holder": None}) == []  # nothing more to give
+
+
+class _Broken:  # a stand-in station that cannot say what it holds
+    @property  # read like the real attribute
+    def outbox(self):  # asking for its messages
+        raise RuntimeError("station gone")  # fails
+
+
+def test_a_station_that_cannot_answer_is_reported_not_hidden():  # since 0.40R3
+    said = []  # what was reported
+    job = {"messages": [("STILL HERE", "")], "holder": _Broken()}  # one message never handed over, and a broken station
+    assert unsent_messages(job, said.append) == [("STILL HERE", "")]  # what can be given back is
+    assert len(said) == 1 and "could not be recovered" in said[0]  # and the loss is said, once

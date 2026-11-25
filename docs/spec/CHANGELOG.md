@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.40R3 (draft) - November 25, 2026
+
+- Nothing sent changed (signal version stays 0.40); reference program only. Found in a review of the 0.40R2 fix.
+- **Fix: messages queued while Listen was starting were not sent in that run.** Listen takes the queue when it is pressed, but the station accepts new messages only once rig control and the sound devices are open, some seconds later. A message queued in between stayed in the panel's own list, listed as "waiting", for the whole run, through any contact. It is now handed to the station as soon as the station exists.
+- One lock now guards every hand-over of the queue between the window and a run, so a message queued at the instant a run starts or ends cannot be missed or overwritten; the tidy-up at the end of a run stops new messages going to the finished station before it takes back what was unsent (0.40R2 did these in the other order).
+- If the station cannot say what it still held, the Activity log says so instead of losing the messages silently.
+- Tests: tests/test_unsent.py (one more).
+
 ## 0.40R2 (draft) - November 24, 2026
 
 - Nothing sent changed (signal version stays 0.40); reference program only.
