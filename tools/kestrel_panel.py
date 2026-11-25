@@ -2180,7 +2180,7 @@ class Panel:  # the control panel window
 
     def load_rig_names(self):  # the Hamlib model numbers and names, to name the rig a beacon carries (since 0.40)
         """Fill self.rig_names (number -> "Maker Model") from the rig control program's list, in the background."""
-        program = self.settings.get("rigctld") or find_rigctld()  # the rig control program
+        program = rigctld_program(self.settings)  # the rig control program (the saved one if it still exists, since 0.42R1)
         if not program:  # none on this computer
             return  # beacons' rigs are named by number
         def job():  # the list can take a while the first time
@@ -4267,7 +4267,7 @@ class Panel:  # the control panel window
 
     def settings_window(self, tab=0):  # the Settings window, open at one of its tabs
         dialog = self.window("settings", "Kestrel - Settings")  # a window of its own
-        program = self.settings["rigctld"] or find_rigctld()  # the rig control program: the one chosen before, else one found on this computer
+        program = rigctld_program(self.settings)  # the rig control program: the one chosen before if it still exists, else one found on this computer (since 0.42R1)
         models = []  # every radio type it knows, as "number  name": filled in the background below, because the first run of rigctld on a computer can take a minute while an antivirus program checks it
         try:  # the serial port list needs the pyserial package
             from serial.tools import list_ports  # lists this computer's serial ports
@@ -4328,7 +4328,7 @@ class Panel:  # the control panel window
         field(radio, 9, "radio_mode", "Radio mode", names=RADIO_MODE_NAMES, width=44)  # USB-D or plain USB
         note(radio, 10, "Kestrel uses upper sideband on every band, 80 m and 40 m included. On plain USB turn the radio's speech processor,\ncompression and transmit equaliser off, and feed the audio in where the radio takes it for USB (often the microphone input).")  # what plain USB needs
         path_box = field(radio, 6, "rigctld", "rigctld program", width=52)  # the rig control program's file
-        if not self.settings["rigctld"] and program:  # none chosen, but one was found
+        if program and program != self.settings["rigctld"]:  # none chosen, or the one chosen is gone, but one was found (since 0.42R1)
             path_box.insert(0, program)  # offer it
         list_note = ttk.Label(radio, text="Loading the rig type list... (the first time on a computer this can take a minute)", wraplength=560, justify="left")  # how many radios, or why none; filled in when the list arrives
         list_note.grid(row=8, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))  # under the settings
@@ -4639,7 +4639,7 @@ class Panel:  # the control panel window
     def rig_address(self, settings):  # where rig control can be reached for these settings (may be called from any thread)
         """Return a rigctld address, starting rigctld for the chosen radio if needed; "" when the radio is tuned by hand."""
         if settings["rig_model"] and settings["cat_port"]:  # a radio type and its serial port are chosen
-            program = settings["rigctld"] or find_rigctld()  # the rig control program
+            program = rigctld_program(settings)  # the rig control program (the saved one if it still exists, since 0.42R1)
             if not program:  # there is none
                 raise RuntimeError("the rig control program (rigctld) was not found; choose it under Settings > Radio")  # say what to do
             if not settings["rig_model"].split()[0].isdigit():  # the rig type is not an entry of the list (entries begin with Hamlib's number)
@@ -5146,6 +5146,15 @@ class Panel:  # the control panel window
             self.worker.join(timeout=3)  # give it a moment to unkey and release the sound card
         self.rigs.stop()  # stop the rig control program this panel started
         self.root.destroy()  # close the window
+
+
+def rigctld_program(settings):  # the rig control program to run (since 0.42R1)
+    """Return the rigctld chosen in Settings if that file still exists, else one found on this computer (the copy installed
+    with Kestrel first). A saved path can go stale when Kestrel moves, as it did from Program Files to the per-user folder in 0.42."""
+    saved = settings.get("rigctld") or ""  # the one remembered
+    if saved and os.path.isfile(saved):  # still there
+        return saved  # use it
+    return find_rigctld()  # the installed copy, or one on the search path, or WSJT-X's
 
 
 def self_check():  # Kestrel.exe --check: is everything the program needs present?

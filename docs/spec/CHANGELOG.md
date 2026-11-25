@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.42R1 (draft) - November 25, 2026
+
+- Nothing sent changed (signal version stays 0.41); reference program only.
+- **Fix: rig control failed after updating to 0.42.** Settings kept the full path of the rig control program (rigctld) from the old installation under Program Files, which the 0.42 setup program removes when it installs for the current user; every Listen then stopped with "could not start the rig control program". A saved path that no longer exists is now passed over for the copy installed with Kestrel (or one found on the computer), and Settings remembers the new one.
+- Tests: tests/test_settings_files.py (one more).
+
 ## 0.42 (draft) - November 25, 2026
 
 - **Nothing sent changes: the signal version stays 0.41,** and 0.41 and 0.42 stations work together.

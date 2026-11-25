@@ -67,3 +67,16 @@ def test_export_all_themes_round_trip(tmp_path):  # File > Export themes, then I
     finally:  # tidy up
         theme.remove_theme("test_mine")  # gone
         theme.restore_original("nord")  # as it came
+
+
+def test_a_saved_rigctld_that_has_gone_falls_back_to_one_found(monkeypatch, tmp_path):  # since 0.42R1
+    """0.42 moved Kestrel from Program Files to the per-user folder and removed the old copy; settings that still named the old rigctld stopped every Listen."""
+    kp = panel_module()  # the panel
+    found = tmp_path / "rigctld.exe"  # the copy installed with Kestrel
+    found.write_text("x")  # it exists
+    monkeypatch.setattr(kp, "find_rigctld", lambda *args: str(found))  # what the search would find
+    assert kp.rigctld_program({"rigctld": str(tmp_path / "gone" / "rigctld.exe")}) == str(found)  # a stale path is passed over
+    assert kp.rigctld_program({"rigctld": ""}) == str(found)  # none chosen: the one found
+    chosen = tmp_path / "mine.exe"  # one the operator chose
+    chosen.write_text("x")  # it exists
+    assert kp.rigctld_program({"rigctld": str(chosen)}) == str(chosen)  # still used
