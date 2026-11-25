@@ -363,7 +363,7 @@ UPDATE_CHECK_NAMES = {"daily": "Daily: when Kestrel starts and once a day while 
 UPDATE_NOTIFY_NAMES = {"all": "Every new release", "signal": "Only releases that change the signal (both stations must update)"}  # Settings > Updates (since 0.42)
 UPDATE_TEST_NAMES = {True: "Yes: include test releases (every Kestrel release is one for now)", False: "No: finished releases only"}  # Settings > Updates (since 0.42)
 UPDATE_INSTALL_NAMES = {"ask": "Tell me, and offer Install now (downloads, closes, installs, restarts)", "notify": "Only tell me (I will download it myself)"}  # Settings > Updates (since 0.42)
-ACTIVITY_NAMES = {False: "Opens when you ask (the Activity button), or by itself on a warning", True: "Opens when Kestrel starts"}  # Settings > Operating (since 0.41)
+ACTIVITY_NAMES = {False: "Off: no Activity window (the newest line shows at the bottom of the main window)", True: "On: starts minimized and stays in the background; never pops up by itself"}  # Settings > Operating (since 0.41; on/off since 0.42R2)
 
 
 class MessageBox(tk.Text):  # the message box: a few lines tall, answering to an entry's get, delete and insert (since 0.41)
@@ -688,7 +688,7 @@ class Panel:  # the control panel window
         ticker.columnconfigure(0, weight=1)  # the line takes the width
         self.ticker = ttk.Label(ticker, text="", font="KestrelSmall", anchor="w")  # the newest Activity line
         self.ticker.grid(row=0, column=0, sticky="ew")  # on the left
-        activity_button = ttk.Button(ticker, text="Activity", command=self.toggle_activity)  # open or close the Activity window
+        self.activity_button = activity_button = ttk.Button(ticker, text="Activity", command=self.toggle_activity)  # open or close the Activity window (kept, so Settings can turn it off, since 0.42R2)
         activity_button.grid(row=0, column=1, sticky="e")  # on the right
         chat_button = ttk.Button(ticker, text="Chat", command=self.toggle_chat)  # open or close the Chat window (since 0.42)
         chat_button.grid(row=0, column=2, sticky="e", padx=(4, 0))  # beside Activity
@@ -822,6 +822,7 @@ class Panel:  # the control panel window
         view.add_cascade(label="Recognized signals", underline=0, menu=signals)  # put it in the View menu
         self.strip_var = tk.BooleanVar(value=bool(self.settings.get("frame_strip", True)))  # the frame strip shown or not (since 0.37)
         view.add_checkbutton(label="Frame strip under the receive scope", underline=1, variable=self.strip_var, command=self.frame_strip_toggled)  # a Kestrel frame as it arrives: preamble, header, body, header again, and its message's parts
+        self.view_menu = view  # kept, so Settings can grey the Activity window item (since 0.42R2)
         view.add_command(label="Activity window", underline=0, accelerator="Ctrl+Shift+A", command=lambda: self.toggle_activity())  # the running log, in its own window (since 0.41)
         view.add_command(label="Chat window", underline=1, accelerator="Ctrl+Shift+C", command=lambda: self.toggle_chat())  # the conversation with the partner (since 0.42)
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
@@ -894,8 +895,8 @@ class Panel:  # the control panel window
         scroll = ttk.Scrollbar(self.activity, orient="vertical", command=self.log.yview)  # a scroll bar for the log
         scroll.grid(row=1, column=1, sticky="ns")  # place it beside the log
         self.log.configure(yscrollcommand=scroll.set)  # tie the two together
-        if self.settings.get("activity_window"):  # Settings > Operating: open it at start
-            self.root.after(800, self.show_activity)  # once the main window is up
+        self.activity_on = None  # whether the Activity window is turned on, as last applied (since 0.42R2)
+        self.root.after(800, self.apply_activity_setting)  # once the main window is up: minimized in the background, or off
 
     def _chat_window(self):  # the Chat window, built the first time it is asked for (since 0.42)
         """A conversation with the partner: both sides' messages as a running exchange, and a line to type the next one."""
@@ -1030,9 +1031,31 @@ class Panel:  # the control panel window
             self.settings["activity_geometry"] = self.activity.geometry()  # its size and place, for next time
         except tk.TclError:  # gone
             pass  # nothing to keep
-        self.activity.withdraw()  # hidden
+        if self.settings.get("activity_window"):  # turned on: it goes back to the background (since 0.42R2)
+            self.activity.iconify()  # minimized
+        else:  # turned off
+            self.activity.withdraw()  # hidden
+
+    def apply_activity_setting(self):  # Settings > Operating > Activity window, on or off (since 0.42R2)
+        """On: the window exists minimized, in the background, and opens only when asked. Off: no window, and its button and menu item are greyed."""
+        wanted = bool(self.settings.get("activity_window"))  # the setting
+        if wanted == self.activity_on:  # nothing changed
+            return  # leave the window as the operator has it
+        self.activity_on = wanted  # applied
+        try:  # the window may be closing
+            if wanted:  # on
+                self.activity.deiconify()  # it must exist on the taskbar before it can be minimized
+                self.activity.iconify()  # minimized, in the background
+            else:  # off
+                self.activity.withdraw()  # no window
+            self.activity_button.state(["!disabled"] if wanted else ["disabled"])  # the Activity button follows
+            self.view_menu.entryconfigure("Activity window", state="normal" if wanted else "disabled")  # and so does View > Activity window
+        except (tk.TclError, AttributeError):  # gone, or not built yet
+            pass  # nothing to change
 
     def toggle_activity(self):  # the Activity button, and View > Activity window
+        if not self.settings.get("activity_window"):  # turned off in Settings (since 0.42R2)
+            return  # nothing to show
         if self.activity.state() == "normal":  # showing
             self.hide_activity()  # hide it
         else:  # hidden
@@ -1793,12 +1816,23 @@ class Panel:  # the control panel window
             if layout.get("zoomed"):  # it filled the screen
                 self.root.state("zoomed")  # so it does again
             self.root.update_idletasks()  # let the panels take their sizes
-            for name, places in (layout.get("sashes") or {}).items():  # each divided area
-                for index, place in enumerate(places):  # each divider in turn
-                    self.panes[name].sashpos(index, int(place))  # back where it was
-            self.keep_meters_visible()  # but never with the level meters squeezed out of sight
+            sashes = layout.get("sashes") or {}  # where the dividers were
+            self.place_sashes(sashes)  # put them back now
+            for delay in (400, 1500):  # and again once Windows (or Remote Desktop) has finished sizing the window, which spreads the panels out again (since 0.42R2)
+                self.root.after(delay, lambda: self.place_sashes(sashes))  # the same places
         except (ValueError, KeyError, tk.TclError):  # the saved layout could not be used
             self.default_layout()  # fall back on the usual arrangement
+
+    def place_sashes(self, sashes):  # put the dividers where they were left (since 0.42R2)
+        """Move every divider to its saved place, then make sure the level meters still show."""
+        try:  # the window may be closing
+            for name, places in sashes.items():  # each divided area
+                for index, place in enumerate(places):  # each divider in turn
+                    if name in self.panes and index < len(self.panes[name].panes()) - 1:  # a divider this layout still has
+                        self.panes[name].sashpos(index, int(place))  # back where it was
+        except (tk.TclError, ValueError):  # gone, or a damaged entry
+            return  # leave it
+        self.keep_meters_visible()  # never with the level meters squeezed out of sight
 
     def keep_meters_visible(self, event=None):  # the level meters and sliders must always show
         """Move the divider beside the level meters back, if needed, so the meters keep the width they need.
@@ -2069,8 +2103,9 @@ class Panel:  # the control panel window
             plain = plain_line(line)  # the line as the operator reads it
             if plain:  # something to show
                 self.ticker.configure(text=f"{clock}  {plain}"[:160])  # the newest line, in the status bar at the bottom (since 0.41)
-            if any(mark in line.lower() for mark in ("warning", "stopped by a problem", "not delivered", "no contact:", "could not")) and self.activity.state() != "normal":  # something the operator must not miss, with the Activity window closed
-                self.show_activity()  # it opens by itself (since 0.41)
+            urgent = any(mark in line.lower() for mark in ("warning", "stopped by a problem", "not delivered", "no contact:", "could not"))  # something the operator must not miss
+            if plain:  # shown in the status bar
+                self.ticker.configure(foreground=self.colors["warn_fg"] if urgent else "")  # in the warning color; the Activity window no longer pops up for it (since 0.42R2)
             state = status_for(line)  # does it mark a change of state?
             if state is not None and state[0].startswith("LISTENING") and time.monotonic() < getattr(self, "hold_status", 0.0):  # back to listening just after news the operator should see
                 pass  # leave the news on the band for a while
@@ -4589,6 +4624,7 @@ class Panel:  # the control panel window
             self.settings = new  # take the new settings
             self.save_settings()  # write them to the settings file
             self.apply_fonts()  # the lettering follows the choice at once
+            self.apply_activity_setting()  # the Activity window turns on (minimized) or off at once (since 0.42R2)
             self.logbook.level = new["log_level"]  # the logbook's level of detail
             self.contacts.set_policy(new["contact_history"], new["contact_history_mode"])  # the contact history rules (a smaller length trims now)
             self.beacon_type_var.set(self.settings.get("beacon_type", "short"))  # the Beacon type menu follows the setting

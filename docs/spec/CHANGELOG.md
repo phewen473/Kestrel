@@ -1,5 +1,11 @@
 # Kestrel specification changelog
 
+## 0.42R2 (draft) - November 25, 2026
+
+- Nothing sent changed (signal version stays 0.41); reference program only.
+- **Fix: the panel's layout did not come back as it was left.** It was saved, but the dividers were put back before Windows (or Remote Desktop) had finished sizing the window, which then spread the panels out again. They are now put back again once the window has settled.
+- **The Activity window is On or Off** (Settings > Operating). On: it starts minimized and stays in the background, and opens only when asked (the Activity button, View > Activity window, Ctrl+Shift+A); closing it minimizes it again. Off: there is no Activity window, and its button and menu item are greyed. It no longer pops up by itself on a warning or problem; such lines show in the warning color in the status bar at the bottom of the main window.
+
 ## 0.42R1 (draft) - November 25, 2026
 
 - Nothing sent changed (signal version stays 0.41); reference program only.
