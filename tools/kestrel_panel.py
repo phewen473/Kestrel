@@ -628,7 +628,7 @@ class Panel:  # the control panel window
         Tooltip(send, "Send (Enter): to the station in To, in the contact; to ALL as a broadcast (F11); or as a long note when As says so. Shift+Enter starts a new line.")  # help
         self.tabs = ttk.Notebook(lists)  # the lists, as tabs on one card (since 0.41)
         lists.add(self.tabs, weight=2)  # on the right, wider
-        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "SNR", 44), ("time", "Heard", 108), ("text", "Sending", 58), ("mail", "Status", 90), ("utc", "UTC", 48)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
+        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "SNR", 44), ("time", "Heard", 108), ("text", "Sending", 66), ("mail", "Status", 82), ("utc", "UTC", 48)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
         self.received = self._list(self.tabs, 1, "Received", (("time", "Received (local)", 110), ("who", "From", 110), ("text", "Message", 260), ("utc", "UTC", 56)))  # incoming messages and broadcasts
         self.to_send = self._list(self.tabs, 2, "To send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 190), ("utc", "UTC", 64)))  # outgoing messages, who each is for, and how far each has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
@@ -690,6 +690,9 @@ class Panel:  # the control panel window
         self.ticker.grid(row=0, column=0, sticky="ew")  # on the left
         activity_button = ttk.Button(ticker, text="Activity", command=self.toggle_activity)  # open or close the Activity window
         activity_button.grid(row=0, column=1, sticky="e")  # on the right
+        chat_button = ttk.Button(ticker, text="Chat", command=self.toggle_chat)  # open or close the Chat window (since 0.42)
+        chat_button.grid(row=0, column=2, sticky="e", padx=(4, 0))  # beside Activity
+        Tooltip(chat_button, "The Chat window (View > Chat window, Ctrl+Shift+C): the conversation with the station you are in contact with, both sides as a running exchange. Type a line and press Enter to send it.")  # help
         Tooltip(activity_button, "The Activity window: every line of the running log (View > Activity window). Warnings open it by themselves.")  # help
         root.rowconfigure(4, weight=1)  # the lists and the scopes stretch with the window
         root.after(250, self.restore_layout)  # once the window is up, put it and the dividers back as they were left
@@ -820,6 +823,7 @@ class Panel:  # the control panel window
         self.strip_var = tk.BooleanVar(value=bool(self.settings.get("frame_strip", True)))  # the frame strip shown or not (since 0.37)
         view.add_checkbutton(label="Frame strip under the receive scope", underline=1, variable=self.strip_var, command=self.frame_strip_toggled)  # a Kestrel frame as it arrives: preamble, header, body, header again, and its message's parts
         view.add_command(label="Activity window", underline=0, accelerator="Ctrl+Shift+A", command=lambda: self.toggle_activity())  # the running log, in its own window (since 0.41)
+        view.add_command(label="Chat window", underline=1, accelerator="Ctrl+Shift+C", command=lambda: self.toggle_chat())  # the conversation with the partner (since 0.42)
         view.add_checkbutton(label="Technical details in the log", underline=0, variable=self.details, command=self.redraw_log)  # plain or detailed log
         view.add_command(label="Reset the panel sizes", underline=0, command=self.default_layout)  # the window and its dividers back to their usual places
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
@@ -843,7 +847,7 @@ class Panel:  # the control panel window
                 "<Control-Key-1>": lambda: self.use_quick(1), "<Control-Key-2>": lambda: self.use_quick(2), "<Control-Key-3>": lambda: self.use_quick(3),  # (continued: the first three, as before 0.30)
                 **{f"<Alt-Key-{number % 10}>": (lambda n=number: self.use_quick(n)) for number in range(1, QUICK_MOST + 1)},  # (continued: Alt+1 to Alt+9 and Alt+0, quick messages 1 to 10)
                 "<Control-Key-4>": self.send_telemetry, "<Control-Key-5>": self.broadcast_telemetry, "<Control-r>": lambda: self.frequency.focus_set(),  # (continued)
-                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-k>": self.contacts_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Control-d>": self.signals_window, "<Escape>": self.stop_calling, "<Control-Shift-A>": self.toggle_activity, "<Control-Shift-a>": self.toggle_activity}  # every shortcut (Ctrl+Shift+A for the Activity window since 0.41)
+                "<Control-Up>": lambda: self.step_frequency(-1), "<Control-Down>": lambda: self.step_frequency(1), "<Control-g>": self.focus_stations, "<Control-j>": lambda: self.rx_slider.focus_set(), "<Control-y>": self.respond, "<Control-u>": self.available_key, "<Control-p>": self.propagation_window, "<Control-k>": self.contacts_window, "<Control-t>": self.toggle_time_marks, "<Control-n>": self.long_note_message, "<Control-d>": self.signals_window, "<Escape>": self.stop_calling, "<Control-Shift-A>": self.toggle_activity, "<Control-Shift-a>": self.toggle_activity, "<Control-Shift-C>": self.toggle_chat, "<Control-Shift-c>": self.toggle_chat}  # every shortcut (Ctrl+Shift+A for the Activity window since 0.41)
         for key, job in keys.items():  # each one
             self.root.bind(key, lambda event, j=job: (j(), "break")[1])  # on the main window: do the job, and stop the key going any further
 
@@ -893,6 +897,129 @@ class Panel:  # the control panel window
         if self.settings.get("activity_window"):  # Settings > Operating: open it at start
             self.root.after(800, self.show_activity)  # once the main window is up
 
+    def _chat_window(self):  # the Chat window, built the first time it is asked for (since 0.42)
+        """A conversation with the partner: both sides' messages as a running exchange, and a line to type the next one."""
+        self.chat = tk.Toplevel(self.root)  # the window
+        self.chat.title("Kestrel - Chat")  # its title
+        self.chat.protocol("WM_DELETE_WINDOW", self.hide_chat)  # its close box hides it; the conversation goes on filling
+        self.chat.geometry(self.settings.get("chat_geometry") or "560x420")  # its size and place, as last left
+        self.chat.columnconfigure(0, weight=1)  # the conversation takes the width
+        self.chat.rowconfigure(1, weight=1)  # and the spare height
+        self.chat_state = ttk.Label(self.chat, text="No contact.", font="KestrelSmall", anchor="w")  # who, whose turn, speed and signal
+        self.chat_state.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))  # across the top
+        self.chat_text = tk.Text(self.chat, height=14, width=60, state="disabled", relief="flat", borderwidth=0, wrap="word", font="TkTextFont")  # the conversation
+        self.chat_text.grid(row=1, column=0, sticky="nsew", padx=6, pady=6)  # place it
+        scroll = ttk.Scrollbar(self.chat, orient="vertical", command=self.chat_text.yview)  # a scroll bar
+        scroll.grid(row=1, column=1, sticky="ns")  # beside it
+        self.chat_text.configure(yscrollcommand=scroll.set)  # tied together
+        self.chat_text.tag_configure("when", font="KestrelSmall")  # the time of each line, small
+        self.chat_text.tag_configure("me", font="KestrelSmallBold")  # this station's name on its lines
+        self.chat_text.tag_configure("them", font="KestrelSmallBold")  # the partner's name on its lines
+        row = ttk.Frame(self.chat)  # the typing line
+        row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))  # at the bottom
+        row.columnconfigure(0, weight=1)  # the entry takes the width
+        self.chat_entry = ttk.Entry(row)  # the next line to send
+        self.chat_entry.grid(row=0, column=0, sticky="ew")  # place it
+        self.chat_entry.bind("<Return>", lambda event: self.chat_send())  # Enter sends it
+        self.chat_entry.bind("<KeyRelease>", lambda event: self.chat_count(), add="+")  # the countdown follows the typing
+        self.chat_left = ttk.Label(row, text=f"{chain.PIECE_MOST}", font="KestrelSmall", width=4, anchor="e")  # characters left in this line
+        self.chat_left.grid(row=0, column=1, padx=(4, 4))  # beside the entry
+        ttk.Button(row, text="Send", command=self.chat_send).grid(row=0, column=2)  # the same as Enter
+        self.chat_marks = {}  # message text -> the mark after its line, for the delivered tick
+        self.color_plain_widgets()  # in the chosen look
+        self.chat_follow()  # keep the line at the top up to date
+
+    def show_chat(self):  # open the Chat window
+        if getattr(self, "chat", None) is None:  # never opened
+            self._chat_window()  # build it
+        self.chat.deiconify()  # shown
+        self.chat.lift()  # in front
+        self.chat_text.see("end")  # at the newest line
+        self.chat_entry.focus_set()  # ready to type
+
+    def hide_chat(self):  # close the Chat window (the conversation keeps filling)
+        try:  # the window may be closing
+            self.settings["chat_geometry"] = self.chat.geometry()  # its size and place, for next time
+        except tk.TclError:  # gone
+            pass  # nothing to keep
+        self.chat.withdraw()  # hidden
+
+    def toggle_chat(self):  # the Chat button, and View > Chat window
+        if getattr(self, "chat", None) is not None and self.chat.state() == "normal":  # showing
+            self.hide_chat()  # hide it
+        else:  # hidden, or never opened
+            self.show_chat()  # show it
+
+    def chat_count(self):  # the characters left in the chat line
+        left = chain.PIECE_MOST - len(self.chat_entry.get())  # what is left of one message
+        if left < 0:  # too long
+            self.chat_entry.delete(chain.PIECE_MOST, "end")  # a chat line is one message at most
+            left = 0  # none left
+        self.chat_left.configure(text=str(left))  # shown
+
+    def chat_send(self):  # Enter in the chat line
+        """Send the typed line to the partner, as an ordinary message: nothing goes until Enter or Send."""
+        text = self.chat_entry.get().strip()  # what was typed
+        if not text:  # nothing
+            return  # nothing to send
+        station = self.station  # the running station
+        partner = station.partner if station is not None and station.state in LOCKED else ""  # the station in contact, if any
+        to = partner or self.to.get().strip().upper()  # the partner, or the station in the main window's To box
+        if not to or to == "ALL":  # nobody to send to
+            messagebox.showinfo("Kestrel", "Chat sends to the station you are in contact with. Make a contact first (or put a callsign in To in the main window).", parent=self.chat)  # say so
+            return  # nothing sent
+        if self.queue_text(text, to):  # queued like any message
+            self.chat_used = True  # replies now open the Chat window by themselves
+            self.chat_entry.delete(0, "end")  # the line is cleared
+            self.chat_count()  # the countdown starts again
+            self.chat_line(self.settings["call"].strip().upper() or "me", text, mine=True)  # shown in the conversation
+
+    def chat_line(self, who, text, mine):  # add one line to the conversation (since 0.42)
+        """Add `text` from `who` to the Chat window; this station's own lines get a tick once delivered."""
+        if getattr(self, "chat", None) is None:  # never opened
+            self._chat_window()  # build it (hidden), so nothing said is missed
+            self.chat.withdraw()  # and keep it hidden until asked for
+        box = self.chat_text  # the conversation
+        box.configure(state="normal")  # writable for a moment
+        box.insert("end", time.strftime("%H:%M  "), "when")  # the time
+        box.insert("end", f"{who}: ", "me" if mine else "them")  # who said it
+        box.insert("end", text)  # what was said
+        if mine:  # this station's own line
+            name = f"chat{len(self.chat_marks)}"  # a mark of its own
+            box.mark_set(name, "end-1c")  # just after the text, where the tick will go
+            box.mark_gravity(name, "left")  # text added later goes after it
+            self.chat_marks.setdefault(text, []).append(name)  # remembered by the message's text
+        box.insert("end", "\n")  # the end of the line
+        box.configure(state="disabled")  # read only again
+        box.see("end")  # the newest line in view
+        if not mine and self.chat.state() != "normal" and getattr(self, "chat_used", False):  # a reply, with the window closed, after the operator has chatted
+            self.show_chat()  # it opens by itself, as a conversation should (never for operators who do not use Chat)
+
+    def chat_delivered(self, text):  # the partner has acknowledged one of this station's messages (since 0.42)
+        marks = getattr(self, "chat_marks", {}).get(text) or []  # its line in the conversation, if it was typed there
+        if not marks:  # it was not
+            return  # nothing to mark
+        box = self.chat_text  # the conversation
+        box.configure(state="normal")  # writable for a moment
+        box.insert(marks.pop(0), "  \u2713")  # a tick after the oldest unmarked copy
+        box.configure(state="disabled")  # read only again
+
+    def chat_follow(self):  # the line at the top of the Chat window, once a second (since 0.42)
+        station = self.station  # the running station
+        if station is not None and station.state in LOCKED and station.partner:  # in a contact
+            report = getattr(self, "their_report", None)  # the partner's report of this station
+            heard = f", they hear you {report[2]:+.0f} dB" if report is not None and report[1] == station.partner else ""  # how the partner hears this station
+            turn = "sending" if getattr(self, "tx_active", False) else ("your messages are going" if station.outbox else "ready")  # what is happening
+            where = "working channel" if station.offset_hz else "calling frequency"  # where the contact is
+            words = f"In contact with {station.partner} on the {where}  \u00b7  L{station.tx_level}{heard}  \u00b7  {turn}"  # the line
+        else:  # no contact
+            words = "No contact. Lines you send wait for a contact with the station in To."  # say so
+        try:  # the window may have been closed with Kestrel
+            self.chat_state.configure(text=words)  # shown
+            self.chat.after(1000, self.chat_follow)  # again in a second
+        except tk.TclError:  # gone
+            pass  # stop
+
     def show_activity(self):  # open the Activity window
         self.activity.deiconify()  # shown
         self.activity.lift()  # in front
@@ -934,7 +1061,7 @@ class Panel:  # the control panel window
             words = f"{LONG_NOTE_CHARS - len(text.rstrip())} of {LONG_NOTE_CHARS} characters left in a long note"  # its own limit
         else:  # a normal message
             parts = len(chain.split(text)) if chain.needs_chain(text.strip()) else 1  # messages it takes: one, or the pieces of a chained message (since 0.42)
-            words = f"{MESSAGE_MOST - len(text)} characters left  -  " + (f"{parts} parts, sent on a working channel" if parts > 1 else "1 message")  # what is left, and how it goes
+            words = f"{MESSAGE_MOST - len(text)} characters left  -  " + (f"{parts} parts (working channel)" if parts > 1 else "1 message")  # what is left, and how it goes
         self.count_label.configure(text=words, foreground=self.colors["warn_fg"] if self.send_as.get() == SEND_AS[1] and len(text.rstrip()) > LONG_NOTE_CHARS else "")  # in the warning color when a long note is too long
 
     # ---- the scopes ----
@@ -1700,6 +1827,10 @@ class Panel:  # the control panel window
         self.log.configure(background=c["text_bg"], foreground=c["text_fg"], insertbackground=c["text_fg"])  # the log
         self.message.configure(background=c["field"], foreground=c["fg"], insertbackground=c["fg"], highlightbackground=c["border"], highlightcolor=c["accent"], selectbackground=c["select"], selectforeground=c["select_fg"])  # the message box (a plain text box since 0.41)
         theme.color_window(self.activity, c)  # the Activity window (since 0.41)
+        if getattr(self, "chat", None) is not None:  # the Chat window has been opened (since 0.42)
+            theme.color_window(self.chat, c)  # in the same look
+            self.chat_text.configure(background=c["text_bg"], foreground=c["text_fg"])  # its conversation
+            self.chat_text.tag_configure("them", foreground=c.get("accent", c["text_fg"]))  # the partner's lines in the accent color
         self.status.configure(background=c["bg"], foreground=c["fg"])  # the status band, until a state colors it
         self.stations.tag_configure("calling", background=c["calling_row"])  # stations beaconing now, highlighted in the theme's color
         self.quick_menu.configure(background=c["panel"], foreground=c["fg"], activebackground=c["select"], activeforeground=c["select_fg"])  # the quick-message menu (a pop-up, which Windows lets the program color)
@@ -2304,6 +2435,7 @@ class Panel:  # the control panel window
             while self.marked < len(station.delivered):  # a message has been delivered since the last look
                 text = station.delivered[self.marked]  # which one
                 self._advance(text, "delivered " + time.strftime("%H:%M"))  # mark its row
+                self.chat_delivered(text)  # a tick beside it in the Chat window (since 0.42)
                 if self.contact is not None:  # in a contact
                     self.contact["sent"] += 1  # count it
                 self.logbook.write("message", direction="TX", station=self.settings["call"], **{"from": self.settings["call"]}, to=station.partner, text=text, dial_khz=round(self.dial_hz() / 1000.0, 1), level=f"L{station.tx_level}", rig=self.rig_name(), power_w=self.power_w())  # the logbook
@@ -2337,8 +2469,10 @@ class Panel:  # the control panel window
                         continue  # the logbook gets the whole message once it is complete
                     self.chain_rows.pop(station.partner, None)  # the chain is complete
                     text = whole  # the whole message, for the logbook
+                    self.chat_line(station.partner, text, mine=False)  # into the Chat window, whole (since 0.42)
                 else:  # an ordinary message
                     self.received.insert("", "end", values=(time.strftime(HEARD_TIME), station.partner, text))  # add it to the received list
+                    self.chat_line(station.partner, text, mine=False)  # and into the Chat window (since 0.42)
                 self.received.yview_moveto(1.0)  # keep the newest row in view
                 snr = station.history[-1][0] if station.history else None  # the latest reading of the partner's signal
                 if self.contact is not None:  # in a contact
