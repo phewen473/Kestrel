@@ -4,8 +4,9 @@
 ;   /DCOMMIT=abc1234 the source commit it was built from
 ;   /DSRC=<folder>   the finished program folder to install (dist\Kestrel)
 ;   /DOUT=<file>     the setup program to write
-; It installs Kestrel for all users under Program Files, adds Start-menu entries
-; (and a desktop shortcut if chosen), and registers an uninstaller under Apps.
+; It installs Kestrel for the current user under %LOCALAPPDATA%\Programs\Kestrel (since 0.42; no administrator
+; rights needed, so Kestrel can update itself), adds Start-menu entries (and a desktop shortcut if chosen), and
+; registers an uninstaller under Apps. An older all-users copy in Program Files is offered for removal.
 ; Each user's own settings, contacts and logs live in %LOCALAPPDATA%\Kestrel and are not touched.
 
 Unicode true                                   ; Unicode text throughout
@@ -14,9 +15,9 @@ Unicode true                                   ; Unicode text throughout
 
 Name "Kestrel ${VERSION}"                      ; the name shown in the installer
 OutFile "${OUT}"                               ; the setup program to write
-InstallDir "$PROGRAMFILES64\Kestrel"           ; installed under Program Files
-InstallDirRegKey HKLM "Software\Kestrel" "InstallDir"  ; a reinstall offers the folder used before
-RequestExecutionLevel admin                    ; Program Files needs administrator rights
+InstallDir "$LOCALAPPDATA\Programs\Kestrel"   ; installed for this user (since 0.42; was Program Files)
+InstallDirRegKey HKCU "Software\Kestrel" "InstallDir"  ; a reinstall offers the folder used before
+RequestExecutionLevel user                     ; no administrator rights: a per-user install (since 0.42)
 SetCompressor /SOLID lzma                      ; the smallest setup program
 BrandingText "Kestrel ${VERSION} (${COMMIT})"  ; shown at the bottom of each page
 
@@ -45,11 +46,20 @@ Function .onInit                               ; before anything is shown
     Abort                                      ; stop
   ${EndIf}
   SetRegView 64                                ; use the 64-bit registry
+  ReadRegStr $1 HKLM "Software\Kestrel" "InstallDir"  ; an all-users copy installed by 0.41 or earlier, if any
+  ${If} $1 != ""                               ; there is one
+  ${AndIf} ${FileExists} "$1\Uninstall.exe"     ; and its uninstaller is still there
+    IfSilent oldkept                           ; a silent install never asks (an update from 0.42 on finds none)
+    MessageBox MB_YESNO|MB_ICONQUESTION "An older Kestrel is installed for all users in$\r$\n$1$\r$\n$\r$\nKestrel now installs for you alone, so it can update itself. Remove the old copy now? Windows will ask for permission. Your settings, contacts and logs are kept either way." IDNO oldkept  ; ask
+    ExecShellWait "runas" "$1\Uninstall.exe" "/S _?=$1"  ; run its uninstaller with administrator rights, silently, and wait
+    RMDir /r "$1"                               ; its folder (and the uninstaller, which _?= leaves behind), if Windows allows
+    oldkept:                                   ; carry on either way
+  ${EndIf}                                     ; done with the old copy
 FunctionEnd
 
 Section "Kestrel (required)" SecMain           ; the program itself
   SectionIn RO                                 ; always installed
-  SetShellVarContext all                       ; Start-menu entries for every user
+  SetShellVarContext current                   ; Start-menu entries for this user
   RMDir /r "$INSTDIR\_internal"                ; an older version's libraries go first, so none are left behind
   SetOutPath "$INSTDIR"                        ; copy into the installation folder
   File /r "${SRC}\*.*"                         ; everything in the finished program folder
@@ -59,18 +69,18 @@ Section "Kestrel (required)" SecMain           ; the program itself
   CreateShortcut "$SMPROGRAMS\Kestrel\Getting started.lnk" "$INSTDIR\README.txt"  ; the notes
   CreateShortcut "$SMPROGRAMS\Kestrel\Uninstall Kestrel.lnk" "$INSTDIR\Uninstall.exe"  ; remove it
   WriteUninstaller "$INSTDIR\Uninstall.exe"    ; the uninstaller
-  WriteRegStr HKLM "Software\Kestrel" "InstallDir" "$INSTDIR"  ; remember where it went
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayName" "Kestrel"  ; listed under Apps
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayVersion" "${VERSION} (${COMMIT})"  ; its version
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "Publisher" "Kestrel project"  ; who it is from
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayIcon" "$INSTDIR\Kestrel.exe"  ; its icon
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "UninstallString" '"$INSTDIR\Uninstall.exe"'  ; how to remove it
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "NoModify" 1  ; no "change" button
-  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "NoRepair" 1  ; no "repair" button
+  WriteRegStr HKCU "Software\Kestrel" "InstallDir" "$INSTDIR"  ; remember where it went
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayName" "Kestrel"  ; listed under Apps
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayVersion" "${VERSION} (${COMMIT})"  ; its version
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "Publisher" "Kestrel project"  ; who it is from
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "DisplayIcon" "$INSTDIR\Kestrel.exe"  ; its icon
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "UninstallString" '"$INSTDIR\Uninstall.exe"'  ; how to remove it
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "NoModify" 1  ; no "change" button
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel" "NoRepair" 1  ; no "repair" button
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop          ; optional
-  SetShellVarContext all                       ; for every user
+  SetShellVarContext current                   ; for this user
   CreateShortcut "$DESKTOP\Kestrel.lnk" "$INSTDIR\Kestrel.exe"  ; the shortcut
 SectionEnd
 
@@ -80,12 +90,12 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 Section "Uninstall"                            ; removing Kestrel
-  SetShellVarContext all                       ; the entries made for every user
+  SetShellVarContext current                   ; the entries made for this user
   SetRegView 64                                ; the 64-bit registry
   RMDir /r "$INSTDIR"                          ; the program folder
   RMDir /r "$SMPROGRAMS\Kestrel"               ; the Start-menu folder
   Delete "$DESKTOP\Kestrel.lnk"                ; the desktop shortcut, if made
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel"  ; the Apps entry
-  DeleteRegKey HKLM "Software\Kestrel"         ; the remembered folder
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Kestrel"  ; the Apps entry
+  DeleteRegKey HKCU "Software\Kestrel"         ; the remembered folder
   MessageBox MB_ICONINFORMATION "Kestrel has been removed.$\r$\n$\r$\nYour own settings, contacts and logs were kept, in the Kestrel folder under %LOCALAPPDATA%. Delete that folder too if you no longer want them." /SD IDOK  ; say what was kept
 SectionEnd

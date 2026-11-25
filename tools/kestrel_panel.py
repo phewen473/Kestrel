@@ -57,6 +57,7 @@ from live import propagation, sunspots  # HF propagation predictions (ITU-R P.53
 from live import antennas  # the antenna types offered in Settings > Station (since 0.39R2)  # noqa: E402
 from live import power_hold  # holding the output power by the drive, and spotting a sag (since 0.40R1)  # noqa: E402
 from modem.control import beacon_rig, beacon_watts  # the rig type and watts as a beacon carries them (since 0.40)  # noqa: E402
+from live import updates  # checking GitHub for a newer release, and installing it when asked (since 0.42)  # noqa: E402
 from live import heardlog, logbook, mixer, telemetry, theme  # the 48-hour heard log, the CSV and ADIF logbook, Windows' device levels, telemetry messages, light and dark looks  # noqa: E402
 from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-card input and output  # noqa: E402
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
@@ -88,6 +89,7 @@ DEFAULTS = {"call": "", "grid": "", "name": "", "rig_text": "", "max_power_w": "
             "quick": [{"name": "Call, name and grid", "text": "{call} {name} {grid}"}, {"name": "Rig and power", "text": "{call} {name} {grid} RIG {rig} {power}W"},  # (continued: the quick messages,)
                       {"name": "Telemetry", "text": "{call} {telemetry}"}]}  # (continued: each with the name the operator gave it; up to QUICK_MOST)
 DEFAULTS.update({"hold_power_w": ""})  # the output power to hold, in watts, by adjusting the drive between transmissions; blank = off (since 0.40R1)
+DEFAULTS.update({"update_check": "daily", "update_notify": "all", "update_test": True, "update_install": "ask", "update_last": 0.0, "update_skip": ""})  # Settings > Updates: when to check, what to report, test releases, what to do; when the last check was and the version skipped (since 0.42)
 DEFAULTS.update({"keep_alive": False, "activity_window": False})  # Keep-Alive (working channels: 3 more idle minutes) and whether the Activity window opens at start (since 0.41)
 DEFAULTS.update({"location": "", "antenna": ""})  # this station's location and antenna (one of the fixed list in live/antennas.py) (since 0.39R2)
 DEFAULTS.update({"contact_history": HISTORY_DEFAULT, "contact_history_mode": "all"})  # how many history entries each contact keeps (30 to 200), and whether all traffic or only completed contacts go in (since 0.31R3)
@@ -355,6 +357,10 @@ MESSAGE_MOST = 1000  # the most characters the message box takes (the chained-me
 SEND_AS = ("Normal", "Long note (reach)")  # how the typed message goes, chosen beside the To box (since 0.41)
 FRAME_CHARS = 200  # characters in one transmission at most (a longer message goes as several)
 KEEPALIVE_NAMES = {False: "Off: a contact ends after 3 minutes with no messages", True: "On: 3 more idle minutes on a working channel (6 in all; never on the calling frequency)"}  # Settings > Operating (since 0.41)
+UPDATE_CHECK_NAMES = {"daily": "Daily: when Kestrel starts and once a day while it runs", "startup": "Only when Kestrel starts", "off": "Off: never check"}  # Settings > Updates (since 0.42)
+UPDATE_NOTIFY_NAMES = {"all": "Every new release", "signal": "Only releases that change the signal (both stations must update)"}  # Settings > Updates (since 0.42)
+UPDATE_TEST_NAMES = {True: "Yes: include test releases (every Kestrel release is one for now)", False: "No: finished releases only"}  # Settings > Updates (since 0.42)
+UPDATE_INSTALL_NAMES = {"ask": "Tell me, and offer Install now (downloads, closes, installs, restarts)", "notify": "Only tell me (I will download it myself)"}  # Settings > Updates (since 0.42)
 ACTIVITY_NAMES = {False: "Opens when you ask (the Activity button), or by itself on a warning", True: "Opens when Kestrel starts"}  # Settings > Operating (since 0.41)
 
 
@@ -619,7 +625,7 @@ class Panel:  # the control panel window
         Tooltip(send, "Send (Enter): to the station in To, in the contact; to ALL as a broadcast (F11); or as a long note when As says so. Shift+Enter starts a new line.")  # help
         self.tabs = ttk.Notebook(lists)  # the lists, as tabs on one card (since 0.41)
         lists.add(self.tabs, weight=2)  # on the right, wider
-        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "SNR", 44), ("time", "Heard", 96), ("text", "Sending", 64), ("mail", "Status", 96), ("utc", "UTC", 48)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
+        self.stations = self._list(self.tabs, 0, "Stations heard", (("saved", "*", 22), ("who", "Callsign", 84), ("grid", "Grid", 50), ("band", "Band", 46), ("snr", "SNR", 44), ("time", "Heard", 108), ("text", "Sending", 58), ("mail", "Status", 90), ("utc", "UTC", 48)))  # every callsign heard, plus the saved contacts (marked *); stations beaconing now are highlighted
         self.received = self._list(self.tabs, 1, "Received", (("time", "Received (local)", 110), ("who", "From", 110), ("text", "Message", 260), ("utc", "UTC", 56)))  # incoming messages and broadcasts
         self.to_send = self._list(self.tabs, 2, "To send", (("time", "Queued", 64), ("to", "To", 70), ("band", "Band", 46), ("text", "Message", 190), ("state", "State", 190), ("utc", "UTC", 64)))  # outgoing messages, who each is for, and how far each has got
         change = ttk.Frame(self.to_send.master)  # buttons under that list
@@ -692,6 +698,8 @@ class Panel:  # the control panel window
         for event in ("<KeyPress>", "<ButtonPress>", "<MouseWheel>", "<Motion>"):  # anything the operator does in the window...
             root.bind_all(event, self.touched, add="+")  # ...counts as being at the station
         root.protocol("WM_DELETE_WINDOW", self.close)  # save and stop cleanly when the window is closed
+        self.update_thread, self.update_result, self.update_offer, self.update_waiting, self.update_label = None, None, None, None, None  # the update check: its thread, its answer, the release on offer, one waiting to install, the Settings label (since 0.42)
+        root.after(20000, lambda: self.update_tick(True))  # the first check, 20 seconds after start, so it never slows the start (since 0.42)
         root.after(100, self.show_lines)  # start passing log lines to the window
         root.after(500, self.follow_station)  # start keeping the lists and readings up to date
         root.after(100, self.draw_scope)  # start drawing the scope
@@ -814,12 +822,13 @@ class Panel:  # the control panel window
         view.add_command(label="Go to the level sliders", underline=6, accelerator="Ctrl+J", command=lambda: self.rx_slider.focus_set())  # the receive and transmit levels
         bar.add_cascade(label="View", underline=0, menu=view)  # put the menu on the bar
         settings = tk.Menu(bar, tearoff=False)  # the Settings menu
-        for tab, words, key in ((0, "Station...", 0), (1, "Radio and rig control...", 0), (2, "Audio...", 0), (3, "Operating (start-up, beacon)...", 0), (4, "Logging...", 0), (5, "Quick messages...", 0), (6, "Appearance...", 1), (7, "Contacts...", 0)):  # one item per tab of the Settings window
+        for tab, words, key in ((0, "Station...", 0), (1, "Radio and rig control...", 0), (2, "Audio...", 0), (3, "Operating (start-up, beacon)...", 0), (4, "Logging...", 0), (5, "Quick messages...", 0), (6, "Appearance...", 1), (7, "Contacts...", 0), (8, "Updates...", 0)):  # one item per tab of the Settings window
             settings.add_command(label=words, underline=key, accelerator="F12" if tab == 0 else "", command=lambda t=tab: self.settings_window(t))  # open Settings at that tab
         bar.add_cascade(label="Settings", underline=0, menu=settings)  # put the menu on the bar
         help_menu = tk.Menu(bar, tearoff=False)  # the Help menu
         help_menu.add_command(label="Keyboard shortcuts", underline=0, accelerator="F1", command=self.shortcuts_window)  # every key
         help_menu.add_command(label="Reading the scopes", underline=0, command=lambda: messagebox.showinfo("Kestrel - the scopes", SCOPE_HELP, parent=self.root))  # what the two scopes show, and how to zoom and resize
+        help_menu.add_command(label="Check for updates", underline=0, command=lambda: self.begin_update_check(manual=True))  # ask GitHub now (since 0.42)
         help_menu.add_command(label="About Kestrel", underline=0, command=lambda: messagebox.showinfo("About Kestrel", about_text(), parent=self.root))  # what this is, which version, and who began it
         bar.add_cascade(label="Help", underline=0, menu=help_menu)  # put the menu on the bar
         self.root.configure(menu=bar)  # give the window its menu bar
@@ -4267,6 +4276,21 @@ class Panel:  # the control panel window
         note(contacts_tab, 2, "All traffic: every time a saved contact is heard, called or worked (beacons, calls with no answer, broadcasts, contacts).\nCompleted contacts: only contacts that were made and ended. When a history is full, the oldest entry is dropped.\nLowering the number trims longer histories when you click Save (you are asked first). The logbook is not affected.")  # what they mean
         note(contacts_tab, 3, f"Contacts are kept in {CONTACTS_FILE}.")  # where
         ttk.Button(contacts_tab, text="Open the folder", command=lambda: self.open_path(os.path.dirname(CONTACTS_FILE))).grid(row=4, column=0, sticky="w", padx=8)  # look at it
+        updates_tab = page("Updates")  # checking for a newer Kestrel (since 0.42)
+        field(updates_tab, 0, "update_check", "Check for updates", names=UPDATE_CHECK_NAMES, width=58)  # how often
+        field(updates_tab, 1, "update_notify", "Tell me about", names=UPDATE_NOTIFY_NAMES, width=58)  # every release, or signal changes only
+        field(updates_tab, 2, "update_test", "Test releases", names=UPDATE_TEST_NAMES, width=58)  # pre-releases too
+        field(updates_tab, 3, "update_install", "When there is one", names=UPDATE_INSTALL_NAMES, width=58)  # offer Install now, or only say so
+        checked = ttk.Frame(updates_tab)  # the Check now row
+        checked.grid(row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 2))  # place it
+        ttk.Button(checked, text="Check now", command=lambda: self.begin_update_check(manual=True)).pack(side="left")  # ask GitHub now, with the saved choices
+        self.update_label = ttk.Label(checked, text=self.update_status_text(), font="KestrelSmall")  # when the last check was, and what it found
+        self.update_label.pack(side="left", padx=(8, 0))  # beside the button
+        note(updates_tab, 5, "Kestrel asks GitHub, where its releases are published, whether there is a newer version; nothing is sent about you or your station.\n"
+             "Install now downloads the setup program, checks it against the SHA-256 published with it, closes Kestrel (your waiting messages are kept),\n"
+             "installs it and starts Kestrel again. It waits until no contact is under way and nothing is being sent.\n"
+             "A release that changes the signal is always shown: stations on different signal versions mostly cannot hear each other.\n"
+             "Check now uses the saved choices; press Save first if you changed them.")  # what this does
 
         def save():  # the Save button
             new = dict(self.settings)  # a copy to fill in
@@ -4369,7 +4393,7 @@ class Panel:  # the control panel window
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="right")  # drop the changes
         ttk.Button(buttons, text="Save", command=save).pack(side="right", padx=4)  # keep the changes
         dialog.bind("<Return>", lambda event: save())  # Enter saves
-        book.select(min(max(tab, 0), 7))  # open at the tab asked for
+        book.select(min(max(tab, 0), len(book.tabs()) - 1))  # open at the tab asked for (any of them; Updates since 0.42)
         dialog.after(50, lambda: dialog.focus_force())  # the window has the keyboard
 
     def settings_summary(self):  # the settings in use, for the verbose log
@@ -4691,6 +4715,144 @@ class Panel:  # the control panel window
         write_json(SETTINGS_FILE, self.pending_import)  # and written now, in case Kestrel is stopped some other way
         if messagebox.askyesno("Kestrel", f"Settings imported. Your old ones are kept as {os.path.basename(backup)}.\n\nThey take effect when Kestrel starts again. Restart Kestrel now?", parent=self.root):  # restart?
             self.restart()  # closed and started again
+
+    def update_status_text(self):  # the words beside Check now in Settings > Updates (since 0.42)
+        """Say when the last check was, in local time, and what it found."""
+        last = float(self.settings.get("update_last") or 0)  # when
+        if not last:  # never
+            return "Not checked yet."  # say so
+        found = getattr(self, "update_offer", None)  # what it found
+        result = f"Kestrel {found['version']} is available." if found else "You have the newest version."  # in words
+        return f"Last checked {time.strftime('%Y-%m-%d %H:%M', time.localtime(last))}. {result}"  # the line
+
+    def update_tick(self, started=False):  # see whether a check is due (since 0.42)
+        """Check now if Settings > Updates says so; look again in an hour."""
+        if updates.due(self.settings.get("update_check", "daily"), self.settings.get("update_last"), time.time(), started):  # due
+            self.begin_update_check(manual=False)  # check, quietly
+        self.root.after(3600 * 1000, self.update_tick)  # look again in an hour
+
+    def begin_update_check(self, manual=False):  # ask GitHub, in the background (since 0.42)
+        """Start a check in its own thread; update_poll picks up the answer. `manual`: the operator asked, so always answer."""
+        if self.update_thread is not None and self.update_thread.is_alive():  # one is already running
+            return  # it will answer
+        choices = (SPEC_VERSION, SIGNAL_VERSION, bool(self.settings.get("update_test", True)), self.settings.get("update_notify") == "signal", "" if manual else self.settings.get("update_skip", ""))  # what to ask (a manual check also shows a skipped version)
+
+        def work():  # in the background: the network may be slow
+            self.update_result = updates.check(*choices)  # the answer: (release or None, problem or None)
+        self.update_result = None  # no answer yet
+        self.update_thread = threading.Thread(target=work, name="update-check", daemon=True)  # the thread
+        self.update_thread.start()  # started
+        self.root.after(500, lambda: self.update_poll(manual))  # look for the answer
+
+    def update_poll(self, manual):  # the check's answer, back in the window's own thread (since 0.42)
+        """Show what the check found: a notice for a newer release; for a manual check, also 'up to date' or the problem."""
+        if self.update_thread is not None and self.update_thread.is_alive():  # still waiting for GitHub
+            self.root.after(500, lambda: self.update_poll(manual))  # look again
+            return  # not yet
+        offer, problem = self.update_result or (None, "no answer")  # the answer
+        if problem:  # no answer from GitHub
+            self.say(f"update check: GitHub not reachable ({problem})")  # in the Activity log, quietly
+            if manual:  # the operator asked
+                messagebox.showinfo("Kestrel", f"Kestrel could not reach GitHub to check for updates.\n\n{problem}", parent=self.root)  # say why
+            return  # try again at the next check
+        self.settings["update_last"] = time.time()  # when this check was
+        self.save_settings()  # remembered
+        self.update_offer = offer  # what was found
+        if self.update_label is not None and self.update_label.winfo_exists():  # Settings > Updates is open
+            self.update_label.configure(text=self.update_status_text())  # bring it up to date
+        if offer is not None:  # a newer release
+            self.say(f"update: Kestrel {offer['version']} is available" + (f" (new signal version {offer['signal']})" if offer["new_signal"] else ""))  # in the Activity log
+            self.show_update_notice(offer)  # and in a window
+        elif manual:  # the operator asked, and there is nothing newer
+            messagebox.showinfo("Kestrel", f"You have the newest version, Kestrel {SPEC_VERSION}.", parent=self.root)  # say so
+
+    def show_update_notice(self, offer):  # the window that tells the operator about a newer release (since 0.42)
+        """Say what the new release is and offer Install now, the release page, Remind me later and Skip this version."""
+        box = self.window("update", f"Kestrel {offer['version']} is available")  # a window of its own
+        box.resizable(False, False)  # a fixed size
+        frame = ttk.Frame(box, padding=12)  # its contents
+        frame.pack(fill="both", expand=True)  # fill it
+        ttk.Label(frame, text=f"Kestrel {offer['version']} is available. You have {SPEC_VERSION}.", font="KestrelBold").pack(anchor="w")  # the news
+        if offer["new_signal"]:  # it changes what is sent
+            ttk.Label(frame, text=f"New signal version {offer['signal']}: stations on signal {SIGNAL_VERSION} and {offer['signal']} mostly cannot hear each other.\nBoth stations should update before testing together.", foreground=self.colors.get("bar_hot", "red"), justify="left").pack(anchor="w", pady=(6, 0))  # the warning that matters on the air
+        if offer["test"]:  # a pre-release
+            ttk.Label(frame, text="This is a test release.", font="KestrelSmall").pack(anchor="w", pady=(4, 0))  # say so
+        notes = "\n".join(offer["notes"].splitlines()[:12])  # the first lines of what changed
+        if notes:  # there are some
+            words = tk.Text(frame, height=min(12, notes.count("\n") + 1), width=86, wrap="word", relief="solid", borderwidth=1)  # room to read them
+            words.insert("1.0", notes)  # the notes
+            words.configure(state="disabled")  # read only
+            words.pack(fill="both", pady=(8, 0))  # place it
+            theme.color_window(box, self.colors)  # in the chosen look
+        self.update_progress = ttk.Label(frame, text="", font="KestrelSmall")  # download progress
+        self.update_progress.pack(anchor="w", pady=(6, 0))  # under the notes
+        row = ttk.Frame(frame)  # the buttons
+        row.pack(fill="x", pady=(10, 0))  # at the bottom
+        if self.settings.get("update_install", "ask") == "ask" and getattr(sys, "frozen", False):  # the installed program, and the operator wants the offer
+            install = ttk.Button(row, text="Install now", command=lambda: self.install_update(offer))  # download, close, install, restart
+            install.pack(side="left")  # first
+            Tooltip(install, "Downloads the setup program and checks it, waits until no contact is under way and nothing is being sent, then closes Kestrel (your waiting messages are kept), installs the update and starts Kestrel again.")  # help
+        ttk.Button(row, text="Release page", command=lambda: self.open_web(offer["page"])).pack(side="left", padx=(6, 0))  # read about it, or download it by hand
+        ttk.Button(row, text="Remind me later", command=box.destroy).pack(side="left", padx=(6, 0))  # ask again at the next check
+        ttk.Button(row, text="Skip this version", command=lambda: self.skip_update(offer, box)).pack(side="left", padx=(6, 0))  # no more notices for this one
+
+    def open_web(self, url):  # open a web page in the operator's browser (since 0.42)
+        import webbrowser  # the standard way
+        webbrowser.open(url)  # opened
+
+    def skip_update(self, offer, box):  # Skip this version (since 0.42)
+        """No more notices about this version (one that changes the signal is still shown)."""
+        self.settings["update_skip"] = offer["version"]  # remembered
+        self.save_settings()  # kept
+        box.destroy()  # the notice closes
+
+    def update_idle(self):  # whether an update may install now (since 0.42)
+        """True when no contact is under way and nothing is being sent: Kestrel never cuts a transmission or contact short."""
+        return self.contact is None and not getattr(self, "tx_active", False)  # idle
+
+    def install_update(self, offer):  # Install now (since 0.42)
+        """Download and check the setup program, then, once Kestrel is idle, hand over to the helper and close."""
+        if getattr(self, "update_download", None) is not None and self.update_download.is_alive():  # already downloading
+            return  # it will carry on
+        self.update_path, self.update_problem = None, None  # nothing yet
+
+        def progress(done, total):  # called as the file arrives (in the download thread)
+            self.update_done = (done, total)  # read by the window's own thread
+
+        def work():  # in the background
+            try:  # the download may fail
+                self.update_path = updates.download(offer, progress=progress)  # fetched and checked
+            except Exception as problem:  # anything at all
+                self.update_problem = str(problem) or problem.__class__.__name__  # kept to show
+        self.update_done = (0, 0)  # nothing yet
+        self.update_download = threading.Thread(target=work, name="update-download", daemon=True)  # the thread
+        self.update_download.start()  # started
+        self.say(f"update: downloading Kestrel {offer['version']}")  # in the Activity log
+        self.root.after(500, lambda: self.update_install_poll(offer))  # watch it
+
+    def update_install_poll(self, offer):  # follow the download, then wait for an idle moment (since 0.42)
+        label = getattr(self, "update_progress", None)  # the notice's progress line, if the notice is open
+        shown = label is not None and label.winfo_exists()  # it is
+        if self.update_download.is_alive():  # still coming
+            done, total = self.update_done  # how far
+            if shown:  # the notice is open
+                label.configure(text=f"Downloading: {done / 1e6:.1f} of {total / 1e6:.1f} MB" if total else f"Downloading: {done / 1e6:.1f} MB")  # say how far
+            self.root.after(500, lambda: self.update_install_poll(offer))  # look again
+            return  # not yet
+        if self.update_problem:  # it failed
+            self.say(f"update: download stopped by a problem: {self.update_problem}")  # in the Activity log (it opens)
+            if shown:  # the notice is open
+                label.configure(text=f"Not installed: {self.update_problem}")  # say why
+            return  # nothing installed
+        if not self.update_idle():  # a contact or a transmission is under way
+            if shown:  # the notice is open
+                label.configure(text="Downloaded and checked. Installing when the contact ends and nothing is being sent...")  # say what it waits for
+            self.root.after(2000, lambda: self.update_install_poll(offer))  # look again shortly
+            return  # not yet
+        program = os.path.join(updates.install_folder(), "Kestrel.exe")  # where the new version will be
+        updates.start_helper(os.getpid(), self.update_path, program, sys.argv[1:])  # the helper waits for this program to close, installs, starts it again
+        self.say(f"update: installing Kestrel {offer['version']}; Kestrel will start again by itself")  # in the Activity log
+        self.close()  # save everything, release the radio, close
 
     def restart(self):  # close Kestrel and start it again (after an import)
         """Close the panel the usual way, then start the same program with the same options."""
