@@ -607,3 +607,34 @@ def test_station_matches_python():  # the compiled station (interface 10) agains
             assert json.dumps(event, sort_keys=True, default=str) == json.dumps(ref_event, sort_keys=True, default=str), (index, event, ref_event)  # the same frame, at the same time, with the same outcome (states and levels after it included)
         assert ends == ref_ends, index  # the same logs, results and stores for every station
     assert sum(len(events) for events, _ in mine) > 60  # the runs did real work
+
+
+def test_many_threads_at_once_do_not_crash():  # the study harness's one crash (November 26, 2026)
+    """Twelve Python threads decoding at once, the library using eight threads each, all finish with the right results.
+
+    Under memory or thread exhaustion a helper thread could fail to start; until 0.43 the threads
+    already running were then destroyed unjoined, ending the process ("terminate called without an
+    active exception"). Now a piece whose thread will not start runs on the calling thread.
+    """
+    import threading  # Python threads (the library releases Python's lock while it works)
+    from modem import build_frame, receive  # transmitter and receiver
+    from sim import run_channel  # the channel
+    saved = native.threads()  # the library's own setting
+    native.set_threads(8)  # many threads per call
+    audio = run_channel(build_frame("STRESS TEST 12345", 2), -6.0, np.random.default_rng(5))  # one L2 frame, easy
+    results, errors = [], []  # what came back
+    def work():  # one Python thread's share
+        try:  # whatever happens
+            for _ in range(4):  # a few decodes each
+                results.append(receive(audio, long_beacons=False).text)  # decoded
+        except Exception as exc:  # an error is a failure, but must not end the process
+            errors.append(exc)  # kept
+    threads = [threading.Thread(target=work) for _ in range(12)]  # twelve at once
+    try:  # run them
+        for t in threads:  # start
+            t.start()  # each
+        for t in threads:  # wait
+            t.join()  # each
+    finally:  # the setting back
+        native.set_threads(saved)  # restored
+    assert not errors and results == ["STRESS TEST 12345"] * 48  # every decode right

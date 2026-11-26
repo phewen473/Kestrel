@@ -25,12 +25,12 @@ def test_fast_fading_table_needs_every_reading_fast():  # one slow or unread fra
     from link.adapt import supported_level  # the rule
 
     allowed = [0, 1, 2, 3, 4]  # every level
-    slow = [(-9.0, 0.5, 0.2)] * 3  # fading, slow
-    fast = [(-9.0, 0.5, 1.0)] * 3  # fading, fast
-    assert supported_level(slow, allowed) == 0  # -9 dB in slow fading: L1 and L2 need -10 + 2 (the tables as re-measured for 0.43)
-    assert supported_level(fast, allowed) == 2  # in fast fading L2 needs -12 + 2
-    assert supported_level(fast[:2] + [(-9.0, 0.5, float("nan"))], allowed) == 0  # one unread spread: careful again
-    assert supported_level([(-9.0, 0.5)] * 3, allowed) == 0  # two-value readings (older callers) keep the old rule
+    slow = [(-12.5, 0.5, 0.2)] * 3  # fading, slow
+    fast = [(-12.5, 0.5, 1.0)] * 3  # fading, fast
+    assert supported_level(slow, allowed) == 1  # -12.5 dB in slow fading: L1 from -14, L2 only from -12 (the next-frame tables of 0.43)
+    assert supported_level(fast, allowed) == 2  # in fast fading L2 from -13
+    assert supported_level(fast[:2] + [(-12.5, 0.5, float("nan"))], allowed) == 1  # one unread spread: careful again
+    assert supported_level([(-12.5, 0.5)] * 3, allowed) == 1  # two-value readings (older callers) keep the general fading table
 
 
 def test_short_path_muf_and_nearest_sounding():  # the secant law, and which sounding is used

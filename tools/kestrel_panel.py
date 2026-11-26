@@ -2175,7 +2175,7 @@ class Panel:  # the control panel window
                     theirs = usual  # the usual figure
                 propcheck.check(call, self.settings["grid"], grid, band, result.snr_db, theirs, noise, on_row=self.prop_gap)  # this station hearing it, in the background
                 report = getattr((result.fields or {}).get("report"), "snr_db", None)  # how it heard this station, when the frame carries a report (since 0.39)
-                if report is not None:  # it does
+                if report is not None and np.isfinite(report):  # it does (an acknowledgment burst carries only the level asked for, since 0.43)
                     mine = self.power_w()  # this station's power as the radio measured it, if it did
                     propcheck.check(call, self.settings["grid"], grid, band, float(report), float(mine) if mine else usual, noise, direction="out", on_row=self.prop_gap)  # it hearing this station, in the background
 
@@ -2272,7 +2272,7 @@ class Panel:  # the control panel window
         station's last frame (SNR, fading, the level it asks for); keep the newest, with the time and who sent it."""
         fields = getattr(result, "fields", None) or {}  # the frame's control fields, if it is a control frame
         report = fields.get("report") if result.ok else None  # its channel report
-        if report is None:  # not a frame that carries one
+        if report is None or getattr(result, "burst", False):  # not a frame that carries one (an acknowledgment burst carries only the level asked for, since 0.43)
             return  # nothing to keep
         station = self.station  # the running station
         own = self.settings["call"].strip().upper()  # this station's callsign

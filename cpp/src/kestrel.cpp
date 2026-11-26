@@ -20,6 +20,7 @@
 #include <limits>  /* infinity */
 #include <numeric>  /* gcd */
 #include <memory>  /* owned objects */
+#include <exception>  /* errors carried out of helper threads (since 0.43) */
 #include <thread>  /* worker threads */
 #include <vector>  /* growable arrays */
 
@@ -128,18 +129,35 @@ void parallel_for(size_t count, size_t least, Work work) {  /* split a loop acro
         work(static_cast<size_t>(0), count);  /* all on this thread */
         return;  /* done */
     }  /* end of the small case */
+    std::vector<std::exception_ptr> errors(threads);  /* an error in any piece, kept until every thread has finished (since 0.43: an error must never leave a thread running) */
+    auto guarded = [&work, &errors](size_t slot, size_t first, size_t last) {  /* one piece, its error caught */
+        try {  /* the work */
+            work(first, last);  /* this piece */
+        } catch (...) {  /* anything at all, such as running out of memory */
+            errors[slot] = std::current_exception();  /* kept for the caller */
+        }  /* end of the catch */
+    };  /* end of guarded */
     std::vector<std::thread> pool;  /* the helpers */
     size_t piece = (count + threads - 1) / threads;  /* items per thread, rounded up */
     for (size_t t = 1; t < threads; ++t) {  /* every piece but the first */
         size_t first = t * piece, last = std::min(count, first + piece);  /* its range */
         if (first < last) {  /* not empty */
-            pool.emplace_back(work, first, last);  /* on a helper thread */
+            try {  /* a helper thread, if the system will start one */
+                pool.emplace_back(guarded, t, first, last);  /* on a helper thread */
+            } catch (...) {  /* it would not (out of threads or memory): until 0.43 the threads already running were then destroyed unjoined, which ends the program ("terminate called without an active exception") */
+                guarded(t, first, last);  /* this piece here instead */
+            }  /* end of the catch */
         }  /* end of the test */
     }  /* end of the helpers */
-    work(static_cast<size_t>(0), std::min(count, piece));  /* the first piece here */
+    guarded(0, 0, std::min(count, piece));  /* the first piece here */
     for (auto &helper : pool) {  /* wait for every helper */
         helper.join();  /* finished */
     }  /* end of the waiting */
+    for (auto &error : errors) {  /* any piece that failed */
+        if (error) {  /* this one */
+            std::rethrow_exception(error);  /* passed on, now that no thread is left running */
+        }  /* end of the test */
+    }  /* end of the errors */
 }  /* end of parallel_for */
 
 }  /* end of the private helpers */
@@ -1337,16 +1355,33 @@ struct KesListener {  /* one continuous receiver */
             job.got = kes_detect_preamble(piece, n, pat.samples, pat.bins.data(), pat.bins.size(), static_cast<int>(cfg[KES_CFG_PAD]), static_cast<int>(cfg[KES_CFG_HOPS]),
                                           pat.reach, pat.whiten, keep, job.rows.data(), job.shifts.data(), job.quality.data());  /* the strongest few, timed coarsely */
         };  /* end of look */
+        std::vector<std::exception_ptr> errors(jobs.size());  /* an error in any job, kept until every thread has finished (since 0.43) */
+        auto guarded = [&look, &errors, &jobs](size_t j) {  /* one job, its error caught */
+            try {  /* the search */
+                look(jobs[j]);  /* this pattern */
+            } catch (...) {  /* anything at all, such as running out of memory */
+                errors[j] = std::current_exception();  /* kept for the caller */
+            }  /* end of the catch */
+        };  /* end of guarded */
         std::vector<std::thread> helpers;  /* the patterns are searched side by side */
         for (size_t j = 1; j < jobs.size(); ++j) {  /* every job but the first */
-            helpers.emplace_back(look, std::ref(jobs[j]));  /* on a helper thread */
+            try {  /* a helper thread, if the system will start one */
+                helpers.emplace_back(guarded, j);  /* on a helper thread */
+            } catch (...) {  /* it would not: this job here instead (the threads already running must not be destroyed unjoined) */
+                guarded(j);  /* here */
+            }  /* end of the catch */
         }  /* end of the helpers */
         if (!jobs.empty()) {  /* the first */
-            look(jobs[0]);  /* here */
+            guarded(0);  /* here */
         }  /* end of the first */
         for (auto &helper : helpers) {  /* wait for them all */
             helper.join();  /* finished */
         }  /* end of the waiting */
+        for (auto &error : errors) {  /* any job that failed */
+            if (error) {  /* this one */
+                std::rethrow_exception(error);  /* passed on, now that no thread is left running */
+            }  /* end of the test */
+        }  /* end of the errors */
         for (const Job &job : jobs) {  /* each pattern's candidates, in the usual order */
             const Pattern &pat = patterns[job.slot];  /* its settings */
             long hop = static_cast<long>(pat.samples) / static_cast<long>(cfg[KES_CFG_HOPS]);  /* the coarse search's step */

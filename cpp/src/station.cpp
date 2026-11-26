@@ -44,10 +44,10 @@ using kes::Json;  /* the JSON value */
 /* ---- numbers from modem/params.py, modem/levels.py and link/params.py ---- */
 const double kFs = 12000.0;  /* audio sample rate (FS) */
 const long kSamples[5] = {4800, 1620, 1080, 540, 270};  /* samples per tone, levels 0-4 (LEVELS) */
-const double kMinSnr[5] = {-20.0, -16.0, -14.0, -11.0, -8.0};  /* weakest SNR per level, steady (MIN_SNR_DB) */
-const double kMinSnrFading[5] = {-16.0, -10.0, -10.0, -5.0, -4.0};  /* and fading (MIN_SNR_FADING_DB; re-measured for 0.43) */
+const double kChoiceSnr[5] = {-20.0, -20.0, -18.0, -14.0, -12.0};  /* the tables the level rule chooses by, steady readings (levels.py CHOICE_SNR_DB, since 0.43: from the next-frame study; until then the decode limits MIN_SNR_DB) */
+const double kChoiceSnrFading[5] = {-16.0, -16.0, -14.0, -11.0, -7.0};  /* fading readings (CHOICE_SNR_FADING_DB; until 0.43 MIN_SNR_FADING_DB) */
 const double kFadeLimit = 0.15;  /* fading index above which a signal is fading (FADE_INDEX_LIMIT) */
-const double kMinSnrFastFading[5] = {-16.0, -14.0, -12.0, -5.0, -4.0};  /* and in fast fading, by measured Doppler spread (MIN_SNR_FAST_FADING_DB, since 0.35; re-measured for 0.43) */
+const double kChoiceSnrFast[5] = {-16.0, -17.0, -15.0, -12.0, -9.0};  /* fast-fading readings, by measured Doppler spread (CHOICE_SNR_FAST_DB; until 0.43 MIN_SNR_FAST_FADING_DB) */
 const double kFastSpreadLow = 0.5, kFastSpreadHigh = 2.5;  /* the measured spreads that count as fast fading (FAST_SPREAD_HZ) */
 const int kSizes[4] = {50, 100, 150, 200};  /* size classes in plain characters (SIZE_CLASSES) */
 const int kPreambleTones = 12;  /* PREAMBLE_TONES */
@@ -70,6 +70,8 @@ const double kReplySlotGap = 2.4;  /* REPLY_SLOT_GAP_S */
 const int kCallupLevel = 2;  /* CALLUP_LEVEL */
 const double kExpect = 300.0;  /* EXPECT_S */
 const double kHeardForCall = 600.0;  /* HEARD_FOR_CALL_S */
+const double kReportEvery = 300.0;  /* REPORT_EVERY_S: a message frame is acknowledged with a burst while the last full report sent is younger than this (since 0.43) */
+const long kBurstSamples = 24 * 4800;  /* an acknowledgment burst: 24 L0 tones (modem/burst.py BURST_TONES, since 0.43) */
 const double kAskedKeep = 7200.0;  /* ASKED_KEEP_S: how long the level a station asked for is remembered (since 0.43) */
 const int kWideSlots = 4;  /* WIDE_SLOTS */
 const int kStepUpClean = 2;  /* STEP_UP_CLEAN */
@@ -291,7 +293,7 @@ bool is_fast(double spread) {  /* plan.py is_fast: a measured spread in the fast
 }  /* end of is_fast */
 
 long pick_level(double snr_db, bool fading, bool fast = false) {  /* plan.py pick_level with a 2 dB margin */
-    const double *limits = fading ? (fast ? kMinSnrFastFading : kMinSnrFading) : kMinSnr;  /* which table */
+    const double *limits = fading ? (fast ? kChoiceSnrFast : kChoiceSnrFading) : kChoiceSnr;  /* which table (since 0.43 the next-frame tables; the decode limits before) */
     long best = -1;  /* the fastest usable */
     for (long n = 0; n < 5; ++n) {  /* each level */
         if (snr_db >= limits[n] + 2.0) {  /* strong enough */
@@ -631,6 +633,8 @@ struct KesStation {  /* its state and rules */
     double last_notice_l0 = -1e9;  /* when a notice last went with an L0 beacon */
     double tidied = -1e9;  /* when expired mail was last looked for */
     std::string reply;  /* the last reply, until collected */
+    bool bursts = true;  /* acknowledge with bursts where the rules allow (since 0.43) */
+    double report_at = -1e9;  /* when a full channel report last went to the partner (since 0.43) */
 
     bool locked() const { return state == "LOCKED" || state == "DEGRADED" || state == "REACQUIRE"; }  /* LOCKED_STATES */
 
@@ -943,6 +947,9 @@ struct KesStation {  /* its state and rules */
         if (type == "long") {  /* a long beacon */
             return kLongSamples;  /* fixed */
         }  /* end of the long beacon */
+        if (type == "burst") {  /* an acknowledgment burst (since 0.43) */
+            return kBurstSamples;  /* fixed */
+        }  /* end of the burst */
         long level = static_cast<long>(f.at("level").as_int());  /* its level */
         if (type == "message" || type == "addressed") {  /* a message frame */
             int size_class = pick_size_class(f.at("text").as_text(), type == "message" ? kTypeLink : kTypeAddressed);  /* its size */
@@ -952,7 +959,49 @@ struct KesStation {  /* its state and rules */
         return (kFrameTones + control_total(ftype)) * samples_of(level);  /* the pattern and a header copy at each end, and the body */
     }  /* end of frame_samples */
 
-    Json send(double now, const Json &frame, const char *kind, long level, const Json &expects, double reply_s, const std::string &note_text) {  /* prepare one transmission */
+    double partner_offset() {  /* station.py _partner_offset: where the partner's signals arrive (since 0.43) */
+        if (!last_result.is_null() && std::isfinite(real(last_result, "offset_hz"))) {  /* a frame from the partner */
+            return real(last_result, "offset_hz");  /* its offset */
+        }  /* end of the partner's frame */
+        auto *heard = heard_at.find(partner);  /* the last reading of it */
+        if (heard != nullptr && std::isfinite(heard->second.at("offset_hz").as_real())) {  /* with an offset */
+            return heard->second.at("offset_hz").as_real();  /* that */
+        }  /* end of the reading */
+        return 0.0;  /* none known */
+    }  /* end of partner_offset */
+
+    Json burst_says(long msg_id, long part, long status, long w) {  /* one BurstSays (modem/burst.py), as a dict */
+        Json b = Json::object();  /* its fields */
+        b["link"] = link;  /* link */
+        b["msg_id"] = msg_id;  /* message number */
+        b["part"] = part;  /* part, or a lock confirmation's code */
+        b["status"] = status;  /* verdict */
+        b["want"] = w;  /* level asked for */
+        return b;  /* the record */
+    }  /* end of burst_says */
+
+    Json listen_for(long msg_id, long part) {  /* station.py _listen_for: what a message frame's acknowledgment could say (since 0.43) */
+        Json out = Json::list();  /* the list */
+        for (long status : {static_cast<long>(kAckOk), static_cast<long>(kAckHaveIt)}) {  /* received, or already held */
+            for (long w : allowed) {  /* at any shared level */
+                out.push(burst_says(msg_id, part, status, w));  /* one */
+            }  /* end of the levels */
+        }  /* end of the verdicts */
+        for (long w : allowed) {  /* or send again (number 0) */
+            out.push(burst_says(0, part, kAckResend, w));  /* one */
+        }  /* end of the levels */
+        return out;  /* every one */
+    }  /* end of listen_for */
+
+    Json listen_confirm(long code) {  /* station.py _listen_confirm: what a lock-confirming burst could say (since 0.43) */
+        Json out = Json::list();  /* the list */
+        for (long w = 0; w < 5; ++w) {  /* any level */
+            out.push(burst_says(0, code, kAckLink, w));  /* one */
+        }  /* end of the levels */
+        return out;  /* every one */
+    }  /* end of listen_confirm */
+
+    Json send(double now, const Json &frame, const char *kind, long level, const Json &expects, double reply_s, const std::string &note_text, const Json &listen = Json()) {  /* prepare one transmission */
         double seconds = static_cast<double>(frame_samples(frame)) / kFs;  /* its length, as len(audio) / FS */
         Json tx = Json::object();  /* the Transmission */
         tx["frame"] = frame;  /* what to build */
@@ -961,13 +1010,21 @@ struct KesStation {  /* its state and rules */
         tx["note"] = note_text;  /* detail */
         tx["delay"] = 0.0;  /* sent at once */
         tx["seconds"] = seconds;  /* its length */
+        tx["listen"] = listen;  /* the burst it awaits, or None (since 0.43) */
+        tx["listen_hz"] = listen.is_null() ? 0.0 : partner_offset();  /* and where to look for it */
         pending = expects;  /* the reply to wait for */
         deadline = now + seconds + kTurnaround + reply_s + reply_margin;  /* how long to wait */
         last_activity = now + seconds;  /* active until it ends */
         return tx;  /* for whoever runs the radio */
     }  /* end of send */
 
-    Json ack(double now, long msg_id, long part, long status, const char *kind, const Json &expects = Json(), double reply_s = 0.0) {  /* an acknowledgment */
+    Json ack(double now, long msg_id, long part, long status, const char *kind, const Json &expects = Json(), double reply_s = 0.0, bool burst = false) {  /* an acknowledgment: a burst, or a frame with the full report */
+        if (bursts && (burst || ((status == kAckOk || status == kAckResend || status == kAckHaveIt) && now - report_at < kReportEvery))) {  /* a burst will do (since 0.43) */
+            Json b = burst_says(msg_id, part, status, want);  /* what it says */
+            b["type"] = "burst";  /* an acknowledgment burst */
+            return send(now, b, kind, 0, expects, reply_s, "burst, wants L" + std::to_string(want));  /* at L0 */
+        }  /* end of the burst */
+        report_at = now;  /* a full report goes out */
         Json f = Json::object();  /* its description */
         f["type"] = "ack";  /* an acknowledgment */
         f["link"] = link;  /* link */
@@ -1043,7 +1100,8 @@ struct KesStation {  /* its state and rules */
         idle_told = false;  /* traffic is moving */
         last_traffic = now;  /* the idle clock restarts */
         idle_warned = false;  /* no warning due */
-        return send(now, f, "message", tx_level, Json("ack"), control_seconds(kTypeAck, want), note_text);  /* wait for its acknowledgment */
+        long number = job.is_null() ? current_id : static_cast<long>(job.at("id").as_int());  /* the number the acknowledgment will carry */
+        return send(now, f, "message", tx_level, Json("ack"), control_seconds(kTypeAck, want), note_text, listen_for(number, static_cast<long>(item.at("part").as_int())));  /* wait for its acknowledgment (a burst, or a frame) */
     }  /* end of send_part */
 
     Json next(double now) {  /* what to send when it is this station's turn */
@@ -1124,6 +1182,7 @@ struct KesStation {  /* its state and rules */
         notice_sent = false;  /* no notice just sent */
         history.clear();  /* no measurements */
         last_result = Json();  /* none */
+        report_at = -1e9;  /* no report sent in the next contact yet (since 0.43) */
         clean_run = good_run = 0;  /* no runs */
         plan = Json::list();  /* nothing under way */
         part_index = misses = resends = probes = finals = beacons = 0;  /* no counts */
@@ -1284,7 +1343,8 @@ struct KesStation {  /* its state and rules */
         f["directed"] = false;  /* a reply, not a call */
         f["level"] = tx_level;  /* level */
         double wait = static_cast<double>(slot) * slot_s + static_cast<double>(slots_left) * slot_s + control_seconds(kTypeAck, 0);  /* its slot, the rest of the window, the confirmation */
-        Json tx = send(now, f, "answer", tx_level, Json("confirm"), wait, "slot " + std::to_string(slot) + ", wants L" + std::to_string(want));  /* wait for the confirmation */
+        report_at = now;  /* the answer carries a full report (since 0.43) */
+        Json tx = send(now, f, "answer", tx_level, Json("confirm"), wait, "slot " + std::to_string(slot) + ", wants L" + std::to_string(want), wide_window ? Json() : listen_confirm(kOfferReply));  /* wait for the confirmation (a burst, after a single-slot beacon) */
         tx["delay"] = static_cast<double>(slot) * slot_s;  /* held back until its slot */
         return tx;  /* the answer */
     }  /* end of on_beacon */
@@ -1461,7 +1521,7 @@ struct KesStation {  /* its state and rules */
             say(now, "called by " + origin);  /* explain */
             leads = true;  /* takes the beaconing station's part */
             lock_with(r, now);  /* locked */
-            return ack(now, 0, kOfferTurn, kAckLink, "confirm", Json("offer"), longest_reply());  /* confirm, hand the caller the turn */
+            return ack(now, 0, kOfferTurn, kAckLink, "confirm", Json("offer"), longest_reply(), true);  /* confirm, hand the caller the turn (a burst, since 0.43) */
         }  /* end of the call */
         if (!is(role, "beaconer") || !is(pending, "answer") || dest != call) {  /* not expecting one */
             return Json();  /* silent */
@@ -1484,7 +1544,7 @@ struct KesStation {  /* its state and rules */
         my_turn = true;  /* beaconing station first */
         beacons = 0;  /* answered */
         say(now, "locked with " + partner + "; told to send at L" + std::to_string(tx_level) + ", asking for L" + std::to_string(want));  /* explain */
-        return ack(now, 0, kOfferReply, kAckLink, "confirm");  /* confirm */
+        return ack(now, 0, kOfferReply, kAckLink, "confirm", Json(), 0.0, !wide);  /* confirm: a burst after a single-slot beacon (since 0.43), a frame after a wide window */
     }  /* end of lock_with */
 
     Json on_ack(const Json &r, double now) {  /* an acknowledgment */
@@ -1938,7 +1998,8 @@ struct KesStation {  /* its state and rules */
         f["mail_check"] = true;  /* asking for mail */
         f["directed"] = true;  /* a call */
         f["level"] = tx_level;  /* level */
-        return send(now, f, "call", tx_level, Json("confirm"), control_seconds(kTypeAck, 0), "to " + target);  /* wait for the confirmation */
+        report_at = now;  /* the call carries a report (since 0.43) */
+        return send(now, f, "call", tx_level, Json("confirm"), control_seconds(kTypeAck, 0), "to " + target, listen_confirm(kOfferTurn));  /* wait for the confirmation (a burst, or a frame) */
     }  /* end of call_now */
 
     Json notice_now(double now) {  /* a mail notice before a beacon, or None */
@@ -2213,6 +2274,8 @@ struct KesStation {  /* its state and rules */
         if (name == "answer_beacons") return Json(answer_beacons);  /* answers beacons */
         if (name == "available") return Json(available);  /* available */
         if (name == "answer_calls") return Json(answer_calls);  /* answers calls */
+        if (name == "bursts") return Json(bursts);  /* acknowledges with bursts (since 0.43) */
+        if (name == "report_at") return Json(report_at);  /* when a full report last went (since 0.43) */
         if (name == "last_beacon_t") return Json(last_beacon_t);  /* last beacon */
         if (name == "called_t") {  /* calls made */
             Json o = Json::object();  /* the dict */
@@ -2301,6 +2364,8 @@ struct KesStation {  /* its state and rules */
         if (name == "answer_beacons") { answer_beacons = truthy(v); return; }  /* answers beacons */
         if (name == "available") { available = truthy(v); return; }  /* available */
         if (name == "answer_calls") { answer_calls = truthy(v); return; }  /* answers calls */
+        if (name == "bursts") { bursts = truthy(v); return; }  /* acknowledges with bursts (since 0.43) */
+        if (name == "report_at") { report_at = v.as_real(); return; }  /* when a full report last went (since 0.43) */
         if (name == "carries") { carries = truthy(v); return; }  /* carries mail */
         if (name == "callup") { callup = static_cast<long>(v.as_int()); return; }  /* call-up level */
         if (name == "asked") {  /* the levels stations asked for, carried over from an earlier run (since 0.43) */

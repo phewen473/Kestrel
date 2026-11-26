@@ -98,6 +98,26 @@ def tone_energies(band, level):  # pick the 32 tone positions out of the band
     return band[:, 1::level.step][:, :M_TONES]  # every step-th column, starting at the lowest tone
 
 
+def wide_tone_energies(band, level):  # each tone with the bins beside it (since 0.43)
+    """Return each of the 32 tones' energy plus half of each neighboring bin, one row per symbol, from the output of band_energies.
+
+    At levels whose tones sit two bins apart (L0 to L2) the bin between two
+    tones belongs to neither, and fast fading (Doppler spread of a hertz or
+    more) smears a tone's energy into it. Counting half of each neighbor
+    catches that energy back: in the study of November 26, 2026 it read
+    85 L0 frames of 100 at -18 dB with a 2 Hz spread where the tone alone
+    read 16. In slow fading it reads a little worse, so the receiver uses it
+    only as a second try. At levels whose tones are neighbors (L3, L4) there
+    is no bin between them, and the tones alone are returned.
+    """
+    own = tone_energies(band, level)  # the tones alone
+    if level.step < 2:  # tones in neighboring bins: nothing between them
+        return own  # unchanged
+    below = band[:, 0::level.step][:, :M_TONES]  # the bin just below each tone
+    above = band[:, 2::level.step][:, :M_TONES]  # the bin just above each tone
+    return own + 0.5 * (below + above)  # the tone and half of each neighbor
+
+
 def symbol_energies(x, start, nsym, level, offset_hz=0.0, drift_hz_s=0.0):  # measure every tone slot
     """Return the energy in each of the 32 tone positions, one row per symbol."""
     return tone_energies(band_energies(x, start, nsym, level, offset_hz, drift_hz_s), level)  # measure the band, keep the tone positions

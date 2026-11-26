@@ -168,6 +168,32 @@ Settings, your own frequencies, saved contacts, the 48-hour heard log and the lo
 
 `live_send.py` and `live_station.py` take `--ptt none|rig|cat|rts|dtr`, `--rig host:port`, `--band 40|30|20` (Kestrel's preselected frequency for that band), `--freq` (kHz), `--mode`, `--port`, `--baud` and `--gain`. Only transmit where your license allows, with the published specification matching the program.
 
+## make_noise_pool.py - real band noise for the simulator (since 0.43)
+
+```
+python tools/make_noise_pool.py recording1.wav recording2.wav ...
+```
+
+Cuts the quiet stretches (no transmissions, not muted, at least 170 s long) out of your own receive recordings (12 kHz mono 16-bit, as Kestrel records them), scales each to power 1 in the 2.5 kHz band and writes them as the simulator's noise pool in your data folder (see sim/README.md). The studies below take `--noise real` to use it.
+
+## next_frame_study.py - the level-choice thresholds, the way a station uses them (since 0.43)
+
+```
+python tools/next_frame_study.py --trials 100 --noise real
+```
+
+Each trial is an L0 frame, then 40 s later a frame of the level under test (L1 to L4), through one channel (steady, or two paths 1 ms apart at 0.1, 0.5 or 2 Hz). From the L0 frame's readings (SNR, fading index, Doppler spread, classed as the station classes them) it finds, for each level and class, the lowest reading from which the next frame got through nine times in ten. `modem/levels.py`'s tables are those readings less the 2 dB margin of the level rule. Writes `results/next_frame_<noise>.csv`. About 16 minutes on 22 cores.
+
+## burst_study.py - acknowledgment bursts (since 0.43)
+
+```
+python tools/burst_study.py noise --trials 10000 --noise real
+python tools/burst_study.py sweep --trials 100 --noise real
+python tools/burst_study.py wav recording.wav ...
+```
+
+`noise`: the score one search of noise alone beats one time in 1,000 (`THRESHOLD` in `modem/burst.py`). `sweep`: bursts through slow, moderate and fast fading from -26 to -14 dB: recognized, wrong verdict, wrong level (`results/burst_sweep_<noise>.csv`). `wav`: real recordings searched every 3 s as a waiting station would, to see what beats the threshold there.
+
 ## build_native.py - build the compiled modem library
 
 `python tools/build_native.py` runs CMake on `cpp/`, builds libkestrel and copies it to

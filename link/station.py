@@ -8,6 +8,13 @@ channel simulator, and a real program would connect one to a sound card.
 The life of a contact:
     beacon -> answer -> acknowledgment (lock confirmed)
     message frame -> acknowledgment, repeated; the turn passes when a station has nothing left
+
+Since 0.43 most acknowledgments are bursts (modem/burst.py): 24 L0 tones
+(9.6 s) that the waiting station recognizes instead of decoding. Every frame
+that awaits one says what it could say (Transmission.listen); whoever runs
+the radio searches for it after the frame (live/runner.py, link/simulate.py)
+and hands what it finds to handle() as an acknowledgment. The lock is
+confirmed by a burst too after a directed call or a single-slot beacon.
     identification with the end-of-contact flag, from each side
 
 Two optional extras: a station may keep the lock open after the traffic
@@ -33,6 +40,7 @@ from modem import (  # the modem: frames, reports, planner
     control_seconds, frame_seconds, join_parts, link_id, plan_at_level, receive,  # (continued)
 )  # end of the import list
 from modem.address import clean_call  # tidies a callsign
+from modem.burst import BurstSays, build_burst  # acknowledgment bursts (since 0.43)
 from modem.powersteps import build_steps  # power steps sent just before a beacon (since 0.38)
 from modem.params import (  # frame type numbers and the airtime limit
     AIRTIME_POOR_CAP_S, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED, FRAME_TYPE_ANSWER, FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_LINK, FRAME_TYPE_NOTICE, FS,  # (continued)
@@ -45,7 +53,7 @@ from .mail import CompiledMailroom, Mailroom  # the mail kept between contacts (
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
-    ASKED_KEEP_S,  # (continued: how long the level a station asked for is remembered, since 0.43)
+    ASKED_KEEP_S, REPORT_EVERY_S,  # (continued: how long the level a station asked for is remembered, since 0.43; how long a channel report stays fresh enough for bursts, since 0.43)
     HOLD_TELL_S, HOP_LIMIT, MAIL_TIDY_S, NOTICE_L0_EVERY_S, OFFER_NO_MAIL, REACH_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
@@ -67,6 +75,8 @@ class Transmission:  # one frame the station wants on the air
     note: str = ""  # extra detail for the log
     delay: float = 0.0  # seconds to wait before sending (an answer waiting for its reply slot)
     lead: np.ndarray = None  # audio sent just before the frame, in the same transmission: a beacon's power steps (since 0.38); None for none
+    listen_hz: float = 0.0  # where to look for that burst: the frequency offset the partner's frames have been arriving at (since 0.43)
+    listen: list = None  # what an acknowledgment burst answering this frame could say (modem.burst.BurstSays), for whoever runs the radio to search for after it; None when no burst is awaited (since 0.43)
 
     @property  # computed from the audio
     def seconds(self):  # airtime
@@ -174,6 +184,8 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.answer_beacons = True  # a listening station answers beacons by itself; when False the operator chooses, and replies with a directed call
         self.available = True  # the operator is available for contacts; when False the station's beacons say so and a directed call gets one short "not available" reply
         self.answer_calls = True  # a listening station answers directed calls by itself; when False only calls it is expecting are answered, and the operator chooses for the rest
+        self.bursts = True  # acknowledge with bursts where the rules allow (since 0.43; tests may turn it off)
+        self.report_at = -1e9  # when this station last sent its partner a full channel report (an acknowledgment frame or an answer), since 0.43
         self.last_beacon_t = -1e9  # when this station last beaconed (directed calls from anyone are expected for a while afterwards)
         self.called_t = {}  # callsign -> when this station last called it (a call back from it is expected for a while afterwards)
         self.unavailable_from = ""  # the last station that replied "not available" to this station's call
@@ -411,16 +423,39 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.clean_run = self.good_run = 0  # new runs
         self.want = supported_level(self.history, self.allowed) if self.history else min(self.allowed)  # ask for what this one reading supports
 
-    def _send(self, now, audio, kind, level, expects=None, reply_s=0.0, note=""):  # prepare one transmission
-        tx = Transmission(audio, kind, level, note)  # the frame and its description
+    def _send(self, now, audio, kind, level, expects=None, reply_s=0.0, note="", listen=None):  # prepare one transmission
+        tx = Transmission(audio, kind, level, note, listen=listen)  # the frame and its description (and the burst it awaits, if any)
+        if listen:  # a burst is awaited
+            tx.listen_hz = self._partner_offset()  # look for it where the partner's signals arrive
         self.pending = expects  # what reply to wait for, if any
         self.deadline = now + tx.seconds + TURNAROUND_S + reply_s + self.reply_margin  # how long to wait for it
         self.last_activity = now + tx.seconds  # this station was last active when the frame ends
         return tx  # hand it to whoever runs the radio
 
-    def _ack(self, now, msg_id, part, status, kind, expects=None, reply_s=0.0):  # prepare an acknowledgment frame
+    def _ack(self, now, msg_id, part, status, kind, expects=None, reply_s=0.0, burst=False):  # prepare an acknowledgment
+        """Return an acknowledgment: a burst (modem/burst.py) when `burst` is set (a lock confirmation the partner awaits as one) or when it answers a message frame and this station's last full report is recent (REPORT_EVERY_S); otherwise an acknowledgment frame, which carries the full report."""
+        if self.bursts and (burst or (status in (ACK_OK, ACK_RESEND, ACK_HAVE_IT) and now - self.report_at < REPORT_EVERY_S)):  # a burst will do (since 0.43)
+            audio = build_burst(BurstSays(self.link, msg_id, part, status, self.want))  # 24 L0 tones fixed by everything it says
+            return self._send(now, audio, kind, 0, expects, reply_s, f"burst, wants L{self.want}")  # at L0, like every burst
+        self.report_at = now  # a full report goes out
         audio = build_ack(self.link, msg_id, part, status, self._report(), level=self.tx_level)  # at the level the partner asked for
         return self._send(now, audio, kind, self.tx_level, expects, reply_s, f"wants L{self.want}")  # note the level being asked for
+
+    def _partner_offset(self):  # where the partner's signals arrive (since 0.43)
+        """Return the frequency offset of the last frame heard from the partner (or, before a lock, from the station called, when it was heard lately), or 0."""
+        if self.last_result is not None and np.isfinite(self.last_result.offset_hz):  # a frame from the partner
+            return float(self.last_result.offset_hz)  # its offset
+        heard = self.heard_at.get(self.partner)  # the station's last reading of it, from any frame
+        return float(heard[1].offset_hz) if heard is not None and np.isfinite(heard[1].offset_hz) else 0.0  # its offset, or none known
+
+    def _listen_for(self, msg_id, part):  # what the acknowledgment of a message frame could say (since 0.43)
+        """Return the bursts that could acknowledge message `msg_id` part `part`: received or already held (that message number), or send again (number 0: a failed frame's number is unknown), at any shared level."""
+        says = [BurstSays(self.link, msg_id, part, status, w) for status in (ACK_OK, ACK_HAVE_IT) for w in self.allowed]  # received, or already held
+        return says + [BurstSays(self.link, 0, part, ACK_RESEND, w) for w in self.allowed]  # or send again
+
+    def _listen_confirm(self, code):  # what a burst confirming the lock could say (since 0.43)
+        """Return the bursts that could confirm a lock on this station's link number with `code` (OFFER_REPLY after an answer, OFFER_TURN after a directed call), at any level."""
+        return [BurstSays(self.link, 0, code, ACK_LINK, w) for w in range(len(LEVELS))]  # the level asked for is not known yet
 
     def _ident(self, now, final):  # prepare an identification frame
         self.last_ident = now  # the callsign goes out now
@@ -460,7 +495,8 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             note = f"{job['kind']} mail {job['origin']}#{job['id']} for {job['dest']}, part {item['part'] + 1}/{item['parts']}"  # which frame this is
         self.idle_told = False  # traffic is moving, so the lock is not idle
         self.last_traffic, self.idle_warned = now, False  # a message frame is going out: the idle clock starts again
-        return self._send(now, audio, "message", self.tx_level, "ack", control_seconds(FRAME_TYPE_ACK, self.want), note)  # wait for its acknowledgment
+        number = self.current_id if job is None else job["id"]  # the number the acknowledgment will carry
+        return self._send(now, audio, "message", self.tx_level, "ack", control_seconds(FRAME_TYPE_ACK, self.want), note, self._listen_for(number, item["part"]))  # wait for its acknowledgment (a burst, or a frame)
 
     def _next(self, now):  # decide what to send when the turn is this station's
         if now - self.last_ident >= IDENT_EVERY_S:  # nearly ten minutes since the callsign went out
@@ -514,6 +550,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.state, self.pending, self.partner, self.link = "IDLE", None, "", -1  # no partner
         self.job, self.mail_parts, self.notice_sent = None, {}, False  # no mail under way or half-received, no notice just sent
         self.history, self.last_result, self.clean_run, self.good_run = [], None, 0, 0  # no measurements
+        self.report_at = -1e9  # no report sent in the next contact yet (since 0.43)
         self.plan, self.part_index, self.misses, self.resends, self.probes, self.finals, self.beacons = [], 0, 0, 0, 0, 0, 0  # nothing under way, no counts
         self.my_turn = self.peer_empty = self.sent_final = False  # no turn, no goodbyes
         self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
@@ -594,7 +631,8 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self._say(now, f"heard {self.partner} at {result.snr_db:+.0f} dB; answering, asking for L{self.want}")  # explain
         audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level, grid=self.grid)  # the answer frame, with this station's locator (since 0.33)
         wait = slot * slot_s + slots_left * slot_s + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
-        tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}")  # wait for the lock to be confirmed
+        self.report_at = now  # the answer carries a full report
+        tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}", None if result.fields["wide"] else self._listen_confirm(OFFER_REPLY))  # wait for the lock to be confirmed (by a burst, after a single-slot beacon)
         tx.delay = slot * slot_s  # hold the answer back until its slot
         return tx  # the answer, with its waiting time
 
@@ -689,7 +727,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             self._say(now, f"called by {result.origin}")  # explain
             self.leads = True  # the called station takes the beaconing station's part from here on
             self._lock_with(result, now)  # lock with the caller (the plain confirmation it prepares is replaced below)
-            return self._ack(now, 0, OFFER_TURN, ACK_LINK, "confirm", "offer", self._longest_reply())  # confirm the lock and hand the caller the first turn: it called because it has something to say
+            return self._ack(now, 0, OFFER_TURN, ACK_LINK, "confirm", "offer", self._longest_reply(), burst=True)  # confirm the lock and hand the caller the first turn: it called because it has something to say (a burst, since 0.43: the caller listens for one)
         if self.role != "beaconer" or self.pending != "answer" or result.dest != self.call:  # not expecting one, or it is for someone else
             return None  # stay silent
         if self.wide:  # a wide window: other answers may still come
@@ -708,7 +746,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.my_turn = True  # the beaconing station goes first
         self.beacons = 0  # the beacon was answered
         self._say(now, f"locked with {self.partner}; told to send at L{self.tx_level}, asking for L{self.want}")  # explain
-        return self._ack(now, 0, OFFER_REPLY, ACK_LINK, "confirm")  # confirm the lock and pass on the report
+        return self._ack(now, 0, OFFER_REPLY, ACK_LINK, "confirm", burst=not self.wide)  # confirm the lock and pass on the level wanted: a burst after a single-slot beacon (since 0.43; the answerer listens for one), a frame with the full report after a wide window
 
     def _on_ack(self, result, now):  # an acknowledgment was heard
         fields = result.fields  # its contents
@@ -1044,7 +1082,8 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         else:  # never heard, or long ago
             report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0)  # no measurement, asking for L0
         audio = build_answer(self.partner, self.call, report, self.levels, mail_check=True, level=self.tx_level, directed=True, grid=self.grid)  # an answer frame marked as a directed call, asking for any mail the called station holds for this one
-        return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}")  # wait for the called station to confirm the lock
+        self.report_at = now  # the call carries a report
+        return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}", self._listen_confirm(OFFER_TURN))  # wait for the called station to confirm the lock (by a burst, or a frame)
 
     def _notice(self, now):  # a mail notice to send just before a beacon, or None
         if self.notice_sent:  # one has just gone: the beacon is next
@@ -1187,6 +1226,8 @@ def _result_back(data):  # plain data -> a receiver report again (for the attrib
 def _build(frame):  # a frame description from the library -> its audio
     """Return the audio of the frame the compiled station described (built by the compiled transmitter)."""
     kind = frame["type"]  # which frame
+    if kind == "burst":  # an acknowledgment burst (since 0.43)
+        return build_burst(BurstSays(frame["link"], frame["msg_id"], frame["part"], frame["status"], frame["want"]))  # built
     if kind == "ack":  # an acknowledgment
         return build_ack(frame["link"], frame["msg_id"], frame["part"], frame["status"], ChannelReport(**frame["report"]), level=frame["level"])  # built
     if kind == "ident":  # an identification
@@ -1245,7 +1286,9 @@ class CompiledStation:  # one station, its rules in the compiled library (cpp/sr
         audio = _build(dict(data["frame"], steps=steps, **extra))  # the audio (a beacon's header saying whether steps came first)
         if len(audio) != round(data["seconds"] * FS):  # the library's idea of its length must match
             raise RuntimeError(f"frame length mismatch: {len(audio)} samples built, {data['seconds'] * FS:.0f} expected")  # a fault, never ignored
-        return _with_lead(Transmission(audio, data["kind"], data["level"], data["note"], data["delay"]), steps)  # the transmission, with its power steps if wanted
+        listen = [BurstSays(b["link"], b["msg_id"], b["part"], b["status"], b["want"]) for b in data["listen"]] if data.get("listen") else None  # the burst it awaits, if any (since 0.43)
+        tx = Transmission(audio, data["kind"], data["level"], data["note"], data["delay"], listen=listen, listen_hz=float(data.get("listen_hz", 0.0)))  # the transmission
+        return _with_lead(tx, steps)  # with its power steps if wanted
 
     def __getattr__(self, name):  # station.<name>, read from the library
         if name.startswith("__") or name in _OWN:  # Python's own lookups, or an attribute kept here

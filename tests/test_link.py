@@ -25,10 +25,10 @@ def test_level_requests_follow_the_measurements():  # the speed adaptation rule 
     allowed = [0, 1, 2, 3, 4]  # every level available
     strong = [(5.0, 0.0)] * 3  # three strong, steady frames
     weak = [(-13.5, 0.0)] * 3  # three weak, steady frames
-    assert supported_level(strong, allowed) == 4 and supported_level(weak, allowed) == 1  # the fastest level each supports
-    assert supported_level([(5.0, 0.0), (5.0, 0.0), (-13.5, 0.0)], allowed) == 1  # the weakest recent frame decides
-    assert supported_level([(-5.0, 0.8)] * 3, allowed) < supported_level([(-5.0, 0.0)] * 3, allowed)  # fading asks for a slower level
-    assert wanted_level(weak, 4, 5, False, allowed) == 1  # conditions slipped: drop at once
+    assert supported_level(strong, allowed) == 4 and supported_level(weak, allowed) == 2  # the fastest level each supports (L2 from a steady -16 dB reading, since 0.43)
+    assert supported_level([(5.0, 0.0), (5.0, 0.0), (-13.5, 0.0)], allowed) == 2  # the weakest recent frame decides
+    assert supported_level([(-8.0, 0.8)] * 3, allowed) < supported_level([(-8.0, 0.0)] * 3, allowed)  # fading asks for a slower level
+    assert wanted_level(weak, 4, 5, False, allowed) == 2  # conditions slipped: drop at once
     assert wanted_level(strong, 0, 1, False, allowed) == 0  # better conditions, but only one clean frame: stay
     assert wanted_level(strong, 0, 2, False, allowed) == 2  # two clean frames: climb, two levels at most
     assert wanted_level(strong, 3, 2, False, allowed) == 4  # never past what is supported
@@ -494,7 +494,7 @@ def test_station_remembers_the_level_its_partner_asked_for():  # where the recor
     a.beacon()  # A calls
     b.listen()  # B answers
     a.queue("REMEMBER THE LEVEL")  # something to send
-    run_link(a, b, Path(-17.0), Path(5.0), seed=77)  # B hears A weakly; A hears B well
+    run_link(a, b, Path(-19.0), Path(5.0), seed=77)  # B hears A weakly (below L1's steady threshold of -18 dB, since 0.43); A hears B well
     assert "REMEMBER THE LEVEL" in b.inbox  # the message got through
     assert a.asked["Q2BB"][1] == 0  # A has it on record that Q2BB needed L0
     assert b.asked["Q1AAAA"][1] >= 2  # and B that Q1AAAA could take a faster level

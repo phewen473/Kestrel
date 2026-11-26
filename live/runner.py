@@ -8,11 +8,14 @@ and a sound-card output. Nothing in the link rules knows the difference.
 import re  # finds callsigns and levels in log lines
 import time  # the real clock
 
-from link.params import LONG_AFTER_CALLS, TURNAROUND_S  # short calls before a long call, to a station heard only in long frames (since 0.41); pause between hearing a frame and replying
+import numpy as np  # finite-number checks (since 0.43)
+
+from link.params import LONG_AFTER_CALLS, LONG_TRAFFIC_BELOW_DB, LONG_TRAFFIC_REPORT_S, TURNAROUND_S  # short calls before a long call, to a station heard only in long frames (since 0.41); pause between hearing a frame and replying
 from modem.levels import level_name  # L0 to L4, or LB
 from modem.powersteps import SECONDS as POWER_STEPS_S  # how long the power steps before a beacon last (since 0.38)
-from modem.params import CONTROL_BITS, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, and the long beacon's frame type and level number
+from modem.params import CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, the acknowledgment and answer frame types (since 0.43), and the long beacon's frame type and level number
 
+from .burstwatch import BurstWatch  # listening for an acknowledgment burst (since 0.43)
 from .busy import ChannelWatch, band_of  # listening before transmitting
 from .listener import Listener, likely_kestrel  # the continuous receiver, and its test for a near miss that is likely a real Kestrel frame
 from .notes import note_pieces  # a message cut into long notes (since 0.41)
@@ -123,6 +126,9 @@ def describe(result):  # one line about a received frame
         return "noise briefly looked like the start of a frame; nothing decoded"  # a false alarm, said plainly
     if not result.ok:  # it failed its check
         return f"heard a {name} at {level_name(result.level)} that failed its check ({result.snr_db:+.0f} dB)"  # say so
+    if getattr(result, "burst", False):  # an acknowledgment burst (since 0.43)
+        f = result.fields or {}  # what it says
+        return f"heard acknowledgment burst, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz: link {f.get('link')}, msg {f.get('msg_id')}, part {f.get('part')}, status {f.get('status')}, wants L{f['report'].want_level if f.get('report') is not None else '?'}"  # what it said
     line = f"heard {name} at {level_name(result.level)}, {result.snr_db:+.1f} dB, offset {result.offset_hz:+.1f} Hz, fading {result.fade_index:.2f}"  # the measurements
     spread = getattr(result, "spread_hz", float("nan"))  # the Doppler spread read from the tones (since 0.35)
     if spread == spread:  # read (not NaN)
@@ -184,6 +190,26 @@ def short_calls_failing(station, notes, now):  # stop short calls early? (since 
     if not target or not notes.heard_recently(target, now) or station.broadcasts or station.long_waiting is not None:  # not heard in long frames lately, or frames that a stop would drop
         return None  # the short calls run their course
     return target  # give way to a long call
+
+
+def their_report(station, result, own_call):  # the partner's report of this station, if `result` carries one (since 0.43)
+    """Return (SNR, level asked for) from an acknowledgment frame of this station's contact or an answer to this station; None for anything else (a burst carries no SNR)."""
+    fields = getattr(result, "fields", None) or {}  # a control frame's fields
+    report = fields.get("report") if result.ok and not getattr(result, "burst", False) else None  # its full report
+    if report is None or not np.isfinite(report.snr_db):  # none, or no reading
+        return None  # nothing
+    mine = (result.frame_type == FRAME_TYPE_ACK and station.partner and fields.get("link") == station.link) or (result.frame_type == FRAME_TYPE_ANSWER and fields.get("dest") == own_call)  # about this station
+    return (float(report.snr_db), int(report.want_level)) if mine else None  # the reading and the level asked for
+
+
+def traffic_too_weak(station, notes, report, now):  # short frames cannot carry the traffic: use long notes? (since 0.43)
+    """Return the partner's callsign when the waiting messages for it should go as long notes instead: this station is in a short-frame contact with traffic for the partner, and the partner's latest full report (`report`: time, SNR, level asked for), no older than LONG_TRAFFIC_REPORT_S, is at or below LONG_TRAFFIC_BELOW_DB at L0. Otherwise None."""
+    if notes is None or report is None or station.state not in LOCKED_STATES or not station.partner:  # no long notes, no report, or no contact
+        return None  # carry on
+    when, snr, want = report  # the report
+    if now - when > LONG_TRAFFIC_REPORT_S or snr > LONG_TRAFFIC_BELOW_DB or want != 0:  # stale, or strong enough
+        return None  # carry on
+    return station.partner if has_traffic_for(station, station.partner) else None  # only with messages waiting for it
 
 
 def hand_to_notes(station, notes, partner, now):  # a long contact was made: send waiting messages as long notes (since 0.41)
@@ -269,11 +295,13 @@ def call_request(target, after_contact, say=print):  # a directed call the opera
     return request  # ready to hand to the station thread
 
 
-def feed_from(listener, source, watch=None):  # read the source and give the audio to the listener
-    """Read new audio from `source` and feed it to `listener`, with its sample numbers when the source counts them (recorder.TimedSource); return the frames completed. `watch` (a busy.ChannelWatch) hears the same audio."""
+def feed_from(listener, source, watch=None, bursts=None):  # read the source and give the audio to the listener
+    """Read new audio from `source` and feed it to `listener`, with its sample numbers when the source counts them (recorder.TimedSource); return the frames completed. `watch` (a busy.ChannelWatch) and `bursts` (a burstwatch.BurstWatch, since 0.43) hear the same audio."""
     chunk = source.read()  # the new audio
     if watch is not None and len(chunk):  # someone is listening for other signals
         watch.feed(chunk)  # let it hear this too
+    if bursts is not None:  # an acknowledgment burst may be awaited
+        bursts.feed(chunk)  # it hears this too
     count = getattr(source, "samples", None)  # the timeline's count, if the source keeps one
     return listener.feed(chunk, at=None if not isinstance(count, int) else count - len(chunk))  # numbered as the timeline numbers them
 
@@ -340,6 +368,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     station.reply_margin = LIVE_REPLY_MARGIN_S  # allow for real-world delays when waiting for replies
     margin_set = [LIVE_REPLY_MARGIN_S]  # the margin last given to the station (in a list so the loop can change it; power steps add theirs, since 0.38)
     listener = Listener()  # the continuous receiver
+    bursts = BurstWatch()  # listens for an acknowledgment burst after a frame that awaits one (since 0.43)
     listener.on_progress = on_progress  # the frame strip, if the caller shows one (since 0.37)
     listener.expect = lambda: (station.call, [station.target, station.partner] + list(expect() if expect is not None else ()))  # this station's callsign, and those it expects: the one it calls, its partner, and any the caller adds (since 0.31R1)
     started = time.monotonic()  # the moment the clock starts
@@ -371,6 +400,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     lost = 0  # how many times the sound card has reported losing audio, as of the last look
     gave_up = [None]  # a callsign the short calls just failed to reach, for a long call to follow (in a list so the loop can change it; since 0.41)
     inbox_seen = [0]  # how many received messages the idle watch has looked at (since 0.41)
+    reported = [None]  # the partner's latest full report of this station: (time, SNR, level asked for) (since 0.43)
 
     def now():  # seconds since the start
         return time.monotonic() - started  # the station's clock
@@ -406,12 +436,13 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         if isinstance(gaps, int) and getattr(source, "gaps", 0) > gaps and logging:  # the sound card delivered less audio than time passed during this transmission
             signal_log.note("input timeline made good after transmitting", seconds=round(source.last_gap_s, 3), total_s=round(source.gap_s, 3))  # kept in the signal log, to show how much each transmission loses
         listener.clear()  # and forget it
+        bursts.arm(tx)  # an acknowledgment burst may follow: keep what comes next (since 0.43)
         if watch is not None:  # listening before transmitting
             watch.clear()  # what was heard just before this transmission is not "now" any more
 
     stamp(f"{station.call} on the air as {station.role or 'broadcaster'}")  # opening line (a station with no role is only sending a broadcast)
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
-        for heard in feed_from(listener, source, watch):  # every frame that has completed
+        for heard in feed_from(listener, source, watch, bursts):  # every frame that has completed
             result = heard.result if heard.result.ok and heard.result.frame_type == FRAME_TYPE_LONG else station.hear(heard.audio, heard.result, heard.start)  # the continuous receiver's report, taken as read when it decoded (since 0.43; before, the clip was decoded again from scratch, without the help the continuous receiver gives weak control frames); a failed message frame is combined with its retry; a long beacon is already decoded, perhaps from several copies added together
             if getattr(heard.result, "power_steps", None) is not None and getattr(result, "power_steps", None) is None:  # the listener read power steps before this beacon (since 0.38)
                 result.power_steps = heard.result.power_steps  # kept with the station's report
@@ -428,7 +459,23 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                 notes.heard(result.fields, now())  # put it with the rest of its note, or take the receipt (or, since 0.41, a long call-up)
             elif notes is not None and result.ok and result.frame_type == FRAME_TYPE_LONG:  # a long beacon (since 0.41)
                 notes.saw((result.fields or {}).get("origin", ""), now())  # its sender is reachable with long frames
+            got = their_report(station, result, station.call)  # the partner's report of this station, if the frame carries one (since 0.43)
+            if got is not None:  # it does
+                reported[0] = (now(), got[0], got[1])  # the latest
+            if result.ok and bursts.waiting and (getattr(result, "link", -1) == station.link or (result.origin and result.origin == station.partner)):  # the partner's frame was read: the burst wait is over (since 0.43)
+                bursts.disarm()  # a burst found later would be stale
             reply = station.handle(result, now())  # what the link rules say to do
+            if reply is not None:  # something to send
+                time.sleep(TURNAROUND_S)  # give the other station time to switch to receive
+                transmit(reply)  # send it
+        found = bursts.check()  # the acknowledgment burst awaited, once enough audio is in (since 0.43)
+        if found is not None:  # recognized
+            stamp(describe(found))  # tell the operator
+            if logging:  # a signal log is kept
+                signal_log.link(describe(found))  # there too
+            if on_frame is not None:  # someone keeps a detailed log
+                on_frame(found)  # it is a report like any other
+            reply = station.handle(found, now())  # an acknowledgment, as far as the link rules go
             if reply is not None:  # something to send
                 time.sleep(TURNAROUND_S)  # give the other station time to switch to receive
                 transmit(reply)  # send it
@@ -465,6 +512,14 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
         tx = station.poll(now())  # anything to send without having heard something?
         if tx is not None:  # yes
             transmit(tx)  # send it
+        weak = traffic_too_weak(station, notes, reported[0], now())  # short frames are not reaching the partner (since 0.43)
+        if weak:  # its report says so
+            moved = hand_to_notes(station, notes, weak, now())  # the waiting messages become long notes
+            reported[0] = None  # acted on
+            if moved:  # some were moved
+                stamp(f"{weak} hears this station at {LONG_TRAFFIC_BELOW_DB:.0f} dB or less: waiting messages go as long notes; closing the short contact")  # tell the operator
+                notes.events.extend(moved)  # shown like any other hand-over
+                station.end()  # close the contact once the frame under way, if any, is done
         if notes is not None:  # long notes (since 0.34)
             notes.available = bool(getattr(station, "available", True))  # a long call is answered only while the operator takes contacts (since 0.41)
             target = short_calls_failing(station, notes, now())  # a station the short calls are not reaching, but heard lately in long frames (since 0.41)
@@ -508,6 +563,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             tuned = wanted  # remember where it is
             source.flush()  # what was received on the old frequency no longer matters
             listener.clear()  # so forget it
+            bursts.disarm()  # and no burst is awaited there
             if watch is not None:  # listening before transmitting
                 watch.reset()  # a new frequency: its noise and its users are not known yet
             stamp(f"radio moved to the working frequency ({wanted / 1000.0:+.1f} kHz)" if wanted else "radio back on the calling frequency")  # tell the operator

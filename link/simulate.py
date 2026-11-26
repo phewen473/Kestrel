@@ -4,13 +4,17 @@ Only one station transmits at a time (as on a real shared frequency).
 Each transmission is passed through the simulated radio path for its
 direction, handed to the other station's receiver, and the reply (if
 any) goes back the same way. When nobody replies, time jumps forward to
-the next timeout.
+the next timeout. A frame that awaits an acknowledgment burst (its
+Transmission.listen, since 0.43) has the reply searched for that burst
+when no frame is read from it, as a live station's runner does.
 """
 
 from dataclasses import dataclass  # simple record type
 
 import numpy as np  # numerical arrays
 
+from modem.burst import BURST_EARLIEST_S, BURST_LATEST_S, heard as burst_heard  # acknowledgment bursts (since 0.43)
+from modem.params import FS  # sample rate
 from sim import run_channel  # the HF channel simulator
 
 from .params import TURNAROUND_S  # pause between hearing and replying
@@ -29,7 +33,21 @@ class Path:  # the radio path in one direction
         return float(self.snr_db(t)) if callable(self.snr_db) else float(self.snr_db)  # call the function, or use the fixed number
 
 
-def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0):  # the simulation
+def hear_reply(station, audio, listen, listen_hz=0.0):  # what a station makes of a reply
+    """Return the station's report on `audio`: a frame if one is read, else (when `listen` is given) the acknowledgment burst it awaited, as an acknowledgment.
+
+    `audio` starts where the station's own frame ended (run_channel's second
+    of lead is the turnaround), so the burst is searched for from
+    BURST_EARLIEST_S to BURST_LATEST_S into it, as live/runner.py does.
+    """
+    result = station.hear(audio)  # the receiver: a frame?
+    if result.ok or not listen:  # read, or no burst awaited
+        return result  # as it is
+    burst = burst_heard(audio, listen, int(BURST_EARLIEST_S * FS), int(BURST_LATEST_S * FS), listen_hz)  # the burst?
+    return burst if burst is not None else result  # recognized, or the failed report
+
+
+def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0, listen=None):  # the simulation
     """Run stations `a` and `b` until both fall silent or `limit_s` seconds pass; return a list of events.
 
     Each event is a dict: t (start time), sender, kind, level, seconds,
@@ -41,6 +59,7 @@ def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0):  # th
     paths = {a.call: path_ab, b.call: path_ba}  # the path each station's signal travels
     other = {a.call: b, b.call: a}  # who hears whom
     events = []  # the record of the run
+    awaits = dict(listen or {})  # callsign -> the burst its last frame awaits (a caller may hand in what the call-up left awaited)
     t = start_s  # simulated time, in seconds
     while t < limit_s:  # until the time limit
         sender = tx = None  # nobody is transmitting yet
@@ -65,7 +84,8 @@ def run_link(a, b, path_ab, path_ba, seed=0, limit_s=3600.0, start_s=0.0):  # th
                 heard = run_channel(tx.audio, snr_db, rng, path.condition, offset_hz=path.offset_hz)  # what arrives at the far end
             else:  # one has moved to a working frequency and the other has not
                 heard = rng.normal(0.0, 0.01, len(tx.audio))  # the far end hears only noise
-            result = receiver.hear(heard)  # the far end's receiver has a go
+            awaits[sender.call] = (tx.listen, tx.listen_hz)  # the burst this frame awaits, if any, and where
+            result = hear_reply(receiver, heard, *awaits.pop(receiver.call, (None, 0.0)))  # the far end's receiver has a go (searching for the burst its own last frame awaited)
             t += tx.seconds + TURNAROUND_S  # the frame takes its airtime, then the far end turns round
             reply = receiver.handle(result, t)  # the far end decides what to do
             events.append({  # record what happened
@@ -142,7 +162,8 @@ def run_group(caller, others, paths_out, paths_in, seed=0, limit_s=7200.0):  # o
         chosen = None  # the station the caller locked with
         for station in waiting:  # everyone hears the confirmation
             path = paths_out[station.call]  # caller to this station
-            station.handle(station.hear(run_channel(confirm.audio, path.snr_at(t), rng, path.condition, offset_hz=path.offset_hz)), t + confirm.seconds + TURNAROUND_S)  # only the chosen station acts on it
+            sent = next((tx for slot in answers.values() for st, tx in slot if st is station), None)  # this station's answer, if it sent one
+            station.handle(hear_reply(station, run_channel(confirm.audio, path.snr_at(t), rng, path.condition, offset_hz=path.offset_hz), *((sent.listen, sent.listen_hz) if sent is not None else (None, 0.0))), t + confirm.seconds + TURNAROUND_S)  # only the chosen station acts on it (a burst confirmation is searched for by the station that answered a single-slot beacon)
             if station.call == caller.partner:  # this is the one
                 chosen = station  # remember it
         t += confirm.seconds + TURNAROUND_S  # the confirmation takes its airtime

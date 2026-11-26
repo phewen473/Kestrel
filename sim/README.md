@@ -42,6 +42,10 @@ heard = run_channel(build_frame("hello"), -15.0, np.random.default_rng(1), "mode
 print(receive(heard))
 ```
 
+## Real band noise (since 0.43)
+
+Real band noise is not white noise: on the author's 80 m recordings it was about 1 to 1.5 dB harder on Kestrel frames than white noise of the same power. `NoisePool` opens a pool of quiet stretches cut from your own receive recordings by `tools/make_noise_pool.py` (each scaled to power 1 in the 2.5 kHz band), and `run_channel(..., pool=NoisePool())` adds noise from it instead of white noise. The pool is kept in your data folder (`local/noise_pool` when run from the source folder, or the folder named by `KESTREL_NOISE_POOL`); it is never part of the repository.
+
 ## Where things stand
 
 Working and covered by the tests in `tests/`. Not yet modeled: slow SNR changes over minutes, interference from other signals, and the radio's own filters.

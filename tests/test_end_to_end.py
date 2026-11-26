@@ -4,7 +4,7 @@ import numpy as np  # numerical arrays
 
 from modem import ACK_HAVE_IT, ChannelReport, build_ack, build_answer, build_beacon, build_ident, control_seconds  # control frames
 from modem import (  # transmitter, receiver, levels and planner
-    LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, link_id, pick_level, plan_message, receive,  # (continued)
+    CHOICE_SNR_DB, CHOICE_SNR_FADING_DB, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, link_id, pick_level, plan_message, receive,  # (continued)
 )  # end of the import list
 from modem.params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, FS  # the airtime limits and the audio sample rate
 from sim import run_channel  # channel simulator
@@ -97,26 +97,27 @@ def test_fast_level_through_fading():  # a faster level on a fading path with a 
 def test_level_choice_follows_the_signal():  # rule 1: fastest level the conditions support
     assert pick_level(10.0) == LEVELS[-1].number  # a strong signal gets the fastest level
     assert pick_level(-30.0) == 0  # a hopeless signal falls back to the slowest
-    for spec in LEVELS:  # exactly at each level's limit plus the margin...
-        assert pick_level(MIN_SNR_DB[spec.number] + 2.0) == spec.number  # ...that level is chosen
+    for spec in LEVELS[1:]:  # exactly at each faster level's choice threshold plus the margin (since 0.43 the next-frame tables)...
+        assert pick_level(CHOICE_SNR_DB[spec.number] + 2.0) == spec.number  # ...that level is chosen
+    assert pick_level(CHOICE_SNR_DB[1] + 1.5) == 0  # and just below L1's, the slowest
 
 
 def test_plan_respects_the_airtime_limits():  # rules 2 to 4
-    strong = plan_message(LONG, MIN_SNR_DB[2] + 2.0)  # conditions good enough for L2
+    strong = plan_message(LONG, CHOICE_SNR_DB[2] + 2.0)  # conditions good enough for L2
     assert len(strong) == 1 and strong[0]["seconds"] <= AIRTIME_CAP_S and not strong[0]["extended"]  # one frame inside the usual cap
-    poor = plan_message(LONG, MIN_SNR_DB[1] + 2.0)  # conditions only good enough for L1
+    poor = plan_message(LONG, CHOICE_SNR_DB[1] + 2.0)  # conditions only good enough for L1
     assert len(poor) == 1 and AIRTIME_CAP_S < poor[0]["seconds"] <= AIRTIME_POOR_CAP_S and poor[0]["extended"]  # one frame using the poor-conditions allowance
-    weak = plan_message(LONG, MIN_SNR_DB[0] + 2.0)  # conditions only good enough for L0
+    weak = plan_message(LONG, -19.0)  # conditions only good enough for L0 (below L1's choice threshold, -18 dB)
     assert len(weak) == 4 and all(item["seconds"] <= AIRTIME_POOR_CAP_S for item in weak)  # split into four parts, each inside the allowance
     assert "".join(item["text"] for item in weak) == LONG  # the parts together are the whole message
-    assert len(plan_message(SHORT, MIN_SNR_DB[0] + 2.0)) == 1  # a short message still goes whole at L0
+    assert len(plan_message(SHORT, -19.0)) == 1  # a short message still goes whole at L0
 
 
 def test_split_message_is_reassembled():  # a 200-character message at L0, sent as four parts
-    plan = plan_message(LONG, -18.0)  # weak signal: the planner chooses L0 and splits
+    plan = plan_message(LONG, -19.0)  # weak signal: the planner chooses L0 and splits
     reports = []  # what the receiver makes of each part
     for i, audio in enumerate(build_plan(plan)):  # send the parts one after another
-        reports.append(receive(run_channel(audio, -18.0, np.random.default_rng(40 + i))))  # each through its own noisy channel
+        reports.append(receive(run_channel(audio, -19.0, np.random.default_rng(40 + i))))  # each through its own noisy channel
     assert [r.part for r in reports] == [0, 1, 2, 3] and all(r.parts == 4 for r in reports)  # every part knows its place
     assert join_parts(reports[:3]) is None  # with one part missing there is no message yet
     assert join_parts(reports) == LONG  # with all four the message is whole again
@@ -131,7 +132,7 @@ def test_compressed_message_end_to_end():  # compression lets a longer text ride
 
 def test_compression_reduces_the_number_of_parts():  # splitting packs more text into each part when it compresses
     english = "Net at 0100Z confirmed. Bring the 40 m list and check in on 7.110 if the band is open. Weather here is clear and cold tonight, wind light from the north."  # 153 characters
-    plan = plan_message(english, MIN_SNR_DB[0] + 2.0)  # conditions only good enough for L0
+    plan = plan_message(english, -19.0)  # conditions only good enough for L0
     assert len(plan) == 3  # three parts instead of the four that plain 50-character pieces would need
     assert "".join(item["text"] for item in plan) == english  # nothing lost in the cutting
 
@@ -153,8 +154,8 @@ def test_receiver_tells_a_steady_signal_from_a_fading_one():  # the channel meas
 def test_fading_makes_the_level_choice_more_careful():  # fading-aware limits
     for snr_db in (-14.0, -10.0, -6.0, -2.0, 2.0):  # across the working range
         assert pick_level(snr_db, fading=True) <= pick_level(snr_db)  # fading never picks a faster level than a steady signal would
-    assert pick_level(MIN_SNR_FADING_DB[4] + 2.0, fading=True) == 4  # the fastest level is still reached when the signal is strong enough
-    assert pick_level(MIN_SNR_DB[4] + 2.0, fading=True) < 4  # but not at the noise-only limit
+    assert pick_level(CHOICE_SNR_FADING_DB[4] + 2.0, fading=True) == 4  # the fastest level is still reached when the signal is strong enough
+    assert pick_level(CHOICE_SNR_DB[4] + 2.0, fading=True) < 4  # but not at the steady signal's threshold
     steady = plan_message(LONG, -8.0)  # a 200-character message on a steady signal
     faded = plan_message(LONG, -8.0, fading=True)  # the same message and SNR on a fading signal
     assert sum(item["seconds"] for item in faded) > sum(item["seconds"] for item in steady)  # fading costs airtime

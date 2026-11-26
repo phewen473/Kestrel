@@ -11,6 +11,7 @@ The rules (specification section 6.8):
 from .frame import build_frame, frame_seconds  # transmitter and airtime calculator
 from .levels import FADE_INDEX_LIMIT, LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB  # the speed levels and the SNR each one needs, steady and fading
 from .levels import FAST_SPREAD_HZ, MIN_SNR_FAST_FADING_DB  # and in fast fading, by measured Doppler spread (since 0.35)
+from .levels import CHOICE_SNR_DB, CHOICE_SNR_FADING_DB, CHOICE_SNR_FAST_DB  # the tables the level rule chooses by: from the next-frame study (since 0.43)
 from .params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, FRAME_TYPE_ADDRESSED, FRAME_TYPE_LINK, MAX_PARTS, SIZE_CLASSES  # limits, frame types and sizes
 from .text import fits, pick_size_class  # which size class a text needs, and whether a text fits one
 
@@ -33,7 +34,7 @@ def pick_level(snr_db, margin_db=2.0, fading=False, fast=False):  # rule 1
     as well when the measured Doppler spread says the fading is fast
     (FAST_SPREAD_HZ, since 0.35): the slower levels then need less.
     """
-    limits = (MIN_SNR_FAST_FADING_DB if fast else MIN_SNR_FADING_DB) if fading else MIN_SNR_DB  # which table of limits applies
+    limits = (CHOICE_SNR_FAST_DB if fast else CHOICE_SNR_FADING_DB) if fading else CHOICE_SNR_DB  # which table applies (since 0.43 the next-frame tables of levels.py; the decode limits before)
     usable = [spec.number for spec in LEVELS if snr_db >= limits[spec.number] + margin_db]  # every level the signal is strong enough for
     return max(usable) if usable else 0  # the fastest of them; the slowest level when none qualifies
 

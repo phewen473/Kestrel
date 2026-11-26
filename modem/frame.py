@@ -34,13 +34,13 @@ from .blanker import blank_impulses  # static-crash blanker
 from .preamble import detect_preamble, pattern_tones, preamble_samples  # the signature tone pattern that starts every frame
 from .crc import crc8, crc16  # check values
 from .fec import TAIL, conv_encode, viterbi_decode  # error correction for the header and the control frames
-from . import control, ldpc, native  # control-frame fields, error correction for the message body, and the compiled library
+from . import control, ldpc, native, osd  # control-frame fields, error correction for the message body, the compiled library, and the last try for a failed body (osd, since 0.43)
 from .notch import remove_steady  # takes steady signals out of the band
 from .interleave import deinterleave, interleave  # bit shuffler
 from .levels import LEVELS  # the speed levels
 from .mfsk import (  # tone waveform
     band_energies, bits_to_symbols, energies_to_llrs, known_tone_energies, noise_level, noise_profile, pilot_frequency_fit,  # (continued)
-    signal_report, symbol_energies, tone_energies, tone_spread, transmission,  # (continued: tone_spread since 0.35)
+    signal_report, symbol_energies, tone_energies, tone_spread, transmission, wide_tone_energies,  # (continued: tone_spread since 0.35, wide_tone_energies since 0.43)
 )  # end of the import list
 from .params import (  # frame format numbers
     ADDRESS_BITS, BITS_PER_SYMBOL, BODY_CRC_BITS, CALL_BITS, CHAR_BITS, CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ADDRESSED,  # (continued)
@@ -297,6 +297,8 @@ class RxResult:  # the receiver's report
     sample: int = -1  # where the frame began in a continuous stream, counted in samples from the start of listening (set by live.Listener; -1 otherwise)
     fields: dict = None  # the decoded fields of a control frame (beacon, answer, acknowledgment, identification); None for a message frame
     body_llrs: np.ndarray = None  # soft bits of the body, kept so a retry can be combined with them
+    burst: bool = False  # an acknowledgment recognized as a burst (modem/burst.py), not decoded from a frame: its report carries only the level asked for (since 0.43)
+    second_try: str = ""  # how a body that failed its first reading was read after all: "wide" (each tone with half of its neighboring bins) or "osd" (ordered-statistics search); empty when the first reading did it (since 0.43)
     assisted: str = ""  # how a control frame that failed alone was read after all (copies added together, an expected callsign); empty when it read alone (since 0.31R1)
     pattern_tones: int = -1  # for a signature whose header could not be read: how many of the 12 pattern tones stood out in their slots (a real Kestrel frame shows most of them; another mode's signal only one or two); -1 when not measured (since 0.31R2)
     steps: bool = False  # a beacon whose header says power steps came just before it (since 0.38)
@@ -573,6 +575,44 @@ def _decode_body_python(x, body_start, offset, spec, layout, is_control, prior_l
     return data, llrs, band, noise  # what the rest of _decode_body needs
 
 
+def _checks(data):  # does a body's check value match?
+    """Return True when the last BODY_CRC_BITS of `data` are the CRC-16 of the rest."""
+    return bool(np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]))  # the body check
+
+
+def _second_tries(band, spec, layout, is_control, llrs, prior_llrs, result):  # read a failed body again, other ways (since 0.43)
+    """Return the data bits of a body that failed its check, read another way, or None; set result.second_try to the way that worked.
+
+    1. Wide tones (levels whose tones are two bins apart): each tone's energy
+       plus half of each neighboring bin, which catches what fast fading
+       smears off the tone. A retry's earlier copy is added as usual.
+    2. Message bodies only: an order-1 ordered-statistics search (modem/osd.py)
+       on the soft bits already read (with any earlier copy added).
+    Each try is believed only if the body's CRC-16 then checks out. The soft
+    bits kept for combining (result.body_llrs) stay those of the first
+    reading, so a later copy always adds like to like.
+    """
+    if spec.step >= 2:  # there are bins between the tones
+        tone_e = wide_tone_energies(band, spec)  # the tones and half their neighbors
+        level = noise_profile(tone_e)  # the noise around them, tone by tone through the frame
+        wide = deinterleave(energies_to_llrs(tone_e[layout["data_pos"]] / level[layout["data_pos"], None], 1.0))[:layout["coded"]]  # soft bits, as the first reading makes them
+        if is_control:  # short frames: the convolutional code
+            data = viterbi_decode(wide)  # correct errors
+        else:  # message frames: the LDPC code
+            if prior_llrs is not None and len(prior_llrs) == len(wide):  # an earlier copy of this frame is available
+                wide = wide + prior_llrs  # combine the two copies
+            data, _ = ldpc.decode(wide, layout["info"])  # correct errors
+        if _checks(data):  # it read this way
+            result.second_try = "wide"  # say how
+            return data  # the bits
+    if not is_control and llrs is not None and len(llrs) == 2 * layout["info"]:  # a message body, soft bits in hand
+        data = osd.decode(llrs, layout["info"])  # the nearest codeword the surest bits give
+        if _checks(data):  # it read this way
+            result.second_try = "osd"  # say how
+            return data  # the bits
+    return None  # still unread
+
+
 def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the rest of a frame once its header is known
     """Return the receiver's report for the frame that `header` describes."""
     result = RxResult(start=found["start"], sync_quality=found["quality"], level=spec.number)  # start the report with what the preamble and header told us
@@ -604,7 +644,11 @@ def _decode_body(x, found, spec, header, prior_llrs, hints=None):  # read the re
         rescued, result.assisted = _rescue_control(llrs, result.frame_type, result.offset_hz, sample, hints)  # earlier copies, expected callsigns
         if rescued is not None:  # it read with help
             data = rescued  # use that
-    if not np.array_equal(crc16(data[:-BODY_CRC_BITS]), data[-BODY_CRC_BITS:]):  # the body check must match
+    if not _checks(data):  # the body failed its check
+        again = _second_tries(band, spec, layout, is_control, llrs, prior_llrs, result)  # read it another way (since 0.43)
+        if again is not None:  # that worked
+            data = again  # use it
+    if not _checks(data):  # the body check must match
         result.reason = "body check failed"  # say why we stopped
         return result  # the caller may retry and combine
     block = ADDRESS_BITS.get(result.frame_type, 0)  # length of the address block at the start of a message body

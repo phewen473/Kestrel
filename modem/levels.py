@@ -63,3 +63,19 @@ MIN_SNR_FADING_DB = (-16.0, -10.0, -10.0, -5.0, -4.0)  # weakest SNR at which ni
 FADE_INDEX_LIMIT = 0.15  # a received frame whose fading index is above this counts as "fading"
 MIN_SNR_FAST_FADING_DB = (-16.0, -14.0, -12.0, -5.0, -4.0)  # the same, when every recent frame's Doppler spread read 0.5 to 2.5 Hz (since 0.35): fading that fast averages out within a frame, so L1 and L2 need less (tools/level_spread_study.py, 40 frames a point, re-measured for 0.43: L1 -14/-14, L2 -12/-12 dB at 0.5/2 Hz; L0 read nine in ten at the sweep's lowest point, -16 dB, at every spread, and keeps the general figure); L3 and L4 keep the general fading figures (-14, -8, -10, -1 and 0 until 0.43)
 FAST_SPREAD_HZ = (0.5, 2.5)  # the Doppler spreads (measured) for which MIN_SNR_FAST_FADING_DB applies; slow fading (under 0.5 Hz) is the worst case and keeps the general table
+
+# The tables the level rule chooses by (modem/plan.py pick_level, the compiled station's pick_level), since 0.43.
+# The MIN_SNR tables above say where frames decode at a known true SNR. A station does not know the true SNR: it
+# chooses from the readings of a frame it has just decoded, and on the air that rule proved far too cautious in
+# fading (L2 only from -8 dB, where it got through nine times in ten from -13). These tables come from
+# tools/next_frame_study.py instead: an L0 frame, then 40 s later a frame of the level under test through the same
+# channel (steady, or two paths 1 ms apart at 0.1, 0.5 and 2 Hz), 100 trials a point, in real band noise from
+# the author's recordings and in white noise; trials grouped by how the station classes the L0 frame's reading. Each
+# value is the lowest reading from which the next frame got through at least nine times in ten (eight in ten in
+# the 2 dB just above it), the higher of the two noises, rounded up to a whole dB, less the rule's 2 dB margin.
+# Readings (real / white): L1 steady -18.5 / -18.0, fading -14.5 / -14.5, fast -15.5 / -16.0; L2 -16.5 / -16.0,
+# -12.5 / -13.0, -13.5 / -14.0; L3 -12.5 / -14.0, -9.0 / -9.0, -10.5 / -10.5; L4 -10.5 / -10.0, -6.0 / -5.5,
+# -7.5 / -7.0. L0 is the slowest level and is used below every other; its entries are the decode limits.
+CHOICE_SNR_DB = (-20.0, -20.0, -18.0, -14.0, -12.0)  # steady readings: L1 from -18, L2 from -16, L3 from -12, L4 from -10 dB (with the 2 dB margin); until 0.43 the MIN_SNR_DB table (-14, -12, -9, -6)
+CHOICE_SNR_FADING_DB = (-16.0, -16.0, -14.0, -11.0, -7.0)  # fading readings: L1 from -14, L2 from -12, L3 from -9, L4 from -5 dB; until 0.43 MIN_SNR_FADING_DB (-8, -8, -3, -2)
+CHOICE_SNR_FAST_DB = (-16.0, -17.0, -15.0, -12.0, -9.0)  # fast-fading readings (FAST_SPREAD_HZ): L1 from -15, L2 from -13, L3 from -10, L4 from -7 dB; until 0.43 MIN_SNR_FAST_FADING_DB (-12, -10, -3, -2)
