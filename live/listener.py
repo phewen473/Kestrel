@@ -29,6 +29,7 @@ from modem.notch import remove_steady  # notches steady signals (carriers) out o
 from modem.frame import Hints, Prior  # help for reading weak control frames (since 0.31R1)
 from modem.frame import pattern_seen  # how much of a signature pattern is really there (since 0.31R2)
 from modem.frame import _body_total, _read_header_how  # how long a frame is by its header, and reading a header
+from modem.frame import FRAME_TONES, frame_start, from_end  # tones in a frame besides its body, and where a frame found from its second pattern begins (since 0.43)
 from modem.preamble import detect_preamble, fine_time, preamble_samples  # the signature-pattern search, the fine timing of a candidate, and a pattern's length
 from modem import longbeacon  # the long beacon's length and limit
 from modem import powersteps  # reading the power steps before a beacon (since 0.38)
@@ -44,13 +45,13 @@ PAD_S = 0.5  # audio kept either side of a frame when it is handed over
 FAILED_SNR_SLACK_DB = 4.0  # a frame that fails its check is only reported if its pilots read within this many dB of its level's limit
 NEAR_QUALITY = 6.0  # a signature whose header cannot be read, standing this far above the background, is reported (for the signal log) even when it is not likely Kestrel by the tone test below; before 0.31R2 this alone made a "near miss" (noise alone stays below about 3.5 in simulation)
 NEAR_TONES = 7  # a signature whose header cannot be read is "likely Kestrel" when at least this many of its 12 pattern tones stand out in their own slots (since 0.31R2). Measured in simulation: a real frame at the edge of decoding shows 5 to 9, another mode's signal 1 or 2, and the strongest chance matches in plain noise 2 to 5 (7 about once in two thousand, 8 never in 4,500)
-LONGEST_FRAME = (PREAMBLE_TONES + HEADER_SYMBOLS + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
+LONGEST_FRAME = (FRAME_TONES + max(_body_totals())) * LEVELS[0].samples  # samples in the longest frame there is (the largest message at the slowest level)
 LONG_EVERY = 4  # the long beacon's pattern is looked for on every fourth search only: it costs about 0.4 s a search, and a long beacon lasts a minute, so finding it a few seconds later loses nothing
 NEAR_QUALITY_MAX = 10000.0  # above this the measure has broken down (stretches of digital silence), so it is not a signal
 PRIOR_KEEP_S = 1800  # failed control frames are kept this long (half an hour), for adding to a later copy
 PRIOR_MOST = 16  # and at most this many of them
 CONTEXT_S = 4.0  # incremental search: audio searched before the newest, beyond what one pattern needs, so the background is measured fairly
-HOW_NAMES = {1: "first", 2: "both", 3: "second"}  # which header copy gave a header, as the compiled listener numbers them (the frame strip, since 0.37)
+HOW_NAMES = {1: "first", 2: "both", 3: "second", 4: "end", 5: "end both", 6: "end first"}  # which header copy gave a header, as the compiled listener numbers them (the frame strip, since 0.37; 4 to 6, a frame found from the pattern at its end, since 0.43)
 OUTCOMES_MOST = 20  # finished frames kept for the frame strip until it asks (since 0.37)
 GATE = (0.002, 0.002, 0.003, 0.010, 0.012)  # incremental search: a pattern scoring below this (by level) is not followed up. Measured on simulated noise and frames, the strongest chance match scored 0.001, 0.001, 0.002, 0.005 and 0.008, and real frames 1 dB below each level's decoding limit (steady and fading) at least 0.004, 0.006, 0.005, 0.028 and 0.032 (one L4 frame in 40 was not found at all). The long beacon has no gate: copies too weak to read alone are kept for adding together
 
@@ -72,6 +73,7 @@ class Heard:  # one frame taken out of the stream
     result: object  # the receiver's report (an RxResult); its sample field says where the frame began in the stream
     audio: np.ndarray  # the frame's audio, with a little either side
     audio_sample: int = -1  # the stream's number for the first sample of `audio`
+    start: float = -1.0  # where the frame begins in `audio`, in samples (since 0.43): the station reads a failed frame again there, with its retry added, without searching for it afresh
 
 
 _POOL = []  # the worker threads that search the patterns side by side (made on first use, kept for the life of the program)
@@ -93,7 +95,7 @@ def frame_samples(result):  # how long is the frame this report describes?
         body = control_layout(result.frame_type)["total"]  # its body tones
     else:  # a message frame
         body = body_layout(result.size_class)["total"]  # its body tones
-    return (PREAMBLE_TONES + HEADER_SYMBOLS + body) * LEVELS[result.level].samples  # preamble + header + body
+    return (FRAME_TONES + body) * LEVELS[result.level].samples  # the pattern and a header copy at each end, and the body
 
 
 def _core_settings(window, step):  # what the compiled listener needs to know
@@ -148,6 +150,7 @@ class Listener:  # the continuous receiver
         self._x = None  # the Python search's processed store, kept for progress() (the compiled listener keeps its own)
         self._clarity = {}  # stream sample -> clarity of each body tone received so far, in dB (the frame strip)
         self._seen = {}  # stream sample -> how many of its pattern's tones stood out (the frame strip)
+        self.failed = []  # (level, stream sample where the frame begins) of frames handed over after failing their check, so the same transmission, found again from its other pattern, is not handed over twice (since 0.43)
 
     def clear(self):  # forget everything heard so far
         """Empty the store (used after transmitting, so the station does not decode itself)."""
@@ -271,18 +274,26 @@ class Listener:  # the continuous receiver
                 body_tones = _body_total(bits)  # its body length
                 if body_tones is None:  # a chance header from noise
                     continue  # not shown
-                total = (PREAMBLE_TONES + HEADER_SYMBOLS + body_tones) * spec.samples  # the whole frame
+                total = (FRAME_TONES + body_tones) * spec.samples  # the whole frame
+                if from_end(row["how"]):  # found from the pattern at its end (since 0.43): it began a body earlier
+                    start = frame_start(start, bits, row["how"], spec)  # where the frame itself begins
+                    if start < 0:  # its beginning is no longer in the store
+                        continue  # not shown
+                    row = dict(row, stream=self._number(int(round(start))))  # shown under the place where the frame begins, as the same frame found from its first pattern is
             clarity = self._clarity.setdefault(row["stream"], [])  # the body tones read so far
             if body_tones is not None and x is not None:  # its body can be measured as it arrives
-                body_start = start + preamble_samples(spec) + HEADER_SYMBOLS_ONCE * spec.samples  # after the preamble and the first header copy
+                body_start = start + preamble_samples(spec) + HEADER_SYMBOLS_ONCE * spec.samples  # after the first pattern and the first header copy
                 arrived = int(min(body_tones, max(0, (size - body_start) // spec.samples)))  # whole body tones here so far
-                if arrived > len(clarity):  # new ones
+                if arrived > len(clarity) and body_start >= 0:  # new ones (and the body is still in the store)
                     e = symbol_energies(x, body_start + len(clarity) * spec.samples, arrived - len(clarity), spec, row["offset_hz"])  # their tone energies
                     top = np.sort(e, axis=1)[:, -2:]  # the strongest two in each
                     clarity.extend((10.0 * np.log10((top[:, 1] + 1e-12) / (top[:, 0] + 1e-12))).round(1).tolist())  # the strongest over the next, in dB
             frames.append({"stream": row["stream"], "level": row["level"], "long": long, "offset_hz": round(float(row["offset_hz"]), 1), "quality": row["quality"],  # (continued)
                            "tone_s": spec.samples / FS, "arrived_s": max(0.0, (size - start) / FS), "total_s": None if total is None else total / FS,  # (continued)
                            "header": header, "tried": row["tried"], "body_tones": body_tones, "clarity": list(clarity)})  # this frame
+        known = [f for f in frames if f["header"] is not None and f["total_s"]]  # frames whose length is known
+        frames = [f for f in frames if f["header"] is not None or not any(  # a pattern with no header yet is not shown as a new frame...
+            k["level"] == f["level"] and k["stream"] + int(k["tone_s"] * FS) < f["stream"] <= k["stream"] + int(k["total_s"] * FS) for k in known)]  # ...when it lies inside a frame already shown: it is that frame's own second pattern (since 0.43)
         for cache in (self._clarity, self._seen):  # readings for candidates no longer followed
             for gone in [k for k in cache if k not in keep]:  # each
                 del cache[gone]  # forgotten
@@ -406,20 +417,22 @@ class Listener:  # the continuous receiver
             if body is None:  # no such frame
                 self.pending.remove(item)  # let it go
                 continue  # next candidate
-            end = start + (PREAMBLE_TONES + HEADER_SYMBOLS + body) * spec.samples  # where its frame ends
+            begins = int(round(frame_start(start, header, how, spec)))  # where its frame begins: at this pattern, or a body earlier when this is the pattern at its end (since 0.43)
+            if begins < 0:  # its beginning has slid out of the store (or was cut out with another frame)
+                self.pending.remove(item)  # it can never be read
+                continue  # next candidate
+            end = begins + (FRAME_TONES + body) * spec.samples  # where its frame ends
             if end > len(self.store):  # still arriving
                 continue  # wait for the rest
             self.pending.remove(item)  # decoded once only
-            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(start))  # read the whole frame (already blanked and notched), with help for a weak control frame
-            self._remember_failure(attempt, start)  # a control frame that failed is kept, to add to its next copy
-            self._note_outcome(attempt, start)  # what became of it, for the frame strip (since 0.37)
+            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(begins))  # read the whole frame (already blanked and notched), with help for a weak control frame
+            self._remember_failure(attempt, begins)  # a control frame that failed is kept, to add to its next copy
+            self._note_outcome(attempt, begins)  # what became of it, for the frame strip (since 0.37), placed where the frame begins whichever pattern it was found by
             if attempt.ok:  # it decoded
-                result, heard = attempt, self._take(attempt, start, end)  # hand it over
+                result, heard = attempt, self._take(attempt, begins, end)  # hand it over
                 break  # one frame per search
-            limit = MIN_SNR_DB[attempt.level] if attempt.level >= 0 else 0.0  # the weakest signal its level decodes
-            believable = attempt.reason == "body check failed" and np.isfinite(attempt.snr_db) and attempt.snr_db >= limit - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
-            if believable:  # a real frame that failed its check: hand it over, so the station can combine it with a retry
-                result, heard = attempt, self._take(attempt, start, end)  # as the whole-store search did
+            if self._worth_handing(attempt, begins):  # a real frame that failed its check, not handed over before: hand it over, so the station can combine it with a retry
+                result, heard = attempt, self._take(attempt, begins, end)  # as the whole-store search did
                 break  # one frame per search
         if trace is not None:  # someone keeps a signal log
             for step in trace:  # every candidate tried
@@ -472,17 +485,16 @@ class Listener:  # the continuous receiver
                 continue  # next candidate
             spec = LEVELS[level]  # a frame at this level, all arrived, its header read
             end = int(ev[6])  # where it ends
-            found = {"start": found_start, "offset_hz": offset, "quality": quality}  # in the form the receiver takes
-            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(start))  # read the whole frame (already blanked and notched), with help for a weak control frame
-            self._remember_failure(attempt, start)  # a control frame that failed is kept, to add to its next copy
-            self._note_outcome(attempt, start)  # what became of it, for the frame strip (since 0.37)
+            begins = int(ev[8])  # where it begins: at the pattern found, or a body earlier when that is the pattern at its end (since 0.43)
+            found = {"start": found_start, "offset_hz": offset, "quality": quality}  # the pattern, in the form the receiver takes
+            attempt = receive(x, blank=False, notch=False, trace=trace, candidates=[(found, spec)], hints=self._hints(begins))  # read the whole frame (already blanked and notched), with help for a weak control frame
+            self._remember_failure(attempt, begins)  # a control frame that failed is kept, to add to its next copy
+            self._note_outcome(attempt, begins)  # what became of it, for the frame strip (since 0.37), placed where the frame begins whichever pattern it was found by
             if attempt.ok:  # it decoded
-                result, heard = attempt, self._take(attempt, start, end)  # hand it over
+                result, heard = attempt, self._take(attempt, begins, end)  # hand it over
                 break  # one frame per search
-            limit = MIN_SNR_DB[attempt.level] if attempt.level >= 0 else 0.0  # the weakest signal its level decodes
-            believable = attempt.reason == "body check failed" and np.isfinite(attempt.snr_db) and attempt.snr_db >= limit - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
-            if believable:  # a real frame that failed its check: hand it over, so the station can combine it with a retry
-                result, heard = attempt, self._take(attempt, start, end)  # as the whole-store search did
+            if self._worth_handing(attempt, begins):  # a real frame that failed its check, not handed over before: hand it over, so the station can combine it with a retry
+                result, heard = attempt, self._take(attempt, begins, end)  # as the whole-store search did
                 break  # one frame per search
         if trace is not None:  # someone keeps a signal log
             for step in trace:  # every candidate tried
@@ -490,6 +502,27 @@ class Listener:  # the continuous receiver
             result.sample = heard.result.sample if heard is not None else -1  # where the frame began, if one was found
             self.on_search(result, trace)  # hand it over
         return heard  # the frame, or None
+
+    def _worth_handing(self, attempt, begins):  # should a frame that failed its check be handed to the station?
+        """Return True for a frame at store position `begins` whose body failed its check but whose pilots read like a real signal, the first time it is seen.
+
+        The station adds such a frame to its retry. Since 0.43 a frame can be
+        found twice, from the pattern at each end; the second finding is
+        still decoded (its timing was measured afresh and may read where the
+        first did not), but a second failure is not handed over, or the
+        station would add one transmission to itself.
+        """
+        limit = MIN_SNR_DB[attempt.level] if attempt.level >= 0 else 0.0  # the weakest signal its level decodes
+        believable = attempt.reason == "body check failed" and np.isfinite(attempt.snr_db) and attempt.snr_db >= limit - FAILED_SNR_SLACK_DB  # do its pilots look like a real signal?
+        if not believable:  # noise that happened to pass a header check
+            return False  # ignore it
+        here, tone = self._number(begins), LEVELS[attempt.level].samples  # where the frame begins in the stream, and its tone length
+        newest = self._number(self._size() - 1) if self._size() else here  # the latest sample heard
+        self.failed = [(level, sample) for level, sample in self.failed if newest - sample <= 2 * self.window]  # forget frames long gone from the store
+        if any(level == attempt.level and abs(sample - here) < tone for level, sample in self.failed):  # this same transmission was handed over already
+            return False  # once is enough
+        self.failed.append((attempt.level, here))  # remember it
+        return True  # hand it over
 
     def _size(self):  # samples kept
         """Return how many samples the store holds (the library's, when it keeps it)."""
@@ -541,10 +574,12 @@ class Listener:  # the continuous receiver
             result.power_steps = powersteps.measure(before, float(result.start) - first_kept, result.offset_hz)  # read (None when the store does not reach back far enough)
         pad = int(PAD_S * FS)  # a little audio either side
         audio = self._slice(start - pad, end + pad)  # the frame's own stretch of audio
-        first = self._number(max(start - pad, 0))  # the stream's number for its first sample
+        kept_from = max(start - pad, 0)  # the store position of its first sample
+        first = self._number(kept_from)  # the stream's number for that sample
+        fine = float(result.start) if abs(float(result.start) - start) < 2 else float(start)  # where the receiver placed the frame, to a part of a sample (the whole-sample position if its report says otherwise)
         if result.ok:  # decoded
             self._cut(start, end)  # cut the frame out so it is not found again
-        return Heard(result, audio, first)  # hand it over
+        return Heard(result, audio, first, fine - kept_from)  # hand it over, with where the frame begins in its audio (since 0.43)
 
     # ---- the whole-store search (before 0.31; kept as the reference) ----
 
@@ -659,6 +694,7 @@ class Listener:  # the continuous receiver
             self.near_strong = [other for other in self.near_strong if here - other < 2 * span] + [here]  # remembered (recent ones only)
         self.near_audio = audio if audio is not None else self._slice(start, start + span)  # the signature's audio, for a signal log that keeps clips
         self.near_audio_sample = audio_sample if audio is not None else here  # and where it began in the stream
+        result.sample = here  # the report says where in the stream too (since 0.43; before, a near miss carried no place, and tools/decode_wav.py listed every one at 0.0 s)
         self.on_near(result)  # report it
         if likely:  # a real Kestrel pattern
             self._note_outcome(result, start, reason="header unreadable")  # the frame strip shows it lost (since 0.37)

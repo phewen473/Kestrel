@@ -105,3 +105,38 @@ def test_unreadable_header_and_cut_point():  # a signature whose header was neve
     v = strip.view()  # what it shows
     assert v["segs"] == ["good", "bad", "unknown", "bad"] and "near miss" in v["done"]  # lost, and said where it is listed
     assert cut_point([9.0] * 80 + [1.0] * 20) == 0.8 and cut_point([9.0] * 95 + [1.0] * 5) is None  # a long lost tail is a cut; a short one is a fade
+
+
+@pytest.mark.parametrize("compiled", COMPILED)  # both listeners
+def test_frame_found_from_its_second_pattern_is_reported_where_it_began(compiled):  # the strip and the pattern at the frame's end (since 0.43)
+    from modem.frame import HEADER_SYMBOLS_ONCE  # tones in one header copy
+    from modem.levels import LEVELS  # tone lengths
+    from modem.params import PREAMBLE_TONES  # tones in a pattern
+    rng = np.random.default_rng(3703)  # repeatable random source
+    frame = build_frame("Found from the far end.", 2, link=9, msg_id=5)  # a frame at L2
+    frame[:(PREAMBLE_TONES + HEADER_SYMBOLS_ONCE) * LEVELS[2].samples] = 0.0  # its first pattern and header copy faded right out
+    audio = np.concatenate([np.zeros(2 * FS), frame, np.zeros(3 * FS)])  # with quiet either side
+    audio = audio + 0.05 * rng.standard_normal(len(audio))  # and noise
+    reports = feed_all(Listener(compiled=compiled), audio)  # what the receiver said along the way
+    outcomes = [o for r in reports for o in r["outcomes"]]  # finished frames
+    assert len(outcomes) == 1 and outcomes[0]["ok"]  # decoded, once
+    assert outcomes[0]["header_copy"].startswith("end")  # from its second pattern
+    assert abs(outcomes[0]["stream"] - 2 * FS) < LEVELS[2].samples  # and placed where the frame began, two seconds in, not where its second pattern was
+    strip = FrameStrip()  # the strip itself
+    for report in reports:  # everything the receiver said
+        strip.update(report)  # taken in
+    view = strip.view()  # what it shows at the end
+    assert "received" in view["title"] and view["segs"][0] == "fair" and view["segs"][2] == "good"  # received; the first pattern shown as weak, the body as passed
+    assert "second pattern" in view["notes"][0]  # and it says how the frame was found
+
+
+@pytest.mark.parametrize("compiled", COMPILED)  # both listeners
+def test_second_pattern_is_not_shown_as_a_new_frame(compiled):  # one frame, one entry in the strip
+    rng = np.random.default_rng(3704)  # repeatable random source
+    frame = build_frame("One frame, though its pattern is heard twice.", 2, link=9, msg_id=6)  # a frame at L2
+    audio = np.concatenate([np.zeros(2 * FS), frame, np.zeros(3 * FS)])  # with quiet either side
+    audio = audio + 0.05 * rng.standard_normal(len(audio))  # and noise
+    reports = feed_all(Listener(compiled=compiled), audio)  # what the receiver said along the way
+    assert all(len(r["frames"]) <= 1 for r in reports)  # never two frames at once
+    starts = {f["stream"] for r in reports for f in r["frames"]}  # where the frames shown began
+    assert starts and max(starts) - min(starts) < FS // 10  # always the same frame, at its start

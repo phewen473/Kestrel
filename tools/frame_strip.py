@@ -1,7 +1,7 @@
 """Drawing the frame strip under the receive scope (since 0.37). What to draw comes from live.framestrip.FrameStrip.view()."""
 
 BLOCKS = 80  # the body is drawn as at most this many blocks
-NAMES = ("Preamble", "Header", "Body", "Header again")  # the four segments
+NAMES = ("Pattern", "Header", "Body", "Pattern + header again")  # the four segments (the last is the frame's second pattern and second header copy, since signal version 0.43)
 SCORE = {"good": 2, "fair": 1, "bad": 0}  # a body tone's state as a number, for averaging into blocks
 STATE = ("bad", "fair", "good")  # and back
 

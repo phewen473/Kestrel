@@ -5,7 +5,7 @@ This is the working Python model of the Kestrel modem: it turns a text message i
 ## What a frame looks like
 
 ```
-preamble (12 tones in the level's own pattern) | header (24 tones) | body (data tones, with a known pilot tone before every 15)
+pattern (12 tones in the level's own pattern) | header (12 tones) | body (data tones, with a known pilot tone before every 15) | pattern again (12 tones) | header again (12 tones, its check value marked)
 ```
 
 | Part | What it does |
@@ -53,7 +53,7 @@ build_frame("QSL 73", level=0, dest="Q2BB", origin="Q1AAAA", msg_id=17)         
 
 ## Control frames (`control.py`)
 
-Four short frames set up and run a link, and a fifth (since 0.30) announces mail. They look like message frames on the air (preamble, header, body) and can be sent at any speed level.
+Four short frames set up and run a link, and a fifth (since 0.30) announces mail. They look like message frames on the air (pattern, header, body, pattern, header) and can be sent at any speed level.
 
 | Frame | What it says | L0 | L2 | L4 |
 |---|---|---|---|---|
@@ -176,6 +176,7 @@ Also shown by the tests: a 200-character frame decodes while drifting 2.5 Hz; th
 
 - **The tone-pattern preamble replaced the chirp pair (spec v0.20).** The chirp was two seconds long and 2 kHz wide at every level, which made fast frames mostly preamble and slow frames far wider than their data. A study (`tools/preamble_study.py`) showed twelve tones of the level's own set are found 98 to 100 percent of the time at each level's weakest working signal.
 - **The receiver keeps the best three candidates for each level's pattern** and lets the header and body checks pick the real frame, because in deep noise a noise peak can outrank the real preamble.
+- **The pattern is sent at both ends of every frame (spec v0.43).** A slow fade over the single pattern at the start lost the whole frame, however well the rest arrived; with a second pattern after the body the receiver finds the frame from whichever end survived (`frame.py` `_read_header_how` and `frame_start`). The second header copy's check value is marked so one copy alone says which end it is. When a whole recording is searched, eight candidates for each level's pattern are now followed up (`SEARCH_KEEP`), since chance matches in a strong frame's body can outrank a faded pattern.
 - **Speed costs what theory says.** Each level's limit moved by almost exactly the ratio of tone lengths, so the level table can be planned on paper.
 - **A header at L0 would cost every frame about 10 seconds.** That is why the prototype sends the header at the frame's own level and lets the receiver discover the level. The specification adopted this in v0.7.
 - **The LDPC code earned its place.** Against the earlier convolutional code it gained about half a decibel on short frames and over a decibel on long ones.

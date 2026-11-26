@@ -6,7 +6,7 @@ from modem import ACK_HAVE_IT, ChannelReport, build_ack, build_answer, build_bea
 from modem import (  # transmitter, receiver, levels and planner
     LEVELS, MIN_SNR_DB, MIN_SNR_FADING_DB, build_frame, build_plan, frame_seconds, is_fading, join_parts, link_id, pick_level, plan_message, receive,  # (continued)
 )  # end of the import list
-from modem.params import FS  # audio sample rate
+from modem.params import AIRTIME_CAP_S, AIRTIME_POOR_CAP_S, FS  # the airtime limits and the audio sample rate
 from sim import run_channel  # channel simulator
 from sim.channel import add_crashes  # static-crash generator
 
@@ -21,9 +21,9 @@ def _send(text, snr_db, seed, **channel):  # helper: transmit and receive once
 
 def test_frame_lengths_match_the_design():  # airtime of each size class
     assert abs(len(build_frame(SHORT)) / FS - frame_seconds(0)) < 1e-9  # the audio is exactly as long as predicted
-    assert [round(frame_seconds(c)) for c in range(4)] == [83, 143, 203, 262]  # L0: about 1.4, 2.4, 3.4 and 4.4 minutes
-    assert [round(frame_seconds(c, 4), 1) for c in range(4)] == [4.7, 8.1, 11.4, 14.8]  # L4: the same frames in a few seconds
-    assert frame_seconds(3, 2) <= 60 and frame_seconds(3, 1) <= 90  # 200 characters fit the 60 s cap at L2 and the 90 s cap at L1
+    assert [round(frame_seconds(c)) for c in range(4)] == [88, 148, 208, 267]  # L0: about 1.5, 2.5, 3.5 and 4.5 minutes (4.8 s more than before 0.43: the second pattern)
+    assert [round(frame_seconds(c, 4), 2) for c in range(4)] == [4.95, 8.32, 11.68, 15.03]  # L4: the same frames in a few seconds
+    assert frame_seconds(3, 2) <= AIRTIME_CAP_S and frame_seconds(3, 1) <= AIRTIME_POOR_CAP_S  # 200 characters fit the usual cap at L2 (61 s since 0.43) and the poor-conditions cap at L1 (91 s)
 
 
 def test_clean_channel():  # no noise at all
@@ -103,11 +103,11 @@ def test_level_choice_follows_the_signal():  # rule 1: fastest level the conditi
 
 def test_plan_respects_the_airtime_limits():  # rules 2 to 4
     strong = plan_message(LONG, MIN_SNR_DB[2] + 2.0)  # conditions good enough for L2
-    assert len(strong) == 1 and strong[0]["seconds"] <= 60 and not strong[0]["extended"]  # one frame inside the 60-second cap
+    assert len(strong) == 1 and strong[0]["seconds"] <= AIRTIME_CAP_S and not strong[0]["extended"]  # one frame inside the usual cap
     poor = plan_message(LONG, MIN_SNR_DB[1] + 2.0)  # conditions only good enough for L1
-    assert len(poor) == 1 and 60 < poor[0]["seconds"] <= 90 and poor[0]["extended"]  # one frame using the 90-second allowance
+    assert len(poor) == 1 and AIRTIME_CAP_S < poor[0]["seconds"] <= AIRTIME_POOR_CAP_S and poor[0]["extended"]  # one frame using the poor-conditions allowance
     weak = plan_message(LONG, MIN_SNR_DB[0] + 2.0)  # conditions only good enough for L0
-    assert len(weak) == 4 and all(item["seconds"] <= 90 for item in weak)  # split into four parts, each inside 90 seconds
+    assert len(weak) == 4 and all(item["seconds"] <= AIRTIME_POOR_CAP_S for item in weak)  # split into four parts, each inside the allowance
     assert "".join(item["text"] for item in weak) == LONG  # the parts together are the whole message
     assert len(plan_message(SHORT, MIN_SNR_DB[0] + 2.0)) == 1  # a short message still goes whole at L0
 
@@ -216,4 +216,4 @@ def test_acknowledgment_and_identification_at_every_level():  # the frames that 
         assert ack.fields["report"] == report  # the channel report arrives intact
         ident = receive(run_channel(build_ident("Q1AAAA/P", link, final=True, level=spec.number), snr_db, rng, offset_hz=-5.0))  # send an identification
         assert ident.ok and ident.frame_type == 5 and (ident.origin, ident.link, ident.fields["final"]) == ("Q1AAAA/P", link, True)  # callsign, link and end-of-contact flag
-    assert control_seconds(4, 4) < 4 and control_seconds(4, 0) < 30  # an acknowledgment is quick: under 4 s at the fastest level, under 30 s at the slowest
+    assert control_seconds(4, 4) < 4 and control_seconds(4, 0) < 32  # an acknowledgment is quick: under 4 s at the fastest level, about 31 s at the slowest

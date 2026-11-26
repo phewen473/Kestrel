@@ -3,7 +3,8 @@
 The listener reports, after each search, the frames it is following and
 those that have finished (Listener.progress). FrameStrip keeps the one to
 show and the parts of the message it belongs to, and turns them into what
-the panel draws: four segments (preamble, header, body, header again),
+the panel draws: four segments (pattern, header, body, and the pattern and
+header again that end every frame since signal version 0.43),
 each waiting, arriving, passed, weak, failed or never arrived; the body's
 clarity tone by tone; a note under each segment; and a box for each part
 of the message. It draws nothing itself, so it can be tested without a
@@ -223,7 +224,7 @@ class FrameStrip:  # what the strip shows
                 notes[2] = "length unknown until a header is read"  # said
             else:  # the header is arriving
                 fill = max(0.0, min(1.0, (arrived - pre_s) / hdr_s))  # how much of it
-            body_s = (f["total_s"] - pre_s - 2 * hdr_s) if f["total_s"] else None  # the body's length
+            body_s = (f["total_s"] - 2 * pre_s - 2 * hdr_s) if f["total_s"] else None  # the body's length: the frame less the pattern and header copy at each end (since 0.43)
             progress = max(0.0, min(1.0, (arrived - pre_s - (0 if f["long"] else hdr_s)) / body_s)) if body_s else None  # how much of the body is in
             right = f"{level}   {where}   {arrived:.1f} s" + (f" of {f['total_s']:.0f} s" if f["total_s"] else "")  # level, offset, time
             return {"title": f"{kind} arriving{part}", "right": right, "segs": segs, "notes": notes, "clarity": clarity, "progress": progress, "header_fill": fill,  # (continued)
@@ -235,8 +236,10 @@ class FrameStrip:  # what the strip shows
                     "notes": [f"{level}", "check failed", "length unknown, so the body could not be read", "check failed too"], "clarity": [], "progress": None,  # (continued)
                     "parts": parts, "done": "Frame lost - listed as a near miss in the Activity log", "done_tone": "fair"}  # the picture
         how = (header or {}).get("how", "") or o.get("header_copy", "")  # which header copy was read
-        segs = ["good", "good" if how in ("first", "") else "fair", "good", "good" if how in ("both", "second") or o.get("ok") else "wait"]  # as received
-        notes = [f"{level}, {where}".strip(", "), f"{kind.lower()}{part}" + ("" if how in ("first", "") else " (first copy faded; read with the second)"), "check passed", "used for the header" if how in ("both", "second") else "matches"]  # what was found
+        ended = how.startswith("end")  # the frame was found from the pattern at its end: its first pattern had faded (since 0.43)
+        second = how in ("both", "second", "end", "end both")  # the second header copy was used
+        segs = ["fair" if ended else "good", "good" if how in ("first", "") else "fair", "good", "good" if second or o.get("ok") else "wait"]  # as received
+        notes = [f"{level}, {where}".strip(", ") + (" (faded; frame found from its second pattern)" if ended else ""), f"{kind.lower()}{part}" + ("" if how in ("first", "") else " (first copy faded; read with the second)"), "check passed", "frame found here" if ended else "used for the header" if second else "matches"]  # what was found
         if f["long"]:  # no header
             segs[1], notes[1], segs[3], notes[3] = hdr_state, hdr_note, again_state, again_note  # none
         progress = 1.0  # all of it arrived

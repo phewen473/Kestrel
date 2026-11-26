@@ -3,8 +3,8 @@
 They match the specification (sections 4 and 5).
 """
 
-SPEC_VERSION = "0.42R3"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
-SIGNAL_VERSION = "0.41"  # the specification version in which the on-air behavior last changed (0.41: the long call-up, a long-note frame of kind 3 with a call, an answer or "not available"; 0.40: the beacon carries the rig type (Hamlib model number) and transmit power; 0.39: long notes of up to 64 characters, eight text frames of eight 6-bit characters; 0.38: the long frame's tones five bins apart (4.29 Hz, 137 Hz in all), and power steps before a beacon, announced by the header's spare bit; 0.34: long notes, sent in long-beacon frames with the spare bit set; 0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
+SPEC_VERSION = "0.43"  # the version of docs/spec/kestrel-spec.md that this program follows (a test checks the two agree)
+SIGNAL_VERSION = "0.43"  # the specification version in which the on-air behavior last changed (0.43: the signature pattern is sent again before the second header copy, whose check value is marked, so a frame can be found from either end; 0.41: the long call-up, a long-note frame of kind 3 with a call, an answer or "not available"; 0.40: the beacon carries the rig type (Hamlib model number) and transmit power; 0.39: long notes of up to 64 characters, eight text frames of eight 6-bit characters; 0.38: the long frame's tones five bins apart (4.29 Hz, 137 Hz in all), and power steps before a beacon, announced by the header's spare bit; 0.34: long notes, sent in long-beacon frames with the spare bit set; 0.33: the answer frame carries the sender's grid locator; 0.32: Gray-coded tones, glides between tones at L3 and L4, faded ends; 0.30: the mail notice frame, mail carried and delivered for other stations; 0.23: call-up at L2 first, reply slots sized to the level, directed-call flag; 0.24: a calling station takes a call back as the answer; 0.25: availability; 0.26: the second header copy moved to the end of the frame; 0.27: the long beacon): stations with the same signal version can hear each other
 FS = 12000  # audio sample rate, in samples per second
 REF_BANDWIDTH_HZ = 2500.0  # bandwidth that all SNR figures are quoted in
 RAMP_S = 0.010  # every transmission fades in and out over this long, along a raised cosine (since 0.32), so it starts and stops without a click
@@ -16,7 +16,8 @@ CHIRP_SAMPLES = int(CHIRP_SECONDS * FS)  # the same length counted in samples
 CHIRP_RAMP_SECONDS = 0.02  # fade-in and fade-out time at each end of a sweep
 CHIRP_RATE = (CHIRP_F1 - CHIRP_F0) / CHIRP_SECONDS  # sweep speed, in Hz per second
 
-PREAMBLE_TONES = 12  # every frame starts with this many tones in a pattern fixed for its speed level
+PREAMBLE_TONES = 12  # every frame starts with this many tones in a pattern fixed for its speed level; the same pattern is sent again after the body, before the second header copy (since signal version 0.43)
+PATTERN_REPEAT = 2  # how many times the pattern is sent in a frame: once at the start and once after the body (since signal version 0.43)
 PREAMBLE_PATTERNS = (  # the twelve tone numbers that start every frame, one row per speed level
     (12, 5, 27, 9, 24, 31, 19, 8, 2, 18, 1, 30),  # L0
     (25, 14, 5, 0, 16, 3, 8, 22, 4, 19, 31, 9),  # L1
@@ -46,6 +47,7 @@ BODY_CRC_BITS = 16  # check bits at the end of the message body
 HEADER_FIELD_BITS = 16  # frame type (3) + level (3) + size class (2) + part number (3) + part count (3) + compressed (1) + spare (1)
 HEADER_CRC_BITS = 8  # check bits at the end of the header
 HEADER_REPEAT = 2  # the coded header is sent twice for extra robustness: once after the preamble and once after the body (since signal version 0.26), so one fade cannot take both
+HEADER_END_MARK = 0xA5  # the second header copy's check value is the first copy's with these eight bits flipped (since signal version 0.43), so a receiver that reads one copy alone knows which end of the frame it has found
 FRAME_TYPE_LINK = 0  # header value: a message between two locked stations, marked with their short link number
 FRAME_TYPE_ADDRESSED = 1  # header value: a message carrying full destination and origin addresses
 CALL_CHARS = 9  # longest callsign or group name, in characters
@@ -87,5 +89,5 @@ CONTROL_BITS = {  # body length of each control frame, before its check value
 ADDRESS_BITS = {FRAME_TYPE_LINK: LINK_ID_BITS + LEVEL_BITS + MSG_ID_BITS, FRAME_TYPE_ADDRESSED: 2 * CALL_BITS + MSG_ID_BITS + HOP_BITS + LIFE_BITS}  # size of the address block at the start of the body: 28 or 120 bits
 MAX_PARTS = 8  # a message can be split into at most this many parts (3 bits)
 
-AIRTIME_CAP_S = 60.0  # default longest transmission, in seconds
-AIRTIME_POOR_CAP_S = 90.0  # longest transmission allowed when conditions are poor
+AIRTIME_CAP_S = 61.0  # default longest transmission, in seconds (60 until signal version 0.43: the second pattern adds twelve tones to every frame, and 200 characters at L2 now take 60.1 s)
+AIRTIME_POOR_CAP_S = 91.0  # longest transmission allowed when conditions are poor (90 until signal version 0.43: 200 characters at L1 now take 90.2 s)

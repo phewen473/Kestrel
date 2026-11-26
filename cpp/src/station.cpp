@@ -45,13 +45,14 @@ using kes::Json;  /* the JSON value */
 const double kFs = 12000.0;  /* audio sample rate (FS) */
 const long kSamples[5] = {4800, 1620, 1080, 540, 270};  /* samples per tone, levels 0-4 (LEVELS) */
 const double kMinSnr[5] = {-20.0, -16.0, -14.0, -11.0, -8.0};  /* weakest SNR per level, steady (MIN_SNR_DB) */
-const double kMinSnrFading[5] = {-8.0, -2.0, -8.0, -1.0, 0.0};  /* and fading (MIN_SNR_FADING_DB) */
+const double kMinSnrFading[5] = {-16.0, -10.0, -10.0, -5.0, -4.0};  /* and fading (MIN_SNR_FADING_DB; re-measured for 0.43) */
 const double kFadeLimit = 0.15;  /* fading index above which a signal is fading (FADE_INDEX_LIMIT) */
-const double kMinSnrFastFading[5] = {-14.0, -8.0, -10.0, -1.0, 0.0};  /* and in fast fading, by measured Doppler spread (MIN_SNR_FAST_FADING_DB, since 0.35) */
+const double kMinSnrFastFading[5] = {-16.0, -14.0, -12.0, -5.0, -4.0};  /* and in fast fading, by measured Doppler spread (MIN_SNR_FAST_FADING_DB, since 0.35; re-measured for 0.43) */
 const double kFastSpreadLow = 0.5, kFastSpreadHigh = 2.5;  /* the measured spreads that count as fast fading (FAST_SPREAD_HZ) */
 const int kSizes[4] = {50, 100, 150, 200};  /* size classes in plain characters (SIZE_CLASSES) */
 const int kPreambleTones = 12;  /* PREAMBLE_TONES */
 const int kHeaderTones = 24;  /* both header copies (HEADER_SYMBOLS) */
+const int kFrameTones = 2 * kPreambleTones + kHeaderTones;  /* tones in every frame besides its body (frame.py FRAME_TONES, 48): the pattern and a header copy at each end, since signal version 0.43 (36 before, when the pattern was sent once) */
 const long kLongSamples = 714000;  /* a whole long beacon, in samples (51 tones of 14000; modem/longbeacon.py) */
 const int kLongLevel = 7;  /* the long beacon's level number (LONG_LEVEL) */
 const int kTypeLink = 0, kTypeAddressed = 1, kTypeBeacon = 2, kTypeAnswer = 3, kTypeAck = 4, kTypeIdent = 5, kTypeNotice = 7;  /* frame types */
@@ -59,8 +60,8 @@ const int kControlBits[8] = {0, 0, 101, 139, 48, 61, 0, 192};  /* control frame 
 const int kAddressBits[2] = {28, 120};  /* address blocks (ADDRESS_BITS) */
 const int kAckOk = 0, kAckResend = 1, kAckHaveIt = 2, kAckLink = 3;  /* acknowledgment verdicts (control.py) */
 const double kSnrFloor = -30.0;  /* SNR_FLOOR_DB */
-const double kAirtimeCap = 60.0;  /* AIRTIME_CAP_S */
-const double kAirtimePoorCap = 90.0;  /* AIRTIME_POOR_CAP_S */
+const double kAirtimeCap = 61.0;  /* AIRTIME_CAP_S (60 until signal version 0.43) */
+const double kAirtimePoorCap = 91.0;  /* AIRTIME_POOR_CAP_S (90 until signal version 0.43) */
 const int kMaxParts = 8;  /* MAX_PARTS */
 const double kTurnaround = 1.0;  /* TURNAROUND_S */
 const double kReplyMargin = 3.0;  /* REPLY_MARGIN_S */
@@ -69,6 +70,7 @@ const double kReplySlotGap = 2.4;  /* REPLY_SLOT_GAP_S */
 const int kCallupLevel = 2;  /* CALLUP_LEVEL */
 const double kExpect = 300.0;  /* EXPECT_S */
 const double kHeardForCall = 600.0;  /* HEARD_FOR_CALL_S */
+const double kAskedKeep = 7200.0;  /* ASKED_KEEP_S: how long the level a station asked for is remembered (since 0.43) */
 const int kWideSlots = 4;  /* WIDE_SLOTS */
 const int kStepUpClean = 2;  /* STEP_UP_CLEAN */
 const int kStepUpLevels = 2;  /* STEP_UP_LEVELS */
@@ -130,11 +132,11 @@ long message_total(int size_class) {  /* body_layout(size_class)["total"] */
 }  /* end of message_total */
 
 double control_seconds(int type, long level) {  /* frame.py control_seconds */
-    return static_cast<double>(kPreambleTones + kHeaderTones + control_total(type)) * tone_seconds(level);  /* as Python: tones times tone length */
+    return static_cast<double>(kFrameTones + control_total(type)) * tone_seconds(level);  /* as Python: tones times tone length */
 }  /* end of control_seconds */
 
 double frame_seconds(int size_class, long level) {  /* frame.py frame_seconds */
-    return static_cast<double>(kPreambleTones + kHeaderTones + message_total(size_class)) * tone_seconds(level);  /* tones times tone length */
+    return static_cast<double>(kFrameTones + message_total(size_class)) * tone_seconds(level);  /* tones times tone length */
 }  /* end of frame_seconds */
 
 double reply_slot(long level) {  /* station.py reply_slot */
@@ -614,6 +616,7 @@ struct KesStation {  /* its state and rules */
     bool answer_calls = true;  /* answers directed calls by itself */
     double last_beacon_t = -1e9;  /* when it last beaconed */
     Dict<double> called_t;  /* when it last called each station */
+    Dict<std::pair<double, long>> asked;  /* callsign -> (time, level): the level that station last asked this one to send at, or this one last fell back to (station.py asked, since 0.43) */
     std::string unavailable_from;  /* the last station that said "not available" */
     long callup = kCallupLevel;  /* the level of the next call-up */
     long beacon_sent_at = 0;  /* the level of the beacon now waiting */
@@ -943,10 +946,10 @@ struct KesStation {  /* its state and rules */
         long level = static_cast<long>(f.at("level").as_int());  /* its level */
         if (type == "message" || type == "addressed") {  /* a message frame */
             int size_class = pick_size_class(f.at("text").as_text(), type == "message" ? kTypeLink : kTypeAddressed);  /* its size */
-            return (kPreambleTones + kHeaderTones + message_total(size_class)) * samples_of(level);  /* preamble, headers, body */
+            return (kFrameTones + message_total(size_class)) * samples_of(level);  /* the pattern and a header copy at each end, and the body */
         }  /* end of a message */
         int ftype = type == "ack" ? kTypeAck : type == "ident" ? kTypeIdent : type == "answer" ? kTypeAnswer : type == "beacon" ? kTypeBeacon : kTypeNotice;  /* the control frame type */
-        return (kPreambleTones + kHeaderTones + control_total(ftype)) * samples_of(level);  /* preamble, headers, body */
+        return (kFrameTones + control_total(ftype)) * samples_of(level);  /* the pattern and a header copy at each end, and the body */
     }  /* end of frame_samples */
 
     Json send(double now, const Json &frame, const char *kind, long level, const Json &expects, double reply_s, const std::string &note_text) {  /* prepare one transmission */
@@ -1475,6 +1478,7 @@ struct KesStation {  /* its state and rules */
         link = link_id(call, partner);  /* beaconing station first */
         allowed = common_levels(levels, longs(field(r, "levels")));  /* shared levels */
         tx_level = cap_level(static_cast<long>(field(r, "report").at("want_level").as_int()), allowed);  /* the level it asked for */
+        note_asked(now);  /* remembered for the next call to that station (since 0.43) */
         fresh_start(r);  /* first measurement */
         state = "LOCKED";  /* locked */
         my_turn = true;  /* beaconing station first */
@@ -1493,6 +1497,7 @@ struct KesStation {  /* its state and rules */
             return Json();  /* nothing */
         }  /* end of the refusal */
         tx_level = cap_level(static_cast<long>(fields.at("report").at("want_level").as_int()), allowed);  /* the level asked for */
+        note_asked(now);  /* remembered for the next call to that station (since 0.43) */
         if (state == "IDLE") {  /* waiting for this */
             fresh_start(r);  /* first frame since the lock */
             state = "LOCKED";  /* confirmed */
@@ -1700,6 +1705,7 @@ struct KesStation {  /* its state and rules */
             return Json();  /* carry on */
         }  /* end of the check */
         tx_level = cap_level(whole(r, "want_level"), allowed);  /* the level wanted back */
+        note_asked(now);  /* remembered for the next call to that station (since 0.43) */
         note(r, false);  /* measurements */
         long status = kAckOk;  /* received */
         long number = whole(r, "msg_id");  /* its number */
@@ -1885,6 +1891,12 @@ struct KesStation {  /* its state and rules */
         return Json();  /* nothing */
     }  /* end of usual_wake */
 
+    void note_asked(double now) {  /* station.py _asked: remember the level the partner can read (since 0.43) */
+        if (!partner.empty()) {  /* there is a partner */
+            asked[partner] = {now, tx_level};  /* the level it asked for, or the one fallen back to */
+        }  /* end of the test */
+    }  /* end of note_asked */
+
     Json call_now(double now) {  /* send a directed call */
         if (calls >= kCallTries) {  /* enough */
             release(now, "no answer from " + target);  /* give up */
@@ -1895,10 +1907,19 @@ struct KesStation {  /* its state and rules */
         partner = target;  /* the station called */
         link = link_id(partner, call);  /* the called station first */
         allowed = levels;  /* assume the same levels */
-        tx_level = calls == 1 ? callup : *std::min_element(allowed.begin(), allowed.end());  /* middle level first, then the slowest */
+        long first = callup;  /* the first call goes at the middle level... */
+        auto *known = asked.find(target);  /* ...unless that station lately asked for a slower one, or a faster one lately failed to reach it (since 0.43) */
+        bool slower = known != nullptr && now - known->first >= 0 && now - known->first <= kAskedKeep && cap_level(known->second, allowed) < first;  /* a slower level is on record, and recent */
+        if (slower) {  /* start there */
+            first = cap_level(known->second, allowed);  /* the remembered level, held to the levels in use */
+        }  /* end of the remembered level */
+        tx_level = calls == 1 ? first : *std::min_element(allowed.begin(), allowed.end());  /* that level first, then the slowest */
         last_ident = now;  /* the call carries the callsign */
         if (calls == 1) {  /* the first */
             say(now, "calling " + target);  /* explain */
+            if (slower) {  /* not at the usual level */
+                say(now, target + " last needed L" + std::to_string(first) + "; calling at that level");  /* say why */
+            }  /* end of the reason */
         }  /* end of the note */
         Json rep;  /* the report it carries */
         auto *heard = heard_at.find(target);  /* the last reading of that station */
@@ -2075,6 +2096,7 @@ struct KesStation {  /* its state and rules */
             return reacquire(now);  /* find the partner */
         }  /* end of the check */
         tx_level = cap_level(tx_level - 1, allowed);  /* one level slower */
+        note_asked(now);  /* the faster level did not get through: remembered for the next call to that station (since 0.43) */
         say(now, "no reply; trying again at L" + std::to_string(tx_level));  /* explain */
         if (is(waited_for, "ack")) {  /* a message frame */
             return send_part(now);  /* again */
@@ -2199,6 +2221,16 @@ struct KesStation {  /* its state and rules */
             }  /* end of the items */
             return o;  /* the dict */
         }  /* end of called_t */
+        if (name == "asked") {  /* the levels stations asked for (since 0.43) */
+            Json o = Json::object();  /* the dict */
+            for (const auto &p : asked.items) {  /* each */
+                Json pair = Json::list();  /* [time, level] */
+                pair.push(Json(p.second.first));  /* when */
+                pair.push(Json(p.second.second));  /* the level */
+                o[p.first] = pair;  /* kept */
+            }  /* end of the items */
+            return o;  /* the dict */
+        }  /* end of asked */
         if (name == "unavailable_from") return Json(unavailable_from);  /* "not available" from */
         if (name == "callup") return Json(callup);  /* call-up level */
         if (name == "beacon_sent_at") return Json(beacon_sent_at);  /* beacon level */
@@ -2271,6 +2303,13 @@ struct KesStation {  /* its state and rules */
         if (name == "answer_calls") { answer_calls = truthy(v); return; }  /* answers calls */
         if (name == "carries") { carries = truthy(v); return; }  /* carries mail */
         if (name == "callup") { callup = static_cast<long>(v.as_int()); return; }  /* call-up level */
+        if (name == "asked") {  /* the levels stations asked for, carried over from an earlier run (since 0.43) */
+            asked.items.clear();  /* replaced whole */
+            for (const auto &p : v.members()) {  /* each callsign */
+                asked[p.first] = {p.second.at(0).as_real(), static_cast<long>(p.second.at(1).as_int())};  /* when, and the level */
+            }  /* end of the items */
+            return;  /* done */
+        }  /* end of asked */
         if (name == "unavailable_from") { unavailable_from = v.as_text(); return; }  /* "not available" from */
         if (name == "last_traffic") { last_traffic = v.as_real(); return; }  /* last traffic */
         if (name == "tidied") { tidied = v.as_real(); return; }  /* last tidy */

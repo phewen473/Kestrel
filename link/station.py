@@ -45,6 +45,7 @@ from .mail import CompiledMailroom, Mailroom  # the mail kept between contacts (
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
+    ASKED_KEEP_S,  # (continued: how long the level a station asked for is remembered, since 0.43)
     HOLD_TELL_S, HOP_LIMIT, MAIL_TIDY_S, NOTICE_L0_EVERY_S, OFFER_NO_MAIL, REACH_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
@@ -53,7 +54,7 @@ LOCKED_STATES = ("LOCKED", "DEGRADED", "REACQUIRE")  # the states in which the s
 
 def reply_slot(level):  # how long one reply slot lasts after a beacon at a given level
     """Return the length in seconds of a reply slot after a beacon sent at `level`: an answer at that level plus a short gap."""
-    return control_seconds(FRAME_TYPE_ANSWER, level) + REPLY_SLOT_GAP_S  # 44.8 s after an L0 beacon, 11.9 s after an L2 beacon (since 0.33)
+    return control_seconds(FRAME_TYPE_ANSWER, level) + REPLY_SLOT_GAP_S  # 49.6 s after an L0 beacon, 13.0 s after an L2 beacon (since 0.43)
 
 
 @dataclass  # a plain record
@@ -179,6 +180,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.callup = CALLUP_LEVEL if CALLUP_LEVEL in self.levels else 0  # the level the next beacon or directed call goes at: the middle level first, L0 if that brings no reply
         self.beacon_sent_at = 0  # the level of the beacon now waiting for answers
         self.heard_at = {}  # callsign -> (time, report) of the last frame heard from it that named it, for the report a directed call carries
+        self.asked = {}  # callsign -> (time, level): the speed level that station last asked this one to send at, or that this one last fell back to when it got no reply, so the next directed call to it starts no faster (since 0.43; whoever runs the station may carry it from one run to the next)
         self.mail = Mailroom(self.call)  # the mail kept between contacts; whoever runs the station may hand in one loaded from a file
         self.outbox_ids = []  # for each outbox message, its message number if it is for a named station (fixed when queued, so every copy is the same message), else None
         self.carries = True  # this station holds mail for other stations when asked to (the operator's "Carry mail for others" setting)
@@ -330,9 +332,27 @@ class PythonStation:  # the link rules for one station, in Python (the reference
 
     # ---- hearing ----
 
-    def hear(self, audio):  # run the modem receiver, combining a failed frame with its retry
-        """Return the receiver's report for `audio`. A message frame that fails is kept, and added to its retry."""
-        result = receive(audio)  # first try: this copy alone
+    def hear(self, audio, decoded=None, start=None):  # run the modem receiver, combining a failed frame with its retry
+        """Return the receiver's report for `audio`. A message frame that fails is kept, and added to its retry.
+
+        `decoded`, if given, is the continuous receiver's own report on this
+        audio, and `start` the sample in `audio` where it found the frame
+        (live.listener.Heard, since 0.43). Its report is then used as it is
+        and the audio is not searched and decoded a second time. That
+        matters for weak frames: the continuous receiver reads control
+        frames with help (earlier copies added, expected callsigns) and
+        follows up patterns a fresh search of the clip can miss, and a
+        second, unaided decode here used to throw those frames away. A
+        message frame that failed is read again where it was found, with
+        the kept copy added.
+        """
+        where = None  # where the frame is, when the continuous receiver has said
+        if decoded is None:  # a recording handed over whole (the simulator, the tools)
+            result = receive(audio)  # first try: this copy alone
+        else:  # the continuous receiver has already read it
+            result = decoded  # its report stands
+            if start is not None and start >= 0 and 0 <= decoded.level < len(LEVELS):  # and it says where the frame begins
+                where = [({"start": float(start), "offset_hz": float(decoded.offset_hz), "quality": float(decoded.sync_quality)}, LEVELS[decoded.level])]  # the frame's first pattern, for reading it again with a retry added
         if result.ok:  # it decoded
             if result.frame_type in (FRAME_TYPE_LINK, FRAME_TYPE_ADDRESSED):  # a message frame got through
                 self.stored = None  # so any kept copy is no longer needed
@@ -341,7 +361,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             return result  # nothing to combine
         signature = (result.frame_type, result.size_class, result.part, result.parts)  # which frame this looks like, from its header
         if self.stored is not None and self.stored_sig == signature:  # an earlier failed copy of the same frame is on hand
-            combined = receive(audio, prior_llrs=self.stored)  # second try: both copies added together
+            combined = receive(audio, prior_llrs=self.stored, candidates=where)  # second try: both copies added together (read where the continuous receiver found the frame, when it has said)
             if combined.ok:  # together they decode
                 self.stored = None  # the kept copy has done its job
                 return combined  # success
@@ -380,6 +400,10 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             self.state = "DEGRADED"  # but never drops it
         elif not failed and self.state == "DEGRADED" and self.good_run >= STEP_UP_CLEAN:  # clean again
             self.state = "LOCKED"  # healthy once more
+
+    def _asked(self, now):  # remember the level the partner can read (since 0.43)
+        if self.partner:  # there is a partner
+            self.asked[self.partner] = (now, self.tx_level)  # the level it asked for, or the one fallen back to: the next call to it starts no faster
 
     def _fresh_start(self, result):  # restart the measurements from one new frame
         self.history = [_reading(result)] if np.isfinite(result.snr_db) else []  # forget older readings
@@ -678,6 +702,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.link = link_id(self.call, self.partner)  # link number: the beaconing station first
         self.allowed = common_levels(self.levels, result.fields["levels"])  # the levels both can use
         self.tx_level = cap_level(result.fields["report"].want_level, self.allowed)  # send at the level the partner asked for
+        self._asked(now)  # and remember it for the next call to that station (since 0.43)
         self._fresh_start(result)  # the first measurement of the partner
         self.state = "LOCKED"  # the lock is made
         self.my_turn = True  # the beaconing station goes first
@@ -692,6 +717,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             self._release(now, f"{self.partner} is not available")  # stop calling at once
             return None  # nothing to send
         self.tx_level = cap_level(fields["report"].want_level, self.allowed)  # from now on, send at the level the partner asks for
+        self._asked(now)  # and remember it for the next call to that station (since 0.43)
         if self.state == "IDLE":  # the answering (or calling) station was waiting for this
             self._fresh_start(result)  # the first frame from the partner since the lock: ask straight away for the level it supports, rather than climbing from L0
             self.state = "LOCKED"  # the lock is confirmed
@@ -859,6 +885,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         if not self._traffic_from_partner(now):  # this station keeps the turn
             return None  # the beaconing station carries on with its own exchange
         self.tx_level = cap_level(result.want_level, self.allowed)  # every message frame says which level its sender wants back
+        self._asked(now)  # and remember it for the next call to that station (since 0.43)
         self._note(result, failed=False)  # take in the measurements
         status = ACK_OK  # this frame was received
         if result.msg_id in self.done_ids or self.mail.is_handled(self.partner, result.msg_id):  # the whole message is already here (in this contact, or an earlier copy of it)
@@ -1000,10 +1027,17 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.partner = self.target  # the station being called
         self.link = link_id(self.partner, self.call)  # link number: the called station takes the beaconing station's place, so it comes first
         self.allowed = list(self.levels)  # the called station's levels are not known yet; assume it has the same
-        self.tx_level = self.callup if self.calls == 1 else min(self.allowed)  # the first call at the middle level, the rest at the slowest
+        first = self.callup  # the first call goes at the middle level...
+        known = self.asked.get(self.target)  # ...unless that station lately asked for a slower one, or a faster one lately failed to reach it (since 0.43)
+        slower = known is not None and 0 <= now - known[0] <= ASKED_KEEP_S and cap_level(known[1], self.allowed) < first  # a slower level is on record, and recent
+        if slower:  # start there: a call it cannot read is airtime wasted
+            first = cap_level(known[1], self.allowed)  # the remembered level, held to the levels in use
+        self.tx_level = first if self.calls == 1 else min(self.allowed)  # the first call at that level, the rest at the slowest
         self.last_ident = now  # the call carries this station's callsign
         if self.calls == 1:  # the first call
             self._say(now, f"calling {self.target}")  # explain
+            if slower:  # not at the usual level
+                self._say(now, f"{self.target} last needed L{first}; calling at that level")  # say why
         heard = self.heard_at.get(self.target)  # the last reading of the called station, if it was heard lately
         if heard is not None and now - heard[0] <= HEARD_FOR_CALL_S:  # recent enough to be useful
             report = heard[1]  # it goes with the call, so the called station can start at the right level
@@ -1110,6 +1144,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         if self.misses >= MISS_LIMIT:  # too many in a row
             return self._reacquire(now)  # go and find the partner again
         self.tx_level = cap_level(self.tx_level - 1, self.allowed)  # try one level slower
+        self._asked(now)  # the faster level did not get through: remember that for the next call to that station (since 0.43)
         self._say(now, f"no reply; trying again at L{self.tx_level}")  # explain
         if waited_for == "ack":  # it was a message frame
             return self._send_part(now)  # send it again
@@ -1226,6 +1261,8 @@ class CompiledStation:  # one station, its rules in the compiled library (cpp/sr
             return _result_back(value)  # as a report
         if name == "candidates":  # receiver reports
             return [_result_back(item) for item in value]  # as reports
+        if name == "asked":  # callsign -> (time, level)
+            return {call: (when, level) for call, (when, level) in value.items()}  # as tuples
         if name == "heard_at":  # callsign -> (time, report)
             return {call: (when, ChannelReport(**report)) for call, (when, report) in value.items()}  # as Python has it
         if name == "notices":  # callsign -> (time, fields)

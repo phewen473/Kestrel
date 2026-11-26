@@ -335,6 +335,7 @@ def test_listener_reports_a_near_miss_once():  # a clear signature whose header 
     likely = [result for result in seen if likely_kestrel(result)]  # the near misses the operator is shown
     assert len(likely) == 1  # the signature was reported as likely Kestrel, exactly once
     assert likely[0].seen_level == 3 and likely[0].pattern_tones >= NEAR_TONES  # at its own level, with most of its pattern there
+    assert abs(likely[0].sample - 5 * FS) < LEVELS[3].samples  # and placed in the stream where the frame began, five seconds in (since 0.43; before, a near miss carried no place)
     assert len(seen) <= 2  # at most one chance match besides (a strong pattern total just before it, kept only for the signal log)
 
 

@@ -497,6 +497,8 @@ const int kBitsPerTone = 5;  /* bits each tone carries (BITS_PER_SYMBOL) */
 const int kHeaderTones = 12;  /* tones in one header copy (frame.py HEADER_SYMBOLS_ONCE) */
 const int kHeaderCoded = 60;  /* coded bits in one header copy (HEADER_CODED_BITS) */
 const int kHeaderFields = 16;  /* header field bits before the check value (HEADER_FIELD_BITS) */
+const int kPatternTones = 12;  /* tones in a signature pattern (PREAMBLE_TONES); the pattern is sent at both ends of a frame since signal version 0.43 */
+const int kHeaderEndMark = 0xA5;  /* the bits flipped in the second header copy's check value (HEADER_END_MARK, since signal version 0.43) */
 const int kHeaderBits = 24;  /* field bits and the 8-bit check value */
 const int kFrameTypeBeacon = 2;  /* the beacon's frame type (FRAME_TYPE_BEACON): the one frame whose header spare bit may be set (power steps before it; since interface 16) */
 
@@ -550,6 +552,39 @@ void header_llrs(const double *x, size_t n, double start, double offset_hz, size
     }  /* end of the tones */
 }  /* end of header_llrs */
 
+/* The rate-1/2, K = 7 convolutional code with six zero tail bits (fec.py conv_encode): 2 * (n + kTail) coded bits. */
+void conv_encode_bits(const uint8_t *bits, size_t n, std::vector<uint8_t> &out) {  /* fec.py conv_encode */
+    out.assign(2 * (n + kTail), 0);  /* room */
+    int state = 0;  /* the encoder's memory */
+    for (size_t i = 0; i < n + kTail; ++i) {  /* the data, then the tail */
+        int b = i < n ? bits[i] : 0;  /* this bit */
+        int reg = (state << 1) | b;  /* the seven-bit register */
+        out[2 * i] = static_cast<uint8_t>(parity(reg & kG1));  /* first output bit */
+        out[2 * i + 1] = static_cast<uint8_t>(parity(reg & kG2));  /* second */
+        state = reg & (kStates - 1);  /* the newest six bits */
+    }  /* end of the bits */
+}  /* end of conv_encode_bits */
+
+/* For each coded header bit: -1 where the second copy's mark flips it, +1 elsewhere (frame.py _END_SIGNS).
+ * The code is linear, so marking the check value flips a fixed set of coded bits; multiplying a second
+ * copy's soft bits by these signs gives the first copy's. Worked out once. */
+const double *end_signs() {  /* frame.py _END_SIGNS */
+    static const std::vector<double> signs = [] {  /* made on first use (thread-safe in C++11 and later) */
+        uint8_t mark[kHeaderBits] = {0};  /* a header that is all zeros but for the mark */
+        for (int i = 0; i < 8; ++i) {  /* the mark's eight bits, most significant first */
+            mark[kHeaderFields + i] = static_cast<uint8_t>((kHeaderEndMark >> (7 - i)) & 1);  /* in the check value's place */
+        }  /* end of the bits */
+        std::vector<uint8_t> coded;  /* the mark, coded */
+        conv_encode_bits(mark, kHeaderBits, coded);  /* 24 bits -> 60 */
+        std::vector<double> out(kHeaderCoded);  /* one sign per coded bit */
+        for (int k = 0; k < kHeaderCoded; ++k) {  /* each */
+            out[static_cast<size_t>(k)] = 1.0 - 2.0 * coded[static_cast<size_t>(k)];  /* -1 where flipped */
+        }  /* end of the signs */
+        return out;  /* kept for the life of the program */
+    }();  /* end of the first use */
+    return signs.data();  /* the signs */
+}  /* end of end_signs */
+
 /* CRC-8 (polynomial 0x07, start 0) of bits[0..count), as modem/crc.py crc8 computes it. */
 int crc8_bits(const uint8_t *bits, int count) {  /* the header's check value */
     int reg = 0;  /* the register */
@@ -564,9 +599,12 @@ int crc8_bits(const uint8_t *bits, int count) {  /* the header's check value */
 }  /* end of crc8_bits */
 
 /* Decode soft header bits and check them (frame.py _check_header): true, with the 24 header bits in `bits`,
- * when the check value matches, the level field names `level` and the spare bit is clear (or, since
- * interface 16 and signal version 0.38, set on a beacon: power steps came just before it). */
-bool check_header(const double *llrs, int level, uint8_t *bits) {  /* decode and check */
+ * when the check value fits, the level field names `level` and the spare bit is clear (or, since
+ * interface 16 and signal version 0.38, set on a beacon: power steps came just before it). Since
+ * interface 18 (signal version 0.43) the check value may be the first copy's or the second copy's
+ * (the first copy's with kHeaderEndMark's bits flipped); `marked` says which, and the bits are returned
+ * in the first copy's form either way. */
+bool check_header(const double *llrs, int level, uint8_t *bits, bool *marked) {  /* decode and check */
     uint8_t decoded[kHeaderCoded / 2];  /* room for the decoder's output */
     long got = kes_viterbi_decode(llrs, kHeaderCoded, decoded);  /* correct errors */
     if (got != kHeaderBits) {  /* not the expected length (cannot happen for a whole copy) */
@@ -579,10 +617,19 @@ bool check_header(const double *llrs, int level, uint8_t *bits) {  /* decode and
     int named = (decoded[3] << 2) | (decoded[4] << 1) | decoded[5];  /* the level the header names */
     int type = (decoded[0] << 2) | (decoded[1] << 1) | decoded[2];  /* the frame type it names */
     bool spare_ok = decoded[15] == 0 || type == kFrameTypeBeacon;  /* the spare bit is clear, or set on a beacon: power steps before it (since interface 16) */
-    if (crc8_bits(decoded, kHeaderFields) != check || named != level || !spare_ok) {  /* any of the three tests fails */
+    int wanted = crc8_bits(decoded, kHeaderFields);  /* the check value its fields should have */
+    bool plain = wanted == check;  /* the first copy's check value */
+    bool second = (wanted ^ kHeaderEndMark) == check;  /* or the second copy's, marked */
+    if ((!plain && !second) || named != level || !spare_ok) {  /* any of the three tests fails */
         return false;  /* no */
     }  /* end of the tests */
     std::memcpy(bits, decoded, kHeaderBits);  /* the header */
+    if (second) {  /* the second copy */
+        for (int i = 0; i < 8; ++i) {  /* its check value, most significant bit first */
+            bits[kHeaderFields + i] = static_cast<uint8_t>((wanted >> (7 - i)) & 1);  /* put in the first copy's form */
+        }  /* end of the bits */
+    }  /* end of the second copy */
+    *marked = second;  /* which end of the frame it was sent at */
     return true;  /* this may be a frame */
 }  /* end of check_header */
 
@@ -598,35 +645,62 @@ KES_API int kes_read_header(const double *x, size_t n, double header_start, doub
     }  /* end of the check */
     double length = static_cast<double>(n);  /* the recording's length, as a number */
     double copy = static_cast<double>(kHeaderTones) * static_cast<double>(samples);  /* one header copy's length */
-    if (header_start < 0 || header_start + copy > length) {  /* the first copy is not (yet) wholly inside */
+    if (header_start < 0 || header_start + copy > length) {  /* the copy after the pattern is not (yet) wholly inside */
         return 0;  /* nothing to read */
     }  /* end of the check */
-    double first[kHeaderCoded], second[kHeaderCoded], both[kHeaderCoded];  /* soft bits of each copy, and their sum */
-    header_llrs(x, n, header_start, offset_hz, samples, lo, hi, step, first);  /* the first copy */
-    if (since < 0 && check_header(first, level, bits)) {  /* tried alone (unless it was tried before), and it checked out */
-        return 1;  /* "first": the usual case */
-    }  /* end of the first copy */
+    double here[kHeaderCoded], other[kHeaderCoded], both[kHeaderCoded];  /* soft bits of the copy after the pattern, of the copy at the frame's other end, and their sum */
+    bool marked = false;  /* whether a header that checks out carried the second copy's mark */
+    header_llrs(x, n, header_start, offset_hz, samples, lo, hi, step, here);  /* the copy after the pattern */
+    if (since < 0 && check_header(here, level, bits, &marked)) {  /* tried alone (unless it was tried before), and it checked out */
+        return marked ? 4 : 1;  /* "end": the pattern is the one at the frame's end; "first": the usual case */
+    }  /* end of the copy after the pattern */
+    const double *signs = end_signs();  /* takes the mark off a second copy's soft bits */
     double quarter = static_cast<double>(samples / 4);  /* a quarter of a tone (rounded down, as samples // 4) */
-    for (size_t i = 0; i < nbody; ++i) {  /* every place the second copy could be */
+    for (size_t i = 0; i < nbody; ++i) {  /* the pattern as a frame's start: every place the second copy could be */
         int total = body_totals[i];  /* a body length, in tones */
-        double second_start = header_start + static_cast<double>(kHeaderTones + total) * static_cast<double>(samples);  /* just after such a body */
+        double second_start = header_start + static_cast<double>(kHeaderTones + total + kPatternTones) * static_cast<double>(samples);  /* after such a body and the second pattern */
         if (second_start + copy > length + quarter) {  /* not (yet) inside the recording */
             continue;  /* cannot try this length yet */
         }  /* end of the check */
         if (since >= 0 && second_start + copy <= since) {  /* tried before, with the whole copy there */
             continue;  /* nothing new here */
         }  /* end of the check */
-        header_llrs(x, n, second_start, offset_hz, samples, lo, hi, step, second);  /* the second copy */
+        header_llrs(x, n, second_start, offset_hz, samples, lo, hi, step, other);  /* the second copy */
         for (int k = 0; k < kHeaderCoded; ++k) {  /* each soft bit */
-            both[k] = first[k] + second[k];  /* the two copies added */
+            other[k] *= signs[k];  /* its mark taken off */
+            both[k] = here[k] + other[k];  /* the two copies added */
         }  /* end of the sum */
-        const double *tries[2] = {both, second};  /* both copies together, then the second alone */
+        const double *tries[2] = {both, other};  /* both copies together, then the second alone */
         for (int t = 0; t < 2; ++t) {  /* each */
-            if (check_header(tries[t], level, bits)) {  /* it checked out */
+            if (check_header(tries[t], level, bits, &marked) && !marked) {  /* it checked out */
                 int frame_type = (bits[0] << 2) | (bits[1] << 1) | bits[2];  /* the frame type it names */
                 int size_class = (bits[6] << 1) | bits[7];  /* and the size class */
                 if (totals_by_type[frame_type * 4 + size_class] == total) {  /* its own fields give the body length it was read at */
                     return t == 0 ? 2 : 3;  /* "both" or "second" */
+                }  /* end of the agreement */
+            }  /* end of the check */
+        }  /* end of the tries */
+    }  /* end of the places */
+    if (since >= 0) {  /* the audio before the pattern was all there at the earlier try */
+        return 0;  /* no header here yet */
+    }  /* end of the earlier try */
+    for (size_t i = 0; i < nbody; ++i) {  /* the pattern as a frame's end: every place the first copy could be */
+        int total = body_totals[i];  /* a body length, in tones */
+        double first_start = header_start - static_cast<double>(kPatternTones + total + kHeaderTones) * static_cast<double>(samples);  /* before the second pattern and such a body */
+        if (first_start < 0) {  /* before the recording began */
+            continue;  /* cannot try this length */
+        }  /* end of the check */
+        header_llrs(x, n, first_start, offset_hz, samples, lo, hi, step, other);  /* the first copy */
+        for (int k = 0; k < kHeaderCoded; ++k) {  /* each soft bit */
+            both[k] = other[k] + here[k] * signs[k];  /* the two copies added, this one's mark taken off */
+        }  /* end of the sum */
+        const double *tries[2] = {both, other};  /* both copies together, then the first alone */
+        for (int t = 0; t < 2; ++t) {  /* each */
+            if (check_header(tries[t], level, bits, &marked) && !marked) {  /* it checked out */
+                int frame_type = (bits[0] << 2) | (bits[1] << 1) | bits[2];  /* the frame type it names */
+                int size_class = (bits[6] << 1) | bits[7];  /* and the size class */
+                if (totals_by_type[frame_type * 4 + size_class] == total) {  /* its own fields give the body length it was read at */
+                    return t == 0 ? 5 : 6;  /* "end both" or "end first" */
                 }  /* end of the agreement */
             }  /* end of the check */
         }  /* end of the tries */
@@ -773,7 +847,7 @@ KES_API int kes_noise_profile(const double *tone_e, size_t rows, int span, int t
 }  /* end of kes_noise_profile */
 
 KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *positions, const int *tones, size_t npilots, size_t samples,
-                          const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out) {  /* modem/mfsk.py pilot_frequency_fit */
+                          const int *tone_bins, int pad, int fine_span, double offset_hz, int backward, double *extra_out, double *drift_out) {  /* modem/mfsk.py pilot_frequency_fit */
     if (npilots == 0 || samples == 0 || pad < 1 || fine_span < 0) {  /* nonsense */
         return -1;  /* refuse */
     }  /* end of the check */
@@ -790,9 +864,16 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
     std::vector<double> times, errors;  /* each stretch's middle time and measured error */
     std::vector<double> re(samples), im(samples);  /* one pilot's shifted audio */
     size_t base = npilots / groups, extra_items = npilots % groups;  /* how NumPy's array_split shares the pilots: the first `extra_items` stretches get one more */
-    size_t index = 0;  /* the next pilot */
-    for (size_t g = 0; g < groups; ++g) {  /* each stretch, in order */
-        size_t count = base + (g < extra_items ? 1 : 0);  /* pilots in it */
+    std::vector<size_t> firsts(groups), counts(groups);  /* each stretch's first pilot and how many it has */
+    size_t next_pilot = 0;  /* the next pilot to share out */
+    for (size_t g = 0; g < groups; ++g) {  /* each stretch, in the frame's order */
+        counts[g] = base + (g < extra_items ? 1 : 0);  /* pilots in it */
+        firsts[g] = next_pilot;  /* where it begins */
+        next_pilot += counts[g];  /* on to the next */
+    }  /* end of the sharing */
+    for (size_t turn = 0; turn < groups; ++turn) {  /* each stretch: in order, or last to first when the frequency given was measured at the frame's end (since interface 18) */
+        size_t g = backward ? groups - 1 - turn : turn;  /* which stretch this turn takes */
+        size_t index = firsts[g], count = counts[g];  /* its pilots */
         std::vector<double> avg(2 * static_cast<size_t>(fine_span) + 1, 0.0);  /* the fine spectra added up */
         double position_sum = 0.0;  /* for the stretch's middle time */
         for (size_t p = index; p < index + count; ++p) {  /* each pilot in the stretch */
@@ -835,7 +916,6 @@ KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *p
         track += (static_cast<double>(peak) + frac - fine_span) * bin_hz / pad;  /* move to where this stretch found the signal */
         errors.push_back(track);  /* recorded */
         times.push_back(position_sum / static_cast<double>(count) * (static_cast<double>(samples) / kSampleRate));  /* and when */
-        index += count;  /* on to the next stretch */
     }  /* end of the stretches */
     if (groups >= 2) {  /* a trend can be seen */
         double mean_t = 0.0, mean_e = 0.0;  /* the averages */
@@ -969,7 +1049,7 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
                              size_t total, const long *pilot_pos, const int *pilot_tones, size_t npilots, const long *data_pos, size_t ndata,
                              size_t coded, int is_control, long info, const long *edge_bits, const long *edge_checks, long nedges,
                              const long *starts, double scale, int iterations, const double *prior, size_t nprior, int pad, int fine_span,
-                             int noise_span, int tracking, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out) {  /* frame.py _decode_body, the sums */
+                             int noise_span, int tracking, int from_end, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out) {  /* frame.py _decode_body, the sums */
     size_t padded = ndata * kBitsPerTone;  /* soft bits the data tones carry (the coded bits rounded up to whole tones) */
     if (samples == 0 || hi < lo || hi >= samples || step < 1 || total == 0 || ndata == 0 || coded > padded || coded < 2) {  /* nonsense */
         return -1;  /* refuse */
@@ -979,7 +1059,7 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
         tone_bins[m] = static_cast<int>(lo) + 1 + m * step;  /* its bin */
     }  /* end of the tones */
     double extra = 0.0, drift = 0.0;  /* the fine frequency correction and the drift */
-    if (npilots > 0 && kes_pilot_fit(x, n, body_start, pilot_pos, pilot_tones, npilots, samples, tone_bins, pad, fine_span, offset_hz, &extra, &drift) != 0) {  /* measured from the pilots */
+    if (npilots > 0 && kes_pilot_fit(x, n, body_start, pilot_pos, pilot_tones, npilots, samples, tone_bins, pad, fine_span, offset_hz, from_end, &extra, &drift) != 0) {  /* measured from the pilots (followed backwards when the frame was found from its end) */
         return -1;  /* refused */
     }  /* end of the pilot fit */
     double offset = offset_hz + extra;  /* the best estimate of the offset at the start of the body */
@@ -1506,13 +1586,24 @@ KES_API int kes_listener_next(KesListener *h, double *ev) {  /* listener.py _sea
             h->drop(id);  /* let it go */
             continue;  /* next candidate */
         }  /* end of the test */
-        long end = start + (static_cast<long>(h->cfg[KES_CFG_PREAMBLE_TONES]) + static_cast<long>(h->cfg[KES_CFG_HEADER_SYMBOLS]) + body) * samples;  /* where its frame ends */
+        long pattern_tones = static_cast<long>(h->cfg[KES_CFG_PREAMBLE_TONES]);  /* tones in a pattern */
+        long header_once = static_cast<long>(h->cfg[KES_CFG_HEADER_SYMBOLS]) / 2;  /* tones in one header copy */
+        long begins = start;  /* where its frame begins: at the pattern found... */
+        if (item->how >= 4) {  /* ...unless that is the pattern at the frame's end (since interface 18, signal version 0.43) */
+            begins = start - (pattern_tones + header_once + body) * samples;  /* a body, a header copy and the first pattern earlier */
+        }  /* end of the frame's start */
+        if (begins < 0) {  /* its beginning has slid out of the store (or was cut out with another frame) */
+            h->drop(id);  /* it can never be read */
+            continue;  /* next candidate */
+        }  /* end of the test */
+        long end = begins + (2 * pattern_tones + 2 * header_once + body) * samples;  /* where its frame ends: the pattern and a header copy at each end, and the body */
         if (end > stored) {  /* still arriving */
             continue;  /* wait for the rest */
         }  /* end of the test */
         double offset = item->offset, quality = item->quality;  /* its readings */
         h->drop(id);  /* decoded once only */
-        ev[0] = 1; ev[1] = pat.number; ev[2] = static_cast<double>(start); ev[3] = found_start; ev[4] = offset; ev[5] = quality; ev[6] = static_cast<double>(end);  /* "a frame to decode" */
+        ev[0] = 1; ev[1] = pat.number; ev[2] = static_cast<double>(start); ev[3] = found_start; ev[4] = offset; ev[5] = quality; ev[6] = static_cast<double>(end);  /* "a frame to decode": the pattern it was found by, and where it ends */
+        ev[8] = static_cast<double>(begins);  /* and where it begins (the pattern's own place unless it was found from its end) */
         return 1;  /* the caller decodes it */
     }  /* end of the candidates */
     return 0;  /* nothing more this search */
@@ -1571,17 +1662,7 @@ KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bi
     if (samples == 0 || ndata_bits == 0 || total == 0 || ndata * kBitsPerTone < coded) {  /* nonsense */
         return -1;  /* refuse */
     }  /* end of the check */
-    auto conv = [](const uint8_t *bits, size_t n, std::vector<uint8_t> &out) {  /* fec.py conv_encode: rate 1/2, K = 7, six zero tail bits */
-        out.assign(2 * (n + kTail), 0);  /* room */
-        int state = 0;  /* the encoder's memory */
-        for (size_t i = 0; i < n + kTail; ++i) {  /* the data, then the tail */
-            int b = i < n ? bits[i] : 0;  /* this bit */
-            int reg = (state << 1) | b;  /* the seven-bit register */
-            out[2 * i] = static_cast<uint8_t>(parity(reg & kG1));  /* first output bit */
-            out[2 * i + 1] = static_cast<uint8_t>(parity(reg & kG2));  /* second */
-            state = reg & (kStates - 1);  /* the newest six bits */
-        }  /* end of the bits */
-    };  /* end of conv */
+    auto conv = [](const uint8_t *bits, size_t n, std::vector<uint8_t> &out) { conv_encode_bits(bits, n, out); };  /* fec.py conv_encode: rate 1/2, K = 7, six zero tail bits */
     auto to_symbols = [](const std::vector<uint8_t> &bits, std::vector<int> &out) {  /* mfsk.py bits_to_symbols: groups of five, padded with zeros */
         size_t groups = (bits.size() + kBitsPerTone - 1) / kBitsPerTone;  /* tones needed */
         out.assign(groups, 0);  /* room */
@@ -1598,6 +1679,15 @@ KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bi
     conv(header_bits, 24, coded_header);  /* 24 bits -> 60 */
     std::vector<int> header_syms;  /* and as tones */
     to_symbols(coded_header, header_syms);  /* 12 of them */
+    uint8_t marked_bits[kHeaderBits];  /* the header as its second copy carries it (frame.py _end_header, since signal version 0.43) */
+    std::memcpy(marked_bits, header_bits, kHeaderBits);  /* the same fields */
+    for (int i = 0; i < 8; ++i) {  /* the check value's eight bits, most significant first */
+        marked_bits[kHeaderFields + i] ^= static_cast<uint8_t>((kHeaderEndMark >> (7 - i)) & 1);  /* the mark's bits flipped */
+    }  /* end of the mark */
+    std::vector<uint8_t> coded_end;  /* the second copy, coded */
+    conv(marked_bits, 24, coded_end);  /* 24 bits -> 60 */
+    std::vector<int> end_syms;  /* and as tones */
+    to_symbols(coded_end, end_syms);  /* 12 of them */
     std::vector<uint8_t> body_coded;  /* the body, coded */
     if (is_control) {  /* a control frame: the convolutional code */
         conv(data_bits, ndata_bits, body_coded);  /* coded */
@@ -1646,7 +1736,8 @@ KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bi
     std::vector<int> all(preamble_tones, preamble_tones + npreamble);  /* the preamble's tones... */
     all.insert(all.end(), header_syms.begin(), header_syms.end());  /* ...the header... */
     all.insert(all.end(), body.begin(), body.end());  /* ...the body... */
-    all.insert(all.end(), header_syms.begin(), header_syms.end());  /* ...and the header again (since 0.26) */
+    all.insert(all.end(), preamble_tones, preamble_tones + npreamble);  /* ...the pattern again (since signal version 0.43)... */
+    all.insert(all.end(), end_syms.begin(), end_syms.end());  /* ...and the header again, its check value marked (the second copy since 0.26, the mark since 0.43) */
     double bin_hz = kSampleRate / static_cast<double>(samples);  /* one FFT bin, in hertz */
     size_t length = all.size() * samples;  /* samples in the whole frame */
     std::vector<double> freq(length);  /* the wanted frequency, sample by sample (sudden steps) */

@@ -12,7 +12,9 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 11)
+## What is in it so far (interface version 18)
+
+Interface 18 (0.43, signal version 0.43): the signature pattern at both ends of every frame. `kes_encode_frame` writes pattern, header, body, pattern, header (the second header copy's check value marked); `kes_read_header` reads the header beside either pattern and answers 4, 5 or 6 for a frame found from the pattern at its end; `kes_pilot_fit` takes `backward` and `kes_decode_body` takes `from_end`, for a frame whose frequency was measured at its end; a `kes_listener_next` frame event gives the frame's start in `ev[8]` (the event array now holds 9 values). The compiled station has the new airtimes and limits and remembers the level each station last needed (`asked`).
 
 Interface 11 (0.31R2): the listener hands back every signature whose frame passed without a header (a possible near miss); Python counts its pattern tones, decides whether to report it, and cuts it out if it does.
 

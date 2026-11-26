@@ -224,23 +224,32 @@ def energies_to_llrs(tone_e, noise_level):  # tone energies -> soft bits
     return llrs.reshape(-1)  # flatten to one long run of soft bits
 
 
-def pilot_frequency_fit(x, start, positions, tones, level, offset_hz):  # track drift using the known pilot tones
+def pilot_frequency_fit(x, start, positions, tones, level, offset_hz, backward=False):  # track drift using the known pilot tones
     """Return (extra offset at the first symbol in Hz, drift in Hz per second) measured from the pilots.
 
     The pilots are handled in stretches of about eight. Each stretch is
     searched around where the previous stretch found the signal, so the
     tracker follows a drifting signal step by step.
+
+    `offset_hz` is the frequency error measured from the pattern the frame
+    was found by. For a frame found from the pattern at its end (since
+    signal version 0.43) that is the error at the END of the body, so
+    with `backward` the stretches are followed from the last to the first
+    and a drifting signal is tracked back from where it was measured. The
+    answer is the same either way: the extra offset at the first symbol,
+    and the drift.
     """
     positions = np.asarray(positions)  # which symbols are pilots
     tones = np.asarray(tones)  # which tone each pilot used
-    done = native.pilot_fit(x, start, positions, tones, level.samples, level.tone_bins, PAD, FINE_SPAN, offset_hz)  # the compiled version, when the library is in use
+    done = native.pilot_fit(x, start, positions, tones, level.samples, level.tone_bins, PAD, FINE_SPAN, offset_hz, backward)  # the compiled version, when the library is in use
     if done is not None:  # it was
         return done  # the same fit, to rounding
     groups = max(1, len(positions) // 8)  # split the frame into stretches of about 8 pilots
     track = 0.0  # frequency error found so far, on top of the preamble's estimate
     times = []  # middle time of each stretch
     errors = []  # frequency error measured in each stretch
-    for idx in np.array_split(np.arange(len(positions)), groups):  # one stretch at a time, in order
+    stretches = np.array_split(np.arange(len(positions)), groups)  # the pilots shared out among the stretches
+    for idx in (stretches[::-1] if backward else stretches):  # one stretch at a time: in order, or last to first when the frequency was measured at the frame's end
         avg = np.zeros(2 * FINE_SPAN + 1)  # running sum of fine spectra for this stretch
         for pos, tone in zip(positions[idx], tones[idx]):  # look at every pilot in the stretch
             block = _mixed_blocks(x, start + pos * level.samples, 1, level, offset_hz + track, 0.0)[0]  # that pilot's audio, corrected by the best estimate so far

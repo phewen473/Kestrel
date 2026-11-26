@@ -463,3 +463,38 @@ def test_an_unheard_move_is_dropped_and_the_message_goes_where_the_stations_are(
     run_link(a, b, Path(deaf), Path(3.0), seed=3, limit_s=start + 1500, start_s=start)  # carry on
     assert "hello from the calling frequency" in b.inbox  # the message arrived
     assert a.offset_hz == 0 and b.offset_hz == 0  # nobody moved alone
+
+
+def test_next_call_starts_at_the_level_the_station_last_needed():  # the call-up remembers a weak path (since 0.43)
+    from link.params import ASKED_KEEP_S, CALLUP_LEVEL  # how long it is remembered, and the usual first level
+    from link.station import PythonStation  # the reference rules
+    for make in (PythonStation, Station):  # the reference rules, and the compiled ones when the library is in use
+        a = make("Q1AAAA", "EM92")  # the calling station
+        a.listen()  # idle, listening
+        a.call_once("Q2BB")  # a first call, with nothing on record
+        first = a.poll(0.0)  # the call
+        assert first.kind == "call" and first.level == CALLUP_LEVEL  # at the usual middle level
+        a.cancel(1.0)  # the operator stops calling
+        a.new_contact()  # what the live loop does next
+        a.asked = {"Q2BB": (100.0, 0)}  # on record: Q2BB lately asked this station for L0 (a weak path its way)
+        assert a.asked == {"Q2BB": (100.0, 0)}  # kept as given (the compiled station hands it back the same)
+        a.call_once("Q2BB")  # call again
+        again = a.poll(200.0)  # the call
+        assert again.kind == "call" and again.level == 0  # straight at L0: no airtime spent on a call it cannot read
+        assert any("last needed L0" in line for line in a.log)  # and the log says why
+        a.cancel(201.0)  # the operator stops calling
+        a.new_contact()  # ready again
+        a.call_once("Q2BB")  # much later
+        late = a.poll(200.0 + ASKED_KEEP_S + 500.0)  # after the record has gone stale
+        assert late.kind == "call" and late.level == CALLUP_LEVEL  # the usual level again: paths change
+
+
+def test_station_remembers_the_level_its_partner_asked_for():  # where the record comes from
+    a, b = Station("Q1AAAA", "EM92"), Station("Q2BB", "EM93")  # two stations
+    a.beacon()  # A calls
+    b.listen()  # B answers
+    a.queue("REMEMBER THE LEVEL")  # something to send
+    run_link(a, b, Path(-17.0), Path(5.0), seed=77)  # B hears A weakly; A hears B well
+    assert "REMEMBER THE LEVEL" in b.inbox  # the message got through
+    assert a.asked["Q2BB"][1] == 0  # A has it on record that Q2BB needed L0
+    assert b.asked["Q1AAAA"][1] >= 2  # and B that Q1AAAA could take a faster level

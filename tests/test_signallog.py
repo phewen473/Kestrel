@@ -124,7 +124,7 @@ def test_listener_numbers_frames_in_the_stream():  # where a frame began, in sam
     assert [heard.result.ok for heard in found] == [True, True]  # both decoded
     tenth = 27  # a tenth of an L4 tone, in samples: fine timing may land this far off for some alignments of the tones (the 0.40 beacon started on a feed boundary lands 25 samples late); a numbering fault would be off by thousands
     assert abs(found[0].result.sample - (offset + first)) <= tenth and abs(found[1].result.sample - (offset + second)) <= tenth  # each placed where it was, though the first was cut out of the store before the second was found
-    assert found[0].result.header_copy == "first"  # a clean frame is read from its first header copy
+    assert found[0].result.header_copy in ("first", "end")  # a clean frame is read from the header copy beside whichever of its two patterns stood out more (since 0.43)
     assert any(step.get("ok") for trace in traces for step in trace)  # the traces show the decodes
     assert all("sample" in step for trace in traces for step in trace)  # every candidate has its place in the stream
 
@@ -143,8 +143,8 @@ def test_receiver_reads_the_second_header_copy_when_the_first_is_lost():  # the 
     audio = np.concatenate([np.zeros(FS), frame, np.zeros(FS)]) + rng.standard_normal(len(frame) + 2 * FS) * 0.01  # a little noise round it
     trace = []  # the receiver's candidate list
     result = receive(audio, trace=trace)  # decode it
-    assert result.ok and result.header_copy in ("both", "second")  # decoded, from the copy at the end
-    assert any(step["header"] in ("both", "second") and step.get("ok") for step in trace)  # and the trace says so
+    assert result.ok and result.header_copy in ("both", "second", "end")  # decoded, with the copy at the end (since 0.43 usually found from the pattern beside it: "end")
+    assert any(step["header"] in ("both", "second", "end") and step.get("ok") for step in trace)  # and the trace says so
 
 
 def test_signal_report_summarizes_a_log(tmp_path):  # tools/signal_report.py

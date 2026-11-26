@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 17  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 18  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
 from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
@@ -106,7 +106,7 @@ def _load():  # find, open and check the library
         lib.kes_fine_time.restype = ctypes.c_int  # 0 refined, 1 too short, -1 bad arguments
         lib.kes_read_header.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
                                         ctypes.c_int, ctypes.c_int, _INT_P, _INT_P, ctypes.c_size_t, ctypes.c_double, _BYTE_P]  # x, n, start, offset, samples, lo, hi, step, level, totals by type, body totals, count, since, bits
-        lib.kes_read_header.restype = ctypes.c_int  # 1 first, 2 both, 3 second, 0 none, -1 bad arguments
+        lib.kes_read_header.restype = ctypes.c_int  # 1 first, 2 both, 3 second, 4 end, 5 end both, 6 end first, 0 none, -1 bad arguments
         lib.kes_ldpc_decode.argtypes = [_DOUBLE_P, ctypes.c_long, _LONG_P, _LONG_P, ctypes.c_long, _LONG_P, ctypes.c_double, ctypes.c_int, _BYTE_P]  # llrs, k, edge bits, edge checks, edges, starts, scale, rounds, bits
         lib.kes_ldpc_decode.restype = ctypes.c_int  # 1 all checks satisfied, 0 gave up, -1 bad arguments
         lib.kes_noise_profile.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, _DOUBLE_P]  # tone energies, rows, span, tracking, level
@@ -114,7 +114,7 @@ def _load():  # find, open and check the library
         lib.kes_tone_spread.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, _LONG_P, ctypes.c_int, _DOUBLE_P, _DOUBLE_P]  # band, rows, columns, tones sent, step, noise per row, answers (since ABI 14)
         lib.kes_tone_spread.restype = ctypes.c_int  # 0, or -1
         lib.kes_pilot_fit.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_double, _LONG_P, _INT_P, ctypes.c_size_t, ctypes.c_size_t,
-                                      _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, extra, drift
+                                      _INT_P, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int, _DOUBLE_P, _DOUBLE_P]  # x, n, start, positions, tones, pilots, samples, tone bins, pad, span, offset, backward (since interface 18), extra, drift
         lib.kes_pilot_fit.restype = ctypes.c_int  # 0, or -1
         lib.kes_remove_steady.argtypes = [_DOUBLE_P, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int,
                                           ctypes.c_double, ctypes.c_size_t, _DOUBLE_P]  # x, n, block, windowed, low, high, times, neighborhood, most, half width, size, out
@@ -123,7 +123,7 @@ def _load():  # find, open and check the library
                                         ctypes.c_size_t, _LONG_P, _INT_P, ctypes.c_size_t, _LONG_P, ctypes.c_size_t,  # tones, pilot places, pilot tones, pilots, data places, data tones
                                         ctypes.c_size_t, ctypes.c_int, ctypes.c_long, _LONG_P, _LONG_P, ctypes.c_long,  # coded bits, control?, LDPC data bits, edge bits, edge checks, edges
                                         _LONG_P, ctypes.c_double, ctypes.c_int, _DOUBLE_P, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,  # check starts, scale, rounds, prior, prior length, pad, fine span
-                                        ctypes.c_int, ctypes.c_int, _BYTE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P]  # noise span, tracking, data out, soft bits out, band out, figures out
+                                        ctypes.c_int, ctypes.c_int, ctypes.c_int, _BYTE_P, _DOUBLE_P, _DOUBLE_P, _DOUBLE_P]  # noise span, tracking, found from its end (since interface 18), data out, soft bits out, band out, figures out
         lib.kes_decode_body.restype = ctypes.c_long  # data bits written, or -1
         lib.kes_crc16.argtypes = [_BYTE_P, ctypes.c_size_t]  # bits, count
         lib.kes_crc16.restype = ctypes.c_int  # the check value
@@ -342,7 +342,7 @@ def fine_time(x, samples, bins, pad, hops, shift, coarse_start):  # modem/preamb
     return start.value, steps.value  # the refined start and frequency error
 
 
-_HOW = {1: "first", 2: "both", 3: "second"}  # which header copy gave the header, by the library's answer
+_HOW = {1: "first", 2: "both", 3: "second", 4: "end", 5: "end both", 6: "end first"}  # which header copy gave the header, by the library's answer (4 to 6: the frame was found from the pattern at its end, since interface 18)
 
 
 def read_header(x, header_start, offset_hz, samples, lo, hi, step, level, totals_by_type, body_totals, since):  # modem/frame.py _read_header_how, compiled
@@ -405,7 +405,7 @@ def tone_spread(band, tones, step, noise):  # modem/mfsk.py tone_spread, compile
     return float(out[0]), float(out[1]), float(out[2])  # the three readings
 
 
-def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, offset_hz):  # modem/mfsk.py pilot_frequency_fit, compiled
+def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, offset_hz, backward=False):  # modem/mfsk.py pilot_frequency_fit, compiled
     """Return (extra offset at the first symbol in Hz, drift in Hz per second), or None when the library is not in use."""
     if _lib is None or len(positions) == 0:  # no library, or no pilots
         return None  # the caller uses Python
@@ -414,7 +414,7 @@ def pilot_fit(x, start, positions, tones, samples, tone_bins, pad, fine_span, of
     which, which_p = _ints(tones)  # which tone each sends
     bins, bins_p = _ints(tone_bins)  # every tone's FFT bin
     extra, drift = ctypes.c_double(), ctypes.c_double()  # room for the answers
-    if _lib.kes_pilot_fit(_ptr(x), len(x), float(start), where_p, which_p, len(where), int(samples), bins_p, int(pad), int(fine_span), float(offset_hz),
+    if _lib.kes_pilot_fit(_ptr(x), len(x), float(start), where_p, which_p, len(where), int(samples), bins_p, int(pad), int(fine_span), float(offset_hz), int(bool(backward)),
                           ctypes.byref(extra), ctypes.byref(drift)) < 0:  # the library refused
         return None  # the Python code will handle it
     return extra.value, drift.value  # the fit
@@ -431,7 +431,7 @@ def remove_steady(x, block, low_hz, high_hz, times, local_steps, most, half_hz, 
     return out  # the audio, notched where needed
 
 
-def decode_body(x, body_start, offset_hz, spec, layout, is_control, prior=None):  # modem/frame.py _decode_body's sums, compiled
+def decode_body(x, body_start, offset_hz, spec, layout, is_control, prior=None, from_end=False):  # modem/frame.py _decode_body's sums, compiled (`from_end`: the frequency was measured at the frame's end, since interface 18)
     """Return (data bits, soft bits, band energies, (offset, drift, snr_db, fade, passed, noise)), or None when the library is not in use."""
     if _lib is None:  # no library
         return None  # the caller uses Python
@@ -464,7 +464,7 @@ def decode_body(x, body_start, offset_hz, spec, layout, is_control, prior=None):
                                  int(layout["total"]), pilot_pos_p, pilot_tones_p, len(pilot_pos), data_pos_p, len(data_pos),
                                  coded, int(bool(is_control)), info, edge_bits_p, edge_checks_p, edges,
                                  starts_p, float(ldpc.SCALE), int(ldpc.MAX_ITERATIONS), prior_p, nprior, int(mfsk.PAD), int(mfsk.FINE_SPAN),
-                                 int(mfsk.NOISE_SPAN), int(bool(mfsk.NOISE_TRACKING)), data.ctypes.data_as(_BYTE_P), _ptr(llrs), _ptr(band), _ptr(stats))  # decode
+                                 int(mfsk.NOISE_SPAN), int(bool(mfsk.NOISE_TRACKING)), int(bool(from_end)), data.ctypes.data_as(_BYTE_P), _ptr(llrs), _ptr(band), _ptr(stats))  # decode
     if count < 0:  # the library refused the arguments
         return None  # the Python code will handle them
     offset, drift, snr_db, fade, passed, noise = (float(value) for value in stats)  # the figures
@@ -494,7 +494,7 @@ class CompiledListener:  # the compiled continuous receiver (interface 7)
         by_type, by_type_p = _ints(totals_by_type)  # body length by frame type and size class
         bodies, bodies_p = _ints(body_totals)  # every body length
         _lib.kes_listener_set_tables(self.handle, by_type_p, bodies_p, len(bodies))  # given
-        self.event = np.zeros(8)  # room for one event
+        self.event = np.zeros(9)  # room for one event (nine values since interface 18: a frame event also gives where the frame begins)
 
     def __del__(self):  # the Python object goes
         if getattr(self, "handle", None) and _lib is not None:  # it was made
@@ -580,7 +580,7 @@ _ROWS = {}  # the LDPC encoder's three shuffles for each code size, converted on
 
 
 def encode_frame(header_bits, data_bits, is_control, layout, spec, preamble_tones):  # frame.py's transmitter, compiled
-    """Return the audio of a frame (preamble, header, body, header) from its packed bits, or None when the library is not in use."""
+    """Return the audio of a frame (pattern, header, body, pattern, header) from its packed bits, or None when the library is not in use."""
     if _lib is None:  # no library
         return None  # the caller uses Python
     header = np.ascontiguousarray(header_bits, dtype=np.uint8)  # the 24 header bits
@@ -596,7 +596,7 @@ def encode_frame(header_bits, data_bits, is_control, layout, spec, preamble_tone
     pilot_tones, pilot_tones_p = _ints(layout["pilot_tones"])  # which tone each sends
     pattern, pattern_p = _ints(preamble_tones)  # the preamble's tones
     bins, bins_p = _ints(spec.tone_bins)  # every tone's FFT bin
-    audio = np.zeros((len(pattern) + 24 + int(layout["total"])) * spec.samples)  # room for the whole frame
+    audio = np.zeros((2 * len(pattern) + 24 + int(layout["total"])) * spec.samples)  # room for the whole frame (the pattern at both ends since interface 18)
     got = _lib.kes_encode_frame(header.ctypes.data_as(_BYTE_P), data.ctypes.data_as(_BYTE_P), len(data), int(bool(is_control)), rows_p,
                                 int(layout["total"]), data_pos_p, len(data_pos), pilot_pos_p, pilot_tones_p, len(pilot_pos),
                                 int(layout["coded"]), pattern_p, len(pattern), int(spec.samples), bins_p, float(spec.glide), int(round(RAMP_S * 12000)), _ptr(audio))  # made (with the level's glide and the fades at the ends, since interface 12)

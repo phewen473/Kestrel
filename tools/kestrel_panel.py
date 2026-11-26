@@ -509,6 +509,7 @@ class Panel:  # the control panel window
         self.base_khz = 0.0  # the calling frequency chosen, in kHz (kept here so the station thread need not read the window)
         self.level_check = 0.0  # when Windows' receive level was last read back
         self.mailroom = Mailroom.load(self.mail_file(), self.settings["call"])  # this station's mail: its own messages for named stations, mail it carries for others, receipts
+        self.asked_levels = {}  # callsign -> (wall-clock time, level): the speed level each station last needed from this one, carried from one Listen run to the next so a call to a weak station starts at a level it can read (since 0.43)
         self.mail_saved = time.monotonic()  # when the mail was last written to its file
         self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
@@ -4879,6 +4880,8 @@ class Panel:  # the control panel window
             station.available = bool(job["available"])  # and whether the operator is available for contacts
             station.mail = self.mailroom  # the mail kept between runs: this station's numbered messages, mail it carries, receipts
             station.carries = bool(job.get("carry_mail", True))  # whether it holds mail for other stations
+            began = time.time()  # the wall-clock time this run's own clock starts from, near enough (a station counts seconds from the start of its run)
+            station.asked = {call: (when - began, level) for call, (when, level) in self.asked_levels.items()}  # what earlier runs learned of the level each station needs, in this run's clock: times before its start are negative (since 0.43)
             for text, to in job["messages"]:  # the queued messages
                 station.queue(text, to=to or None)  # into the station's outbox, each with its address
             job["messages"], job["holder"] = [], station  # the station holds them now; if the run stops with a problem the tidy-up below takes them back from it (since 0.40R2)
@@ -4893,6 +4896,7 @@ class Panel:  # the control panel window
             run_station(station, source, self.sink, ptt, say=self.say, stay_on=True, should_stop=self.stop.is_set, retune=retune, on_heard=self.note_heard, on_frame=self.log_frame, on_transmit=self.transmitting, on_tick=self.tick, on_near=self.note_near,  # (continued)
                         signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event, on_progress=self.frames.update,  # (continued)
                         idle=self.idle_watch, on_idle=self.idle_warning)  # the live loop, until stopped, with the signal log, the listen-first check, the callsigns it expects, and (since 0.41) the idle timeout with Keep-Alive and the 10-second warning
+            self.asked_levels = {call: (began + when, level) for call, (when, level) in station.asked.items()}  # what is now known of the level each station needs, back in wall-clock time for the next run (since 0.43)
             with self.outbox_lock:  # the window may be queuing a message at this moment (since 0.40R3)
                 self.station = None  # the run is over; later messages wait for the next one
                 self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address

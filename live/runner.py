@@ -412,7 +412,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
     stamp(f"{station.call} on the air as {station.role or 'broadcaster'}")  # opening line (a station with no role is only sending a broadcast)
     while (limit_s is None or now() < limit_s) and not (should_stop and should_stop()):  # until the time limit, or until told to stop
         for heard in feed_from(listener, source, watch):  # every frame that has completed
-            result = heard.result if heard.result.ok and heard.result.frame_type == FRAME_TYPE_LONG else station.hear(heard.audio)  # the station's own decode (which also combines a failed frame with its retry); a long beacon is already decoded, perhaps from several copies added together
+            result = heard.result if heard.result.ok and heard.result.frame_type == FRAME_TYPE_LONG else station.hear(heard.audio, heard.result, heard.start)  # the continuous receiver's report, taken as read when it decoded (since 0.43; before, the clip was decoded again from scratch, without the help the continuous receiver gives weak control frames); a failed message frame is combined with its retry; a long beacon is already decoded, perhaps from several copies added together
             if getattr(heard.result, "power_steps", None) is not None and getattr(result, "power_steps", None) is None:  # the listener read power steps before this beacon (since 0.38)
                 result.power_steps = heard.result.power_steps  # kept with the station's report
             if logging:  # a signal log is kept

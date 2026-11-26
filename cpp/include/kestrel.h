@@ -70,7 +70,7 @@ extern "C" {  /* keep plain C names, so other languages can find them */
 /* The version of this interface. A program checks it before calling anything
  * else, and refuses a library whose interface is not the one it was written
  * for. It changes whenever a function is added, removed or changed. */
-#define KES_ABI_VERSION 17  /* the interface described in this file (17: a beacon carries the rig type and watts, KesFields.rig_model and watts; 16: the header reader accepts a beacon whose spare bit is set, meaning power steps came just before it (signal version 0.38); 15: kes_listener_candidates, the frames being received, for the panel's frame strip; 14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
+#define KES_ABI_VERSION 18  /* the interface described in this file (18: signal version 0.43 - the signature pattern is sent at both ends of a frame and the second header copy's check value is marked: kes_encode_frame writes pattern, header, body, pattern, header; kes_read_header reads the header beside either pattern and answers 4, 5 or 6 for a frame found from its end; a kes_listener_next frame event gives the frame's start in ev[8], so ev must hold 9 values; kes_pilot_fit takes `backward` and kes_decode_body `from_end`, for a frame whose frequency was measured at its end; 17: a beacon carries the rig type and watts, KesFields.rig_model and watts; 16: the header reader accepts a beacon whose spare bit is set, meaning power steps came just before it (signal version 0.38); 15: kes_listener_candidates, the frames being received, for the panel's frame strip; 14: kes_tone_spread, the Doppler-spread reading; 13: signal version 0.33: the answer frame carries its sender's locator (KesFields.grid; empty = none); 12: signal version 0.32: Gray-coded tones in the transmitter and both soft-bit readers; the transmitter's glide and end fades; 2: preamble search and fine timing; 3: threads and the header reader; 4: body decoder parts; 5: steady-signal notch, known-bit Viterbi; 6: whole body decoder; 7: the continuous receiver, the transmitter; 8: packing and unpacking the bits; 9: the mail store; 10: the station's link rules; 11: every signature whose frame passed without a header is handed back as a possible near miss; the caller decides and cuts) */
 KES_API int kes_abi_version(void);  /* returns KES_ABI_VERSION as built into the library */
 
 /* Threads: the heavy routines share their work among up to 8 threads (never more than the computer has).
@@ -122,12 +122,17 @@ KES_API int kes_fine_time(const double *x, size_t n, size_t samples, const int *
                           int shift, double coarse_start, double *start_out, double *steps_out);
 
 /* modem/frame.py _read_header_how: read the header after a preamble of level `level`. The tone band is FFT
- * bins lo..hi of `samples`-sample tones, tone m in column 1 + m * step. The first copy starts at
- * header_start; if it does not check out (or since >= 0, meaning it was tried before) the second copy is
- * read after each body length in body_totals[0..nbody), with the first and alone, and accepted only if
- * totals_by_type[frame type * 4 + size class] equals that length (-1 for frame types that do not exist).
- * since >= 0 skips second-copy places tried before (whole copy inside x's length `since`).
- * Writes the 24 header bits. Returns 1 (first copy), 2 (both), 3 (second), 0 (none) or -1 (bad arguments). */
+ * bins lo..hi of `samples`-sample tones, tone m in column 1 + m * step. A header copy follows each of a
+ * frame's two patterns (since interface 18, signal version 0.43); the copy that starts at header_start is
+ * the one after the pattern found, and the mark on its check value says which end of the frame that is.
+ * If it does not check out alone (or since >= 0, meaning it was tried before), the second copy is read
+ * after each body length in body_totals[0..nbody) and the second pattern, with it and alone; then (only
+ * when since < 0) the first copy is read before each body length, with it and alone. A header found at a
+ * distance is accepted only if totals_by_type[frame type * 4 + size class] equals that length (-1 for
+ * frame types that do not exist). since >= 0 skips second-copy places tried before (whole copy inside
+ * x's length `since`). Writes the 24 header bits in the first copy's form. Returns 1 (first copy alone),
+ * 2 (both, from the start), 3 (second copy, from the start), 4 (second copy alone: the pattern is the
+ * frame's end), 5 (both, from the end), 6 (first copy, from the end), 0 (none) or -1 (bad arguments). */
 KES_API int kes_read_header(const double *x, size_t n, double header_start, double offset_hz, size_t samples, size_t lo, size_t hi,
                             int step, int level, const int *totals_by_type, const int *body_totals, size_t nbody, double since,
                             uint8_t *bits);
@@ -154,9 +159,12 @@ KES_API int kes_tone_spread(const double *band, size_t rows, size_t cols, const 
 /* modem/mfsk.py pilot_frequency_fit: measure the pilots (positions[i] tones after `start`, each sending
  * tone tones[i]) in stretches of about eight, each searched around where the last found the signal, on a
  * grid `pad` times finer than one bin, `fine_span` steps each side; fit a straight line through the
- * stretches. Writes the extra offset at the first symbol (Hz) and the drift (Hz per second). */
+ * stretches. Writes the extra offset at the first symbol (Hz) and the drift (Hz per second). With
+ * `backward` (since interface 18) the stretches are followed from the last to the first: offset_hz was
+ * then measured at the frame's end (a frame found from its second pattern), and a drifting signal is
+ * followed back from there; the answers are still the extra offset at the first symbol and the drift. */
 KES_API int kes_pilot_fit(const double *x, size_t n, double start, const long *positions, const int *tones, size_t npilots, size_t samples,
-                          const int *tone_bins, int pad, int fine_span, double offset_hz, double *extra_out, double *drift_out);
+                          const int *tone_bins, int pad, int fine_span, double offset_hz, int backward, double *extra_out, double *drift_out);
 
 /* modem/notch.py remove_steady: copy x[0..n) to out with every steady signal between low_hz and high_hz
  * notched out (also modem/longbeacon.py clean, with windowed 0 and local_steps -1). Blocks of `block` samples,
@@ -177,12 +185,13 @@ KES_API int kes_remove_steady(const double *x, size_t n, size_t block, int windo
  * as for kes_ldpc_decode. Writes the data bits, the `coded` soft bits (after any combining), the band's
  * energies (total x (hi - lo + 1), if band_out is not NULL) and six figures to stats_out: offset (Hz),
  * drift (Hz/s), SNR (dB, from the pilots), fading index, 1.0 if the body check passed, the noise per tone.
- * Returns the number of data bits, or -1 on bad arguments. */
+ * `from_end` (since interface 18) says offset_hz was measured at the frame's end; it is handed to
+ * kes_pilot_fit as `backward`. Returns the number of data bits, or -1 on bad arguments. */
 KES_API long kes_decode_body(const double *x, size_t n, double body_start, double offset_hz, size_t samples, size_t lo, size_t hi, int step,
                              size_t total, const long *pilot_pos, const int *pilot_tones, size_t npilots, const long *data_pos, size_t ndata,
                              size_t coded, int is_control, long info, const long *edge_bits, const long *edge_checks, long nedges,
                              const long *starts, double scale, int iterations, const double *prior, size_t nprior, int pad, int fine_span,
-                             int noise_span, int tracking, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out);
+                             int noise_span, int tracking, int from_end, uint8_t *data_out, double *llrs_out, double *band_out, double *stats_out);
 
 /* The continuous receiver (live/listener.py, incremental search). The library keeps the audio and the
  * candidates; the caller decodes the frames it is told are ready and says what to cut out.
@@ -200,11 +209,12 @@ KES_API long kes_decode_body(const double *x, size_t n, double body_start, doubl
 /* The transmitter (modem/frame.py build_frame and build_control, once the bits are packed): code the 24
  * header bits (K = 7) and the body (with its CRC: the convolutional code if is_control, else the LDPC code,
  * whose three shuffles `rows` (3 x k) come from ldpc.py info_checks), pad and interleave the body, place
- * its data tones and pilots, and write the audio of preamble, header, body and header again: tones of
+ * its data tones and pilots, and write the audio of pattern, header, body, pattern again and header again
+ * (the second header copy with its check value marked; since interface 18, signal version 0.43): tones of
  * `samples` samples at tone_bins[tone] FFT bins, numbered in Gray code, as one continuous-phase waveform
  * whose frequency glides over `glide` of a tone at each change (0 = sudden steps) and which fades in and
  * out over `fade` samples at its ends (since interface 12, signal version 0.32). `audio` must hold
- * (npreamble + 24 + total) * samples values. Returns the number of samples written, or -1 on bad arguments. */
+ * (2 * npreamble + 24 + total) * samples values. Returns the number of samples written, or -1 on bad arguments. */
 KES_API long kes_encode_frame(const uint8_t *header_bits, const uint8_t *data_bits, size_t ndata_bits, int is_control, const long *rows,
                               size_t total, const long *data_pos, size_t ndata, const long *pilot_pos, const int *pilot_tones, size_t npilots,
                               size_t coded, const int *preamble_tones, size_t npreamble, size_t samples, const int *tone_bins, double glide, size_t fade,
