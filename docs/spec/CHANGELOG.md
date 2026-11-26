@@ -1,5 +1,13 @@
 # Kestrel specification changelog
 
+## 0.42R3 (draft) - November 25, 2026
+
+- No frame changes (signal version stays 0.41); 0.41, 0.42 and 0.42R3 stations work together.
+- **Fix: an unanswered move split the two stations.** On November 25 a contact locked on the calling frequency; the calling station proposed a move to Channel 1, the partner (which heard it 15 to 20 dB weaker) never decoded the proposal, and after two tries the caller went to the working frequency anyway "in case the partner agreed without being heard". The partner stayed on the calling frequency offering the turn, each probed where the other was not, the lock was lost and no message went. Now a proposal that gets no reply twice is dropped for the rest of the contact and the traffic carries on where the stations are (Section 6.10). A chained message, which needs a working channel, keeps waiting, and the panel asks for the move only once per contact.
+- **Logbook power reading** (reference program): the "meters" line after each transmission recorded the last reading, usually taken after the audio had ended but before the radio unkeyed, so it showed 0 W for transmissions sent at full power; it now records the middle of the readings taken while the audio was going out.
+- **Outgoing audio gaps** (reference program): the signal log's clock line now also counts gaps in the audio sent to the radio (tx_underflows), so a sound card that starves the transmitter shows up.
+- Tests: tests/test_link.py (one more).
+
 ## 0.42R2 (draft) - November 25, 2026
 
 - Nothing sent changed (signal version stays 0.41); reference program only.

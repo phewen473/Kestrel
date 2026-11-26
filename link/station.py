@@ -1095,12 +1095,9 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         if waited_for == "move":  # a proposal to move got no reply
             if self.move_tries < MOVE_TRIES:  # try once more here
                 return self._propose_move(now)  # the same proposal again
-            self.moved = True  # the partner may have agreed without being heard, in which case it has already moved
-            self._retune(now, self.move_to_hz)  # so go and look for it on the working frequency
-            self.settle_until = now + MOVE_SETTLE_S  # after the radio has settled
-            self.last_traffic, self.idle_warned = now, False  # the idle clock for the working frequency starts now
-            self._say(now, "no reply to the move; looking for the partner on the working frequency")  # explain
-            return None  # the probe follows
+            self.move_to_hz, self.move_tries = None, 0  # the move is dropped for this contact: on a lopsided path the partner usually never heard it, and moving alone splits the stations (since 0.42R3)
+            self._say(now, "no reply to the move; staying on this frequency")  # explain
+            return self._next(now)  # carry on with the traffic here
         if waited_for == "probe":  # a reacquire probe went unanswered
             self.probes += 1  # count it
             if self.probes >= REACQUIRE_TRIES:  # tried enough

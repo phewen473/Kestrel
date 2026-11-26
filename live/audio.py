@@ -181,6 +181,7 @@ class AudioOut:  # the transmitting side of the sound card
         self.stream = None  # the output stream, opened at the first transmission and kept open until close() (since 0.41)
         self.lock = threading.Lock()  # guards the hand-over of audio between play() and the sound card's thread (since 0.41)
         self.queued = None  # the audio the stream is playing, at the card's rate (since 0.41)
+        self.underflows = 0  # times the sound card ran out of audio in the middle of a transmission (since 0.42R3)
         self.at = 0  # how many of its samples the sound card has taken so far (since 0.41)
         self.persistent = True  # keep one stream open; set False to open a fresh stream for every transmission, as before 0.41
 
@@ -198,6 +199,8 @@ class AudioOut:  # the transmitting side of the sound card
         """Fill `out` with the next stretch of the transmission, or with silence when nothing is being sent."""
         with self.lock:  # play() and abort() change the audio from another thread
             audio, at = self.queued, self.at  # what is playing and how far it has got
+            if audio is not None and status and getattr(status, "output_underflow", False):  # the card ran dry while a transmission was going out
+                self.underflows += 1  # counted, for the signal log (a gap in a frame can spoil it)
             if audio is None:  # nothing to send
                 out.fill(0.0)  # silence
                 return  # done

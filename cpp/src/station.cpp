@@ -2054,13 +2054,10 @@ struct KesStation {  /* its state and rules */
             if (move_tries < kMoveTries) {  /* once more */
                 return propose_move(now);  /* again */
             }  /* end of the retry */
-            moved = true;  /* it may have agreed unheard */
-            retune(now, move_to_hz);  /* go and look */
-            settle_until = Json(now + kMoveSettle);  /* after settling */
-            last_traffic = now;  /* the idle clock starts */
-            idle_warned = false;  /* no warning */
-            say(now, "no reply to the move; looking for the partner on the working frequency");  /* explain */
-            return Json();  /* the probe follows */
+            move_to_hz = Json();  /* the move is dropped for this contact: the partner usually never heard it, and moving alone splits the stations (since 0.42R3) */
+            move_tries = 0;  /* none outstanding */
+            say(now, "no reply to the move; staying on this frequency");  /* explain */
+            return next(now);  /* carry on with the traffic here */
         }  /* end of the move */
         if (is(waited_for, "probe")) {  /* a probe unanswered */
             ++probes;  /* counted */

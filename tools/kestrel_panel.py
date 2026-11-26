@@ -2353,7 +2353,7 @@ class Panel:  # the control panel window
             self.tx_readings = []  # the power and ALC read during it, for holding the power and spotting a sag (since 0.40R1)
         if not keyed:  # it has just gone off
             self.after_transmission(tx)  # hold the power for the next one, and say if it sagged (since 0.40R1)
-            self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=self.meters["watts"], alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
+            self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=getattr(self, "tx_power_mid", self.meters["watts"]), alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
             return  # nothing more
         event = {"beacon": "beacon", "long beacon": "beacon", "call": "call", "broadcast": "broadcast"}.get(tx.kind, "sent")  # beacons, calls and broadcasts are logged from advanced up; other frames only in verbose
         station = self.station  # the running station
@@ -2363,6 +2363,9 @@ class Panel:  # the control panel window
 
     def after_transmission(self, tx):  # a transmission has ended: hold the power, and report a sag (called from the working thread; since 0.40R1)
         """From the power read during the transmission: warn if it fell with the drive unchanged, and, when Settings > Station names a power to hold, set the drive for the next transmission."""
+        every = [watts for watts, _ in getattr(self, "tx_readings", [])]  # every power reading taken during it
+        up = sorted(watts for watts in every if watts >= 1.0)  # those with the audio going out (the first and last, at key-up and key-down, read 0)
+        self.tx_power_mid = up[len(up) // 2] if up else (0.0 if every else None)  # the power the logbook records: the middle reading, 0 only if every reading was 0, None if none were taken (since 0.42R3)
         readings = [(watts, alc) for watts, alc in getattr(self, "tx_readings", []) if watts >= 1.0]  # the readings with the transmitter up (the first and last are often 0)
         self.tx_readings = []  # used
         if len(readings) < 3 or self.sink is None:  # too short to judge, or nothing to adjust
@@ -2918,7 +2921,8 @@ class Panel:  # the control panel window
                         self._advance_held(piece)  # its row now says waiting
                 self.held.remove(item)  # handed over
                 self.say(f"long message: {len(item['pieces'])} parts handed over on the working channel")  # explain
-            elif self.move_ok and self.move_offsets and not station.moved and not station.move_to_hz:  # on the calling frequency, and a move is possible
+            elif self.move_ok and self.move_offsets and not station.moved and not station.move_to_hz and getattr(self, "move_asked", None) != (station.partner, self.station_link(station)):  # on the calling frequency, a move is possible, and not yet asked for in this contact
+                self.move_asked = (station.partner, self.station_link(station))  # asked once per contact: an unanswered proposal is dropped by the station (since 0.42R3)
                 station.move_to_hz = self.move_offsets[0]  # propose Channel 1 before any more traffic
                 self.say(f"long message waiting: proposing a move to a working channel ({self.move_offsets[0] / 1000.0:+.1f} kHz)")  # explain
             elif not self.move_ok and station.partner not in self.held_told:  # the radio cannot be retuned
@@ -4813,7 +4817,9 @@ class Panel:  # the control panel window
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
             self.audio = source  # let the scope and the meter show what it hears
-            signal_log = self.signal_log = Guarded(SignalLog(self.signal_folder(), prefix=self.logbook.name, mode=job.get("signal_log", "off")), self.say)  # the detailed signal log (writes nothing when off)
+            raw_log = SignalLog(self.signal_folder(), prefix=self.logbook.name, mode=job.get("signal_log", "off"))  # the detailed signal log (writes nothing when off)
+            raw_log.output_of = lambda: self.sink  # where its clock line finds the sound output, to count gaps in the outgoing audio (since 0.42R3)
+            signal_log = self.signal_log = Guarded(raw_log, self.say)  # any problem writing it is reported, never fatal
             if job.get("record_rx"):  # the operator wants the received audio saved
                 recorder = Recorder(recordings_dir(data_dir()), label=job["call"])  # hourly WAV files
                 recorder.on_open = signal_log.recording_file  # the signal log notes where each file starts on the timeline

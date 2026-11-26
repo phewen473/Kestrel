@@ -445,3 +445,21 @@ def test_stop_leaves_a_contact_alone_and_clears_waiting_beacons():  # Stop is fo
     b = Station("Q2BB", "FN31")  # another
     b.state, b.partner, b.link = "LOCKED", "Q1AAAA", 77  # in a contact
     assert b.cancel(2.0) == "" and b.state == "LOCKED"  # left to End contact
+
+
+def test_an_unheard_move_is_dropped_and_the_message_goes_where_the_stations_are():  # since 0.42R3
+    """On the air on 2026-11-25 the partner never heard a move proposal, the caller moved alone, and the contact was lost.
+    Now an unanswered proposal is dropped and the message goes on the frequency both stations are on."""
+    a, b = Station("Q1AAAA", "EM92", close_when_done=False), Station("Q2BB", "FN31", close_when_done=False)  # two stations that keep the contact open
+    a.can_move = b.can_move = True  # both radios could be retuned
+    a.beacon()  # A calls
+    b.listen()  # B listens
+    first = run_link(a, b, Path(3.0), Path(3.0), seed=2, limit_s=600)  # lock on the calling frequency
+    assert a.state in ("LOCKED", "DEGRADED") and b.state in ("LOCKED", "DEGRADED")  # locked
+    start = first[-1]["t"] + 5.0  # carry on from there
+    a.move_to_hz = 2500.0  # A now wants to move
+    a.queue("hello from the calling frequency")  # and has a message
+    deaf = lambda t: -40.0 if t < start + 120.0 else 3.0  # B hears nothing from A for two minutes: both proposals are lost
+    run_link(a, b, Path(deaf), Path(3.0), seed=3, limit_s=start + 1500, start_s=start)  # carry on
+    assert "hello from the calling frequency" in b.inbox  # the message arrived
+    assert a.offset_hz == 0 and b.offset_hz == 0  # nobody moved alone
