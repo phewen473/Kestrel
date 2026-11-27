@@ -5228,7 +5228,8 @@ class Panel:  # the control panel window
             self.root.after(2000, lambda: self.update_install_poll(offer))  # look again shortly
             return  # not yet
         program = os.path.join(updates.install_folder(), "Kestrel.exe")  # where the new version will be
-        updates.start_helper(os.getpid(), self.update_path, program, sys.argv[1:])  # the helper waits for this program to close, installs, starts it again
+        me = os.path.splitext(os.path.basename(sys.executable))[0]  # this program's process name (Kestrel when installed), so the helper never mistakes another program for it (since 0.44R1)
+        updates.start_helper(os.getpid(), self.update_path, program, sys.argv[1:], name=me)  # the helper waits for this program to close, installs, starts it again
         self.say(f"update: installing Kestrel {offer['version']}; Kestrel will start again by itself")  # in the Activity log
         self.close()  # save everything, release the radio, close
 

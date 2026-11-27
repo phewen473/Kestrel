@@ -4,7 +4,7 @@ The check asks GitHub's public releases list (no account or key is needed) for t
 whether it is newer than the running program and whether it changes the signal (stations on different signal
 versions mostly cannot hear each other). Nothing is downloaded or installed unless the operator presses
 Install now; then the setup program is downloaded, checked against the SHA-256 published with it, and run
-silently by a small helper script once Kestrel has closed, and Kestrel is started again.
+silently by a small PowerShell helper script once Kestrel has closed, and Kestrel is started again.
 
 The SHA-256 check guards against a damaged download, not a forged one (the hash comes from the same place);
 release signing, planned before the first production release, will add that. Until then every install is
@@ -182,38 +182,81 @@ def install_folder():  # where a per-user install puts Kestrel (since 0.42)
     return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Programs", "Kestrel")  # the usual place for programs installed for one user
 
 
-def helper_script(pid, setup, program, arguments=()):  # the batch file that installs once Kestrel has closed
-    """Return the text of a Windows batch file that waits for process `pid` to end, runs `setup` silently,
-    and starts `program` with `arguments`. Every line carries a REM saying what it does."""
-    quoted = " ".join('"' + str(argument).replace('"', '') + '"' for argument in arguments)  # the arguments, each quoted
+HELPER_WAIT_S = 300  # how long the helper waits for Kestrel to close before giving up and installing nothing (since 0.44R1)
+
+
+def _ps_quote(text):  # a PowerShell single-quoted string
+    """Return `text` as a PowerShell single-quoted string literal (a quote inside is doubled, as PowerShell requires)."""
+    return "'" + str(text).replace("'", "''") + "'"  # quoted, with any apostrophe in a path doubled
+
+
+def helper_script(pid, setup, program, arguments=(), name="Kestrel", wait_s=HELPER_WAIT_S):  # the PowerShell script that installs once Kestrel has closed
+    """Return the text of a PowerShell script that waits for process `pid` (named `name`) to end, runs `setup`
+    silently, and starts `program` with `arguments`. Every line carries a comment saying what it does.
+
+    Until 0.44R1 this was a batch file whose `tasklist | find` check hung for ever in the detached, console-less
+    process Kestrel starts it in (and whose `timeout` cannot run there at all), so the update stopped at
+    "waiting for Kestrel to close". PowerShell asks Windows about the process directly: no pipe, no console."""
     log = os.path.join(os.path.dirname(setup), "update_log.txt")  # what happened, in case anyone asks
+    listed = ", ".join(_ps_quote(argument) for argument in arguments)  # the arguments, each quoted, for a PowerShell list
     return "\r\n".join([  # Windows line endings
-        "@echo off",  # do not echo the commands
-        "REM Kestrel update helper: waits for Kestrel to close, installs the new version, starts Kestrel again.",  # what this file is
-        f'echo %date% %time% waiting for Kestrel (process {int(pid)}) to close > "{log}"',  # start the log
-        ":wait",  # the waiting loop
-        f'tasklist /FI "PID eq {int(pid)}" 2>nul | find "{int(pid)}" >nul',  # is Kestrel still running?
-        "if not errorlevel 1 (",  # it is
-        "  REM still running: wait a second and look again",  # explain the branch
-        "  timeout /t 1 /nobreak >nul",  # wait a second
-        "  goto wait",  # and look again
-        ")",  # end of the branch
-        f'echo %date% %time% installing "{setup}" >> "{log}"',  # log it
-        f'"{setup}" /S',  # run the setup program silently (NSIS's /S)
-        f'echo %date% %time% setup finished with code %errorlevel% >> "{log}"',  # log the result
-        f'start "" "{program}" {quoted}'.rstrip(),  # start Kestrel again, with the same profile
-        "REM this helper deletes itself when done",  # explain the last line
-        '(goto) 2>nul & del "%~f0"',  # delete this batch file
+        "# Kestrel update helper: waits for Kestrel to close, installs the new version, starts Kestrel again.",  # what this file is
+        f"$log = {_ps_quote(log)}  # the record of what this helper did",  # where the log goes
+        "function Say($text) { Add-Content -LiteralPath $log -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $text) }  # one dated line in the log",  # the logging helper
+        f"Set-Content -LiteralPath $log -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' waiting for Kestrel (process {int(pid)}) to close')  # start a fresh log",  # first line
+        f"$deadline = (Get-Date).AddSeconds({int(wait_s)})  # give up if Kestrel has not closed by then",  # the limit
+        f"while ($true) {{  # look until Kestrel has gone",  # the waiting loop
+        f"  $running = Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue  # the process with Kestrel's number, if any",  # ask Windows
+        f"  if (-not $running -or $running.ProcessName -ne {_ps_quote(name)}) {{ break }}  # gone (or the number now belongs to another program): carry on",  # done waiting
+        "  if ((Get-Date) -gt $deadline) { Say 'Kestrel did not close; nothing was installed'; exit 1 }  # never install over a running Kestrel",  # the limit reached
+        "  Start-Sleep -Milliseconds 500  # wait half a second and look again",  # pause
+        "}  # end of the waiting loop",  # loop end
+        "Start-Sleep -Seconds 1  # let Windows release Kestrel's files",  # a moment for file handles
+        f"$setup = {_ps_quote(setup)}  # the downloaded and checked setup program",  # the installer
+        "Say ('installing ' + $setup)  # log it",  # log
+        "try {  # the setup program may fail to start",  # guard
+        "  $run = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru  # run it silently (NSIS's /S) and wait for it",  # install
+        "  Say ('setup finished with code ' + $run.ExitCode)  # log the result",  # result
+        "} catch {  # it could not be run",  # failure
+        "  Say ('setup could not be run: ' + $_.Exception.Message)  # log why",  # reason
+        "}  # end of the guard",  # guard end
+        f"$program = {_ps_quote(program)}  # the installed Kestrel",  # the program
+        f"$arguments = @({listed})  # the options Kestrel was running with (its profile)",  # same options
+        "try {  # start Kestrel again, whatever version is now installed",  # guard
+        "  if ($arguments.Count -gt 0) { Start-Process -FilePath $program -ArgumentList $arguments } else { Start-Process -FilePath $program }  # started, with the same options",  # restart
+        "  Say 'Kestrel started again'  # log it",  # log
+        "} catch {  # it could not be started",  # failure
+        "  Say ('Kestrel could not be started: ' + $_.Exception.Message)  # log why",  # reason
+        "}  # end of the guard",  # guard end
+        "Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue  # this helper deletes itself when done",  # tidy up
         ""])  # a final line ending
 
 
-def start_helper(pid, setup, program, arguments=()):  # write the helper and start it, detached
-    """Write the helper batch file beside the setup program and start it so it outlives Kestrel. Return its path."""
-    path = os.path.join(os.path.dirname(setup), "kestrel_update.cmd")  # beside the download
-    with open(path, "w", encoding="ascii", errors="replace", newline="") as handle:  # plain text, Windows line endings already in place
-        handle.write(helper_script(pid, setup, program, arguments))  # the script
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)  # on Windows: its own process, no window, not tied to Kestrel
-    subprocess.Popen(["cmd.exe", "/c", path], creationflags=flags, close_fds=True)  # started
+def powershell_exe():  # Windows PowerShell, by its full path
+    """Return the full path of Windows PowerShell 5.1, which every Windows 10 and 11 has, or plain powershell.exe."""
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")  # the usual place
+    return path if os.path.exists(path) else "powershell.exe"  # found, or let Windows search for it
+
+
+def start_helper(pid, setup, program, arguments=(), name="Kestrel"):  # write the helper and start it, apart from Kestrel
+    """Write the helper script beside the setup program and start it so it outlives Kestrel. Return its path."""
+    path = os.path.join(os.path.dirname(setup), "kestrel_update.ps1")  # beside the download
+    old = os.path.join(os.path.dirname(setup), "kestrel_update.cmd")  # the batch helper used until 0.44R1
+    if os.path.exists(old):  # left behind by an update that hung
+        try:  # it may be locked
+            os.remove(old)  # tidied away
+        except OSError:  # still in use
+            pass  # harmless: it is never run again
+    with open(path, "w", encoding="utf-8-sig", newline="") as handle:  # UTF-8 with a byte-order mark, so Windows PowerShell reads any non-ASCII path right
+        handle.write(helper_script(pid, setup, program, arguments, name))  # the script
+    command = [powershell_exe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", path]  # run the script once, hidden, without the user's profile
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)  # its own hidden console (not DETACHED_PROCESS: a process with no console cannot run console tools reliably), and Ctrl+C in Kestrel never reaches it
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)  # leave any job Kestrel was started in, so closing Kestrel cannot end the helper
+    quiet = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)  # real (empty) standard handles, none of Kestrel's
+    try:  # first with the breakaway
+        subprocess.Popen(command, creationflags=flags | breakaway, **quiet)  # started
+    except OSError:  # Kestrel is in a job that does not allow breaking away
+        subprocess.Popen(command, creationflags=flags, **quiet)  # started without it
     return path  # for the log
 
 

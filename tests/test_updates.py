@@ -2,6 +2,9 @@
 import hashlib  # to make a matching hash
 import io  # fake replies
 import os  # file checks
+import subprocess  # the stand-in Kestrel for the end-to-end helper test (since 0.44R1)
+import sys  # which Python runs the tests, and whether this is Windows
+import time  # waiting for the helper
 
 import pytest  # the test runner
 
@@ -104,13 +107,55 @@ def test_download_refused_without_a_hash():  # nothing to check against
         updates.download(info, opener=lambda request, timeout=None: Reply(b""))  # tried
 
 
-def test_helper_waits_installs_silently_and_restarts():  # the batch file
+def test_helper_waits_installs_silently_and_restarts():  # the PowerShell helper script (a batch file until 0.44R1)
     text = updates.helper_script(4242, r"C:\Temp\KestrelUpdate\Kestrel-Setup-0.42-abc1234.exe", r"C:\Users\x\AppData\Local\Programs\Kestrel\Kestrel.exe", ["--profile", "second"])  # the script
-    assert 'PID eq 4242' in text and "goto wait" in text  # waits for Kestrel to close
-    assert 'Kestrel-Setup-0.42-abc1234.exe" /S' in text  # installs silently
-    assert 'Kestrel.exe" "--profile" "second"' in text  # starts again with the same profile
-    lines = [line for line in text.split("\r\n") if line and not line.startswith(("@", "REM", ":", ")", "  REM"))]  # the working lines
-    assert lines  # there are some
+    assert "Get-Process -Id 4242" in text and "-ne 'Kestrel'" in text  # waits for this Kestrel (by number and name) to close
+    assert "tasklist" not in text and "timeout /t" not in text  # none of the console tools that hung in a detached process
+    assert "'Kestrel did not close; nothing was installed'" in text  # gives up rather than install over a running Kestrel
+    assert "$setup = 'C:\\Temp\\KestrelUpdate\\Kestrel-Setup-0.42-abc1234.exe'" in text and "-ArgumentList '/S' -Wait" in text  # installs silently and waits for it
+    assert "$arguments = @('--profile', 'second')" in text  # starts again with the same profile
+    for line in text.split("\r\n"):  # every line
+        assert not line.strip() or "#" in line  # carries a comment
+
+
+def test_helper_quotes_paths_with_apostrophes():  # a Windows user name such as O'Brien
+    text = updates.helper_script(7, r"C:\Users\O'Brien\Temp\Kestrel-Setup-0.44R1-abc1234.exe", r"C:\Users\O'Brien\Kestrel.exe")  # the script
+    assert "'C:\\Users\\O''Brien\\Temp\\Kestrel-Setup-0.44R1-abc1234.exe'" in text  # the quote doubled, as PowerShell needs
+    assert "$arguments = @()" in text  # no options: an empty list
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the helper runs only on Windows")  # Windows only
+def test_helper_really_waits_installs_and_restarts(tmp_path):  # end to end, as Kestrel starts it (the 0.44 helper hung here)
+    marker = tmp_path / "setup_ran.txt"  # written by the stand-in setup program
+    restarted = tmp_path / "restarted.txt"  # written by the stand-in Kestrel
+    setup = tmp_path / "fake-setup.cmd"  # a stand-in for the setup program
+    setup.write_text(f'@echo ran %* > "{marker}"\r\n', encoding="ascii")  # it records that it ran, and its options
+    program = tmp_path / "fake-kestrel.cmd"  # a stand-in for the installed Kestrel
+    program.write_text(f'@echo %* > "{restarted}"\r\n', encoding="ascii")  # it records that it started, and its options
+    kestrel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])  # a stand-in for the running Kestrel, closing in 3 seconds
+    name = psutil_free_name(kestrel.pid)  # its process name, as Windows reports it
+    started = time.time()  # when the helper starts
+    updates.start_helper(kestrel.pid, str(setup), str(program), ["--profile", "second"], name=name)  # exactly as the panel does
+    time.sleep(1.5)  # the stand-in is still running
+    assert not marker.exists()  # so nothing has been installed yet
+    while not restarted.exists() and time.time() - started < 45:  # wait for the helper to finish
+        time.sleep(0.25)  # look again shortly
+    kestrel.wait()  # the stand-in has ended
+    log = (tmp_path / "update_log.txt").read_text(encoding="utf-8")  # what the helper wrote
+    assert restarted.exists(), log  # Kestrel was started again
+    assert "/S" in marker.read_text() and "--profile" in restarted.read_text() and "second" in restarted.read_text()  # silently installed; same profile
+    assert "setup finished with code 0" in log and "Kestrel started again" in log  # and the log says so
+    for _ in range(40):  # the helper deletes itself as its last step
+        if not (tmp_path / "kestrel_update.ps1").exists():  # gone
+            break  # done
+        time.sleep(0.25)  # look again shortly
+    assert not (tmp_path / "kestrel_update.ps1").exists()  # tidied away
+
+
+def psutil_free_name(pid):  # a process's name without extra packages
+    """Return the name Windows gives process `pid`, without its .exe (what PowerShell's ProcessName shows)."""
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout  # one CSV line, run with normal handles
+    return out.split(",")[0].strip('"').rsplit(".", 1)[0]  # "python.exe" -> "python"
 
 
 def test_repository_read_from_the_notice_file(tmp_path):  # the project's address is written once, in NOTICE

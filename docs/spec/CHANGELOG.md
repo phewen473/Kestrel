@@ -1,5 +1,12 @@
 # Kestrel specification changelog
 
+## 0.44R1 (draft) - November 27, 2026
+
+Fix to the reference program only; nothing sent changes, and 0.44R1 works with 0.44.
+
+- **Install now no longer stops at "waiting for Kestrel to close".** The helper that installs an update after Kestrel closes was a batch file started as a detached process with no console and no standard handles. There its first check, `tasklist | find`, never returned (`find` waited for ever on the pipe), and `timeout` cannot run without a console at all, so the helper never saw Kestrel close and nothing was installed. The helper is now a PowerShell script that asks Windows for Kestrel's process by number and name (no pipe, no console tool), started with its own hidden console, empty standard handles and, where allowed, outside any job Kestrel runs in. It installs nothing if Kestrel has not closed within 5 minutes, logs each step in update_log.txt beside the download, starts Kestrel again even if the setup program fails, and deletes itself when done. A new test runs the helper end to end on Windows.
+- **Updating from 0.44 itself:** a 0.44 station still has the old helper, so Install now from 0.44 to 0.44R1 hangs as before. Install 0.44R1 once by hand (run the setup program); updates from 0.44R1 onward are automatic.
+
 ## 0.44 (draft) - November 26, 2026
 
 Every item left open after 0.43 that did not need more on-air data, in one release.
