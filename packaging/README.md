@@ -83,7 +83,9 @@ script, which stops at the first error, quits silently as PyInstaller starts.
 | `windows/build_windows.ps1` | The build, start to finish |
 | `windows/kestrel.spec` | PyInstaller's recipe for `Kestrel.exe` |
 | `windows/kestrel.nsi` | The setup program (NSIS) |
-| `windows/kestrel.ico` | The program's icon |
+| `windows/kestrel.ico` | The program's icon ("Mast": a hovering kestrel over a lattice tower with signal arcs, chosen November 26, 2026), used for `Kestrel.exe`, the setup program, the uninstaller, and the panel's title bar and taskbar button; sizes 16 to 256 px |
+| `windows/kestrel_icon.svg` | The icon's source artwork |
+| `windows/make_icon.py` | Rebuilds `kestrel.ico` from the artwork at every size (only when the artwork changes; needs `pip install cairosvg pillow`) |
 | `windows/README-installed.txt` | Getting-started notes installed beside the program |
 | `windows/privacy_scan.py` | The check that nothing private is inside |
 

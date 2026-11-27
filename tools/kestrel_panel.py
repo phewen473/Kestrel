@@ -5291,6 +5291,12 @@ def main():  # the script itself
     except OSError:  # no file: go on without it
         crash_file = None  # none
     root = tk.Tk()  # the window
+    icon_file = os.path.join(code_dir(), "kestrel.ico") if getattr(sys, "frozen", False) else os.path.join(code_dir(), "packaging", "windows", "kestrel.ico")  # the Kestrel icon: bundled beside the program when installed, in packaging/windows when run from the source folder (Mast icon, since November 26, 2026)
+    if sys.platform == "win32" and os.path.isfile(icon_file):  # .ico files are a Windows icon format; elsewhere Tk keeps its own
+        try:  # a damaged or unreadable icon must not stop the program
+            root.iconbitmap(default=icon_file)  # the title bar and taskbar icon for this window and every window it opens
+        except tk.TclError:  # Tk could not read it
+            pass  # keep Tk's own icon
     Panel(root)  # its contents
     if PROFILE:  # a profile was named
         root.title(f"Kestrel {SPEC_VERSION} - {PROFILE}  -  signal v{SIGNAL_VERSION}")  # show the program's version, which panel this is, and the signal version
