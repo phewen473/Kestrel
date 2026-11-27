@@ -18,6 +18,7 @@ from .params import (  # frame format numbers
     FRAME_TYPE_BEACON, FRAME_TYPE_IDENT, FRAME_TYPE_NOTICE, GRID_BITS, HASH_BITS, NO_GRID, NOTICE_SLOTS, LEVEL_BITS, LEVEL_MASK_BITS, LINK_ID_BITS, MSG_ID_BITS,  # (continued)
     OFFSET_BITS, OFFSET_STEP_HZ, PART_BITS, REPORT_BITS, SNR_BITS, SNR_FLOOR_DB,  # (continued)
 )  # end of the import list
+from .params import AGE_BITS, AGE_STEPS_S, NOISE_BITS, NOISE_FLOOR_DB, NOISE_STEP_DB, NOISE_UNKNOWN  # a report's age and the reporter's noise reading (since 0.44)
 
 ACK_OK = 0  # acknowledgment status: frame received correctly
 ACK_RESEND = 1  # acknowledgment status: frame failed its check; send it again (the copies will be combined)
@@ -34,10 +35,26 @@ class ChannelReport:  # what one station tells the other about the signal it rec
     fade_index: float = 0.0  # 0 = steady signal, about 1 = deep, frequent fades
     offset_hz: float = 0.0  # frequency error of the received signal
     want_level: int = 0  # the speed level the receiver asks the sender to use from now on
+    age_s: float = float("nan")  # how long before the report was sent its measurement was made, in seconds; NaN = not said (since 0.44)
+    noise_db: float = float("nan")  # the reporting station's own band noise, its S-meter reading in dB relative to S9; NaN = not measured (since 0.44)
 
 
-def pack_report(report):  # channel report -> 18 bits
-    """Return the 18 bits of a channel report: SNR (6), fading index (3), frequency offset (6), wanted level (3)."""
+def age_code(age_s):  # a report's age -> its 3-bit code (since 0.44)
+    """Return the age code for `age_s` seconds: the largest step of AGE_STEPS_S it has reached (0 to 6), or 7 when the age is not said (NaN or negative)."""
+    if not age_s == age_s or age_s < 0:  # not a number, or nonsense
+        return (1 << AGE_BITS) - 1  # 7: not said
+    return max(code for code, step in enumerate(AGE_STEPS_S) if age_s >= step)  # the last step reached
+
+
+def noise_code(noise_db):  # a noise reading -> its 5-bit code (since 0.44)
+    """Return the noise code for an S-meter reading of `noise_db` dB relative to S9: 3 dB steps from -60 dB (0) held to 0..30, or 31 when not measured (NaN)."""
+    if not noise_db == noise_db or np.isinf(noise_db):  # not a usable number
+        return NOISE_UNKNOWN  # 31: not measured
+    return int(np.clip(round((noise_db - NOISE_FLOOR_DB) / NOISE_STEP_DB), 0, NOISE_UNKNOWN - 1))  # half S-units above -60 dB, held to 0..30
+
+
+def pack_report(report):  # channel report -> 26 bits
+    """Return the 26 bits of a channel report: SNR (6), fading index (3), frequency offset (6), wanted level (3), and since 0.44 its age (3) and the reporter's noise (5)."""
     snr = int(np.clip(round(report.snr_db) - SNR_FLOOR_DB, 0, (1 << SNR_BITS) - 1))  # SNR in whole dB above -30, held to 0..63
     fade = report.fade_index if report.fade_index == report.fade_index else (1 << FADE_BITS)  # a missing reading (not-a-number) is sent as the largest value, "fading"
     fade = int(np.clip(round(fade * FADE_STEPS_PER_UNIT), 0, (1 << FADE_BITS) - 1))  # fading index in quarters, held to 0..7
@@ -45,22 +62,33 @@ def pack_report(report):  # channel report -> 18 bits
     offset = int(np.clip(round(report.offset_hz / OFFSET_STEP_HZ), -limit - 1, limit))  # offset in 2 Hz steps, held to -32..31
     if not 0 <= report.want_level < (1 << LEVEL_BITS):  # the wanted level must fit its field
         raise ValueError("wanted level out of range")  # refuse nonsense
-    return np.concatenate([  # the four fields, in order
+    return np.concatenate([  # the six fields, in order
         int_to_bits(snr, SNR_BITS),  # signal-to-noise ratio
         int_to_bits(fade, FADE_BITS),  # fading index
         int_to_bits(offset & ((1 << OFFSET_BITS) - 1), OFFSET_BITS),  # frequency offset, negative values in two's complement
         int_to_bits(report.want_level, LEVEL_BITS),  # the level asked for
+        int_to_bits(age_code(report.age_s), AGE_BITS),  # how old the measurement is (since 0.44)
+        int_to_bits(noise_code(report.noise_db), NOISE_BITS),  # the reporter's own noise (since 0.44)
     ])  # end of the report
 
 
-def unpack_report(bits):  # 18 bits -> channel report
-    """Return the channel report carried by 18 bits."""
+def unpack_report(bits):  # 26 bits -> channel report
+    """Return the channel report carried by 26 bits. The age comes back as the start of its step (AGE_STEPS_S), NaN when not said; the noise as dB relative to S9, NaN when not measured."""
     snr = bits_to_int(bits[:SNR_BITS]) + SNR_FLOOR_DB  # back to dB
     fade = bits_to_int(bits[SNR_BITS:SNR_BITS + FADE_BITS]) / FADE_STEPS_PER_UNIT  # back to an index
-    raw = bits_to_int(bits[SNR_BITS + FADE_BITS:SNR_BITS + FADE_BITS + OFFSET_BITS])  # the offset field as an unsigned number
+    at = SNR_BITS + FADE_BITS  # where the offset field starts
+    raw = bits_to_int(bits[at:at + OFFSET_BITS])  # the offset field as an unsigned number
     if raw >= 1 << (OFFSET_BITS - 1):  # the top bit is set, so the offset is negative
         raw -= 1 << OFFSET_BITS  # undo the two's complement
-    return ChannelReport(float(snr), fade, float(raw * OFFSET_STEP_HZ), bits_to_int(bits[-LEVEL_BITS:]))  # the four readings
+    at += OFFSET_BITS  # where the wanted level starts
+    want = bits_to_int(bits[at:at + LEVEL_BITS])  # the level asked for
+    at += LEVEL_BITS  # where the age starts (since 0.44)
+    age = bits_to_int(bits[at:at + AGE_BITS])  # the age code
+    at += AGE_BITS  # where the noise reading starts
+    noise = bits_to_int(bits[at:at + NOISE_BITS])  # the noise code
+    age_s = AGE_STEPS_S[age] if age < len(AGE_STEPS_S) else float("nan")  # the start of its step, or not said
+    noise_db = float(NOISE_FLOOR_DB + noise * NOISE_STEP_DB) if noise != NOISE_UNKNOWN else float("nan")  # dB relative to S9, or not measured
+    return ChannelReport(float(snr), fade, float(raw * OFFSET_STEP_HZ), want, age_s, noise_db)  # the six readings
 
 
 def grid_to_bits(grid):  # four-character grid locator -> 15 bits
@@ -135,7 +163,7 @@ def answer_bits_grid(bits):  # 15 bits of an answer -> the sender's locator
     return "" if bits_to_int(bits) == NO_GRID else bits_to_grid(bits)  # none, or a locator (anything else is damage)
 
 
-def pack_answer(dest, origin, report, levels, mail_check=False, directed=False, grid=""):  # answer fields -> 139 bits
+def pack_answer(dest, origin, report, levels, mail_check=False, directed=False, grid=""):  # answer fields -> 147 bits (139 before 0.44)
     """Return the body bits of an answer frame: who is answering (or calling) whom, from where, how the other station was last received, what the sender can do.
 
     With `directed` the frame is a directed call (Section 6.11) rather than a reply to a beacon.
@@ -148,7 +176,7 @@ def pack_answer(dest, origin, report, levels, mail_check=False, directed=False, 
     return np.concatenate([call_to_bits(dest), call_to_bits(origin), answer_grid_bits(grid), pack_report(report), levels_to_bits(levels), np.array(flags, dtype=np.uint8)])  # addresses, locator, report, levels, flags
 
 
-def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 48 bits
+def pack_ack(link, msg_id, part, status, report):  # acknowledgment fields -> 56 bits (48 before 0.44)
     """Return the body bits of an acknowledgment for one frame of one message."""
     done = native.pack_control(FRAME_TYPE_ACK, link=link, msg_id=msg_id, part=part, status=status, report=report)  # compiled, when the library is in use
     if done is not None:  # it was
@@ -219,7 +247,7 @@ def unpack(frame_type, bits):  # body bits -> named fields
 def _named(frame_type, f):  # the library's fields -> the same named fields unpack() returns
     """Return the dict unpack() gives, built from the fields the compiled library unpacked."""
     levels = tuple(level for level in range(LEVEL_MASK_BITS) if f.levels & (1 << level))  # the levels, lowest first
-    report = ChannelReport(f.snr_db, f.fade_index, f.offset_hz, f.want_level)  # the channel report
+    report = ChannelReport(f.snr_db, f.fade_index, f.offset_hz, f.want_level, f.age_s, f.noise_db)  # the channel report (its age and the reporter's noise since 0.44)
     if frame_type == FRAME_TYPE_BEACON:  # a beacon
         return {"origin": f.origin.decode("ascii"), "grid": f.grid.decode("ascii"), "levels": levels,  # (continued)
                 "listening": bool(f.listening), "mail_check": bool(f.mail_check), "holds_mail": bool(f.holds_mail), "wide": bool(f.wide),  # who, where, what it can do, what it wants

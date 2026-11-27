@@ -34,6 +34,7 @@ MOVE_STEP_HZ = 100  # a working frequency is given as an offset from the calling
 MOVE_SETTLE_S = 3.0  # after a move is agreed, the proposing station waits this long for both radios to retune before it probes
 MOVE_TRIES = 2  # times a move is proposed without a reply before the proposer goes to the working frequency anyway to look for its partner
 MOVE_WAIT_S = 150.0  # a station that has moved and hears nothing from its partner on the working frequency for this long gives up the lock
+STALE_REPORT_S = 240.0  # a received channel report whose measurement is this old or older (its age code says 4 minutes or more) never raises the level this station sends at: the partner has not heard anything newer from it (since 0.44)
 REPORT_EVERY_S = 300.0  # a station acknowledges a message frame with a burst (modem/burst.py) while the last full channel report it sent its partner (an acknowledgment frame or an answer) is younger than this; otherwise with an acknowledgment frame, which carries the report (since 0.43)
 ASKED_KEEP_S = 7200.0  # the level a station last asked this one to send at is remembered this long (two hours), and the next directed call to it starts no faster (since 0.43)
 CALL_TRIES = 5  # times a directed call is sent without a reply before the calling station gives up

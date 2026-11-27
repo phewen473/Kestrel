@@ -64,6 +64,7 @@ from live.audio import AudioIn, AudioOut, device_named, list_devices  # sound-ca
 from live.bands import add_user_frequency, all_frequencies, band_of, channel_names, describe_frequency, mode_name, in_data_segment, remove_user_frequency, user_frequencies, working_offsets_hz  # the frequency list, the data-segment check and the working frequencies  # noqa: E402
 from live.recorder import Recorder, RecordingSource, TimedSource, recordings_dir  # recording the received audio to WAV files, and numbering every sample received  # noqa: E402
 from live.runner import NearFilter, attach_signal_log, feed_from, log_tick  # which near misses to show, the listener fed with numbered audio, and the signal log connected to it  # noqa: E402
+from live.runner import s_meter_text, strong_unreadable  # an S-meter reading in words, for the partner's noise; a near miss strong enough to be another signal version (since 0.44)  # noqa: E402
 from live.signallog import CLIPS_MAX_MB, KEEP_DAYS, Guarded, SignalLog  # the detailed signal log for analysis and debugging  # noqa: E402
 from live.ptt import Ptt  # transmitter keying  # noqa: E402
 from live.rig import RigCtl, RigServer, find_rigctld, list_models, models_for  # rig control through Hamlib's rigctld, and starting rigctld for a chosen radio  # noqa: E402
@@ -112,6 +113,12 @@ BEACON_TYPE_NAMES = {"short": "Short: a call-up others can answer (7 to 31 s)", 
                      "stepped": "Short, with power steps: 5 s of tones at 0, -10, -20, -30 dB first, then the call-up",  # (continued: since 0.38)
                      "long": "Long: about 60 s, heard much further; nobody answers (every 10 min at most)"}  # (continued)
 LONG_EVERY_MIN = 10  # long beacons repeat no more often than this, in minutes (each holds the frequency for a minute)
+NOISE_READ_EVERY_S = 5.0  # while receiving, the S-meter is read this often for the station's noise level, which every channel report carries (since 0.44)
+NOISE_AFTER_TX_S = 3.0  # and not until this long after a transmission, while the receiver's gain recovers
+NOISE_WINDOW_S = 300.0  # the noise level is the median of the readings of the last five minutes
+NOISE_MIN_READINGS = 6  # and is not given until there are at least this many (half a minute's worth)
+LOW_INPUT_DBFS = -60.0  # while listening, a receive input averaging below this (dBFS) is too low to work with: the radio's USB audio level, the cable or the Windows recording level needs a look (since 0.44)
+LOW_INPUT_S = 60.0  # the operator is warned once the input has stayed that low for this long
 ALC_HIGH = 0.5  # an ALC reading at or above this share of the radio's scale means the transmit audio is too strong (data modes want ALC near zero)
 CARRY_NAMES = {True: "Yes: hold mail for other stations and deliver it when they ask", False: "No: decline mail for other stations"}  # store and forward (since 0.30), as the operator sees it
 PSK_NAMES = {False: "Off", True: "On: report the Kestrel stations I decode to PSK Reporter (every five minutes or so)"}  # spotting, as the operator sees it (since 0.35)
@@ -228,6 +235,32 @@ def write_json(path, data):  # write a small JSON file
 
 
 CONTACTS_FILE = os.path.join(data_dir(), "contacts.json")  # the operator's saved contacts, shared by every panel on this computer
+ASKED_KEEP_DAYS = 2  # the level each station last needed is kept on disk this long; the station itself uses it for ASKED_KEEP_S (two hours) (since 0.44)
+
+
+def asked_file():  # where the levels other stations last needed are kept (since 0.44)
+    """Return the file beside this panel's settings that keeps, from one start of Kestrel to the next, the speed level each station last needed from this one (one file per --profile, since each radio has its own path)."""
+    return os.path.join(os.path.dirname(SETTINGS_FILE), "asked_levels" + (f"_{PROFILE}" if PROFILE else "") + ".json")  # beside the settings
+
+
+def load_asked_levels(path, now=None):  # the levels other stations last needed, read back (since 0.44)
+    """Return {callsign: (wall-clock time, level)} from the file at `path`, leaving out anything damaged or older than ASKED_KEEP_DAYS."""
+    now = time.time() if now is None else now  # the time now
+    kept = {}  # what is still worth keeping
+    data = read_json(path, {})  # the file, or nothing
+    for call, item in (data.items() if isinstance(data, dict) else []):  # each station on file
+        try:  # the file may have been edited or damaged
+            when, level = float(item[0]), int(item[1])  # its time and level
+        except (TypeError, ValueError, IndexError, KeyError):  # not a pair of numbers
+            continue  # skipped
+        if 0 <= now - when <= ASKED_KEEP_DAYS * 86400 and 0 <= level <= 7:  # recent and a real level
+            kept[str(call).upper()] = (when, level)  # kept
+    return kept  # the levels
+
+
+def save_asked_levels(path, levels):  # keep the levels other stations last needed (since 0.44)
+    """Write {callsign: (wall-clock time, level)} to the file at `path` (a failure to save is not fatal)."""
+    write_json(path, {call: [when, level] for call, (when, level) in levels.items()})  # as plain lists
 
 
 def build_info():  # which build of the program this is
@@ -490,11 +523,14 @@ class Panel:  # the control panel window
         self.audio = None  # the sound-card input, while a station or the monitor is running
         self.sink = None  # the sound-card output, while a station is running (its level follows the transmit slider)
         self.tx_active = False  # True while the transmitter is keyed
+        self.tx_ended = 0.0  # when the transmitter last went off (time.monotonic()), for the noise reading (since 0.44)
         self.station_now = 0.0  # the running station's clock at its last look (its log lines are stamped with it)
         self.tx_kind = ""  # what is being sent, while the transmitter is keyed
         self.alc_warned = False  # whether the operator has been told the ALC is high during this transmission
         self.signal_log = None  # the signal log of the run under way, if any
-        self.meters = {"watts": None, "alc": None, "swr": None, "set_w": None}  # the radio's readings: power out, ALC and SWR while transmitting, and the power setting
+        self.meters = {"watts": None, "alc": None, "swr": None, "set_w": None, "noise_db": None}  # the radio's readings: power out, ALC and SWR while transmitting, the power setting, and (since 0.44) the band noise from the S-meter
+        self.low_since = None  # when the receive input fell below LOW_INPUT_DBFS, while it stays there (since 0.44)
+        self.low_warned = False  # whether the operator has been warned about this stretch of low input (since 0.44)
         self.poller_stop = threading.Event()  # stops the thread that reads the radio's meters
         self.marks = {}  # stations decoded recently, for the scope: callsign -> (audio frequency, width, when)
         self.clips_seen = 0  # the input's clip count as of the last meter update
@@ -510,6 +546,7 @@ class Panel:  # the control panel window
         self.level_check = 0.0  # when Windows' receive level was last read back
         self.mailroom = Mailroom.load(self.mail_file(), self.settings["call"])  # this station's mail: its own messages for named stations, mail it carries for others, receipts
         self.asked_levels = {}  # callsign -> (wall-clock time, level): the speed level each station last needed from this one, carried from one Listen run to the next so a call to a weak station starts at a level it can read (since 0.43)
+        self.asked_levels = load_asked_levels(asked_file())  # and, since 0.44, from one start of Kestrel to the next
         self.mail_saved = time.monotonic()  # when the mail was last written to its file
         self.mail_notices = {}  # callsign -> (time, fields) of the last mail notice heard from each station
         self.heardlog = heardlog.HeardLog(side_file("_heard.jsonl"))  # every station heard in the last 48 hours, kept on disk
@@ -1703,6 +1740,25 @@ class Panel:  # the control panel window
         canvas.coords("peak", 26, self.meter_y(peak_db), 26 + self.meter_w, self.meter_y(peak_db))  # the peak mark
         canvas.itemconfigure("clip", text="CLIP" if clip else "")  # the overload warning
 
+    def watch_low_input(self, rms_db, clock=time.monotonic):  # is the receive input too low to work with? (since 0.44)
+        """Warn the operator once when the receive input has averaged below LOW_INPUT_DBFS for LOW_INPUT_S seconds while not transmitting, and say when it is back.
+        On the air on November 25, 2026 the input sat about 42 dB below normal for 42 minutes and nothing said so."""
+        now = clock()  # the time now
+        if self.tx_active or now - self.tx_ended < NOISE_AFTER_TX_S:  # transmitting, or just after: the radio mutes its receive audio
+            return  # not a reading of the receiver
+        if rms_db >= LOW_INPUT_DBFS:  # a working level
+            if self.low_warned:  # it had been too low
+                self.say(f"receive input back to a working level ({rms_db:.0f} dBFS)")  # say so
+            self.low_since, self.low_warned = None, False  # all clear
+            return  # nothing more
+        if self.low_since is None:  # it has just fallen low
+            self.low_since = now  # start counting
+        elif now - self.low_since >= LOW_INPUT_S and not self.low_warned:  # low for a minute
+            self.low_warned = True  # once for this stretch
+            self.say(f"warning: the receive input has been very low ({rms_db:.0f} dBFS) for {LOW_INPUT_S:.0f} s; nothing can be decoded like this. Check the radio's USB audio output level, the audio cable, and the Windows recording level for the input chosen in Settings")  # what to check
+            if self.signal_log is not None:  # a signal log is kept
+                self.signal_log.note("receive input low", level_dbfs=round(rms_db, 1))  # kept there too
+
     def draw_meters(self):  # bring both meters up to date
         try:  # a hiccup must never stop the panel
             source = self.audio  # the receive input, if open
@@ -1712,11 +1768,13 @@ class Panel:  # the control panel window
                     self.clips_seen, self.clip_until = source.clips, time.monotonic() + 3.0  # show CLIP for three seconds
                 clip = time.monotonic() < self.clip_until  # still showing it
                 self.show_level(self.rx_meter, rms, peak, clip=clip)  # the receive meter
+                self.watch_low_input(rms)  # warn if the input stays too low to work with (since 0.44)
                 level = f"Windows level {self.rx_value.get() * 100:.0f}%" if self.rx_level is not None else "level: set in Windows"  # the slider's setting, or where to set it
                 self.rx_text.configure(text=f"{rms:.0f} dBFS avg\n{peak:.0f} peak\n{level}")  # in words
             else:  # not receiving
                 self.show_level(self.rx_meter, -60.0, -60.0)  # empty
                 self.rx_text.configure(text="not receiving")  # say so
+                self.low_since, self.low_warned = None, False  # no input, so nothing to warn about (since 0.44)
             sink, gain = self.sink, max(self.tx_value.get(), 1e-4)  # the transmit output, and its level setting
             if sink is not None and sink.playing:  # transmitting now
                 self.show_level(self.tx_meter, sink.last_peak_db - 3.0, sink.last_peak_db)  # the transmit audio's level (its average sits about 3 dB under its peak)
@@ -2282,7 +2340,9 @@ class Panel:  # the control panel window
             sender = station.partner  # the partner measured this station
         else:  # someone else's
             return  # not about this station
-        self.their_report = (time.time(), sender, float(report.snr_db), float(report.fade_index), int(report.want_level))  # when, who, the SNR, the fading index, the level asked for
+        age = float(getattr(report, "age_s", float("nan")))  # how old the partner's measurement was when it sent it (since 0.44)
+        when = time.time() - (age if age == age else 0.0)  # when the partner measured this station
+        self.their_report = (when, sender, float(report.snr_db), float(report.fade_index), int(report.want_level), float(getattr(report, "noise_db", float("nan"))))  # when, who, the SNR, the fading index, the level asked for, and (since 0.44) the partner's own noise
 
     def station_link(self, station):  # the running contact's link number, or None (since 0.42)
         """Return the station's link number; None if the station cannot say (it is read through the compiled library when in use)."""
@@ -2292,7 +2352,8 @@ class Panel:  # the control panel window
             return None  # unknown
 
     def note_near(self, result):  # a Kestrel signature heard but not readable (called from the working thread)
-        self.logbook.write("heard", direction="RX", station=self.settings["call"], text="signature heard, too weak or faded to read", dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
+        words = "signature heard, strong but not readable: possibly a different signal version" if strong_unreadable(result) else "signature heard, too weak or faded to read"  # which (since 0.44)
+        self.logbook.write("heard", direction="RX", station=self.settings["call"], text=words, dial_khz=round(self.dial_hz() / 1000.0, 1),  # (continued)
                            level=f"{level_name(result.seen_level)}?", offset_hz=result.offset_hz, rig=self.rig_name(), detail=near_line(result))  # the logbook, from the advanced level up
         self.watch.kestrel_heard(1500.0 + result.offset_hz, signal_width_hz(result.seen_level), f"{level_name(result.seen_level)}? (not readable)")  # the recognized signal there looks like Kestrel (since 0.37)
 
@@ -2353,6 +2414,7 @@ class Panel:  # the control panel window
             self.alc_warned = False  # it may be warned about once
             self.tx_readings = []  # the power and ALC read during it, for holding the power and spotting a sag (since 0.40R1)
         if not keyed:  # it has just gone off
+            self.tx_ended = time.monotonic()  # when, so the noise reading waits for the receiver to settle (since 0.44)
             self.after_transmission(tx)  # hold the power for the next one, and say if it sagged (since 0.40R1)
             self.logbook.write("meters", direction="TX", station=self.settings["call"], text=f"after {tx.kind}", power_w=getattr(self, "tx_power_mid", self.meters["watts"]), alc=self.meters["alc"], swr=self.meters["swr"], tx_audio=round(self.sink.last_peak_db, 1) if self.sink else None)  # the meter readings taken during it (verbose)
             return  # nothing more
@@ -2393,6 +2455,9 @@ class Panel:  # the control panel window
             return  # no readings, then
         unsupported = set()  # readings this radio or Hamlib has refused
         last_setting = 0.0  # when the power setting was last read
+        last_noise = 0.0  # when the S-meter was last read for the noise level (since 0.44)
+        noise_readings = []  # (when, dB relative to S9) of the S-meter readings of the last five minutes (since 0.44)
+        self.meters["noise_db"] = None  # no noise reading yet in this run
 
         def read(name):  # one reading, or None
             if name in unsupported:  # refused before
@@ -2423,6 +2488,14 @@ class Panel:  # the control panel window
                     if setting is not None:  # the radio said
                         self.meters["set_w"] = setting * float(self.settings["max_power_w"] or 100)  # in watts
                     last_setting = time.monotonic()  # remember when
+                if time.monotonic() - last_noise > NOISE_READ_EVERY_S and time.monotonic() - self.tx_ended > NOISE_AFTER_TX_S:  # every few seconds while receiving, once the receiver has settled after a transmission (since 0.44)
+                    strength = read("STRENGTH")  # the S-meter, dB relative to S9
+                    last_noise = time.monotonic()  # remember when
+                    if strength is not None and -80.0 <= strength <= 80.0:  # a believable reading
+                        noise_readings.append((last_noise, float(strength)))  # kept
+                        noise_readings[:] = [item for item in noise_readings if last_noise - item[0] <= NOISE_WINDOW_S]  # the last five minutes only
+                        if len(noise_readings) >= NOISE_MIN_READINGS:  # enough to judge the band's noise
+                            self.meters["noise_db"] = float(np.median([value for _when, value in noise_readings]))  # the median: a Kestrel frame or a burst of another signal moves it little
                 time.sleep(0.5)  # a short nap
         finally:  # always hang up
             rig.close()  # close the connection
@@ -2557,6 +2630,12 @@ class Panel:  # the control panel window
             if report is not None and report[1] == partner and time.time() - report[0] < 600:  # from this partner, within ten minutes
                 fade = report[3]  # its fading index (NaN when not measured)
                 values["they_hear"] = f"{report[2]:+.0f} dB, " + ("steady" if fade == fade and fade <= 0.15 else "fading") + f"  \u00b7  asks L{report[4]}"  # how the partner hears this station, from its own report
+                old = time.time() - report[0]  # how old the partner's measurement is (since 0.44)
+                if old >= 60:  # a minute or more
+                    values["they_hear"] += f"  \u00b7  {old / 60:.0f} min old"  # say so: the partner has heard nothing newer from this station
+                noise = s_meter_text(report[5]) if len(report) > 5 else ""  # the partner's own noise (since 0.44)
+                if noise:  # it said
+                    values["they_hear"] += f"  \u00b7  their noise {noise}"  # so a weak report can be told from a noisy receiver
             else:  # no report yet
                 values["they_hear"] = f"asks for L{station.tx_level}"  # the level it asks for says something until the first report arrives
             values["speed"] = f"L{station.tx_level} you  \u00b7  L{station.want} them"  # the two levels
@@ -2627,6 +2706,10 @@ class Panel:  # the control panel window
         station.power_steps = self.settings.get("beacon_type") == "stepped"  # power steps before each short beacon, when chosen (since 0.38; kept in Python by both stations)
         station.rig = beacon_rig(self.settings.get("rig_model", ""))  # this station's rig type, the Hamlib model number, for each beacon (0 with no rig chosen; since 0.40)
         station.watts = beacon_watts(self.meters["set_w"] or self.settings.get("max_power_w") or 0)  # its power: the radio's setting when rig control reads it, else the full power from Settings (since 0.40)
+        noise = self.meters.get("noise_db")  # this station's band noise from the S-meter, the median of the last five minutes (since 0.44)
+        if noise is not None and noise != getattr(self, "noise_sent", None):  # a new reading
+            station.noise_db = noise  # every report this station sends says it
+            self.noise_sent = noise  # remembered, so the station is told only when it changes
         with self.actions_lock:  # take the waiting requests
             waiting, self.actions = self.actions, []  # all of them
         left = [action for action in waiting if not action(station)]  # do each; keep any that cannot be done yet
@@ -4814,6 +4897,8 @@ class Panel:  # the control panel window
         source = rig = ptt = None  # nothing opened yet
         recorder = None  # the received-audio recorder, if turned on
         poller = None  # the radio-meter thread, once started
+        why = None  # the problem that stopped the run, if one did (for the logbook's stop line, since 0.44)
+        started = False  # whether the logbook's start line was written (a run can fail before it, since 0.44)
         self.poller_stop.clear()  # the meter thread may run
         try:  # anything that goes wrong is reported in the log
             source = AudioIn(job["in"])  # start recording from the chosen device
@@ -4841,6 +4926,7 @@ class Panel:  # the control panel window
                 poller = threading.Thread(target=self.poll_radio, args=(address,), daemon=True)  # read its power setting and meters
                 poller.start()  # in the background
             self.logbook.write("run", station=job["call"], text=f"{mode} started", dial_khz=job["entry"]["dial_khz"], rig=self.rig_name())  # the logbook
+            started = True  # the start is on record (since 0.44)
             self.logbook.write("settings", station=job["call"], text=f"settings at the start of {mode}", dial_khz=job["entry"]["dial_khz"], detail=self.settings_summary())  # the verbose log keeps a record
             if mode == "monitor":  # receive only
                 listener = Listener()  # the continuous receiver
@@ -4897,6 +4983,7 @@ class Panel:  # the control panel window
                         signal_log=signal_log, dial_khz=lambda: round(self.dial_hz() / 1000.0, 1), listen_first=bool(job.get("listen_first", True)), expect=self.expected_calls, notes=self.notes_for(), on_note=self.note_event, on_progress=self.frames.update,  # (continued)
                         idle=self.idle_watch, on_idle=self.idle_warning)  # the live loop, until stopped, with the signal log, the listen-first check, the callsigns it expects, and (since 0.41) the idle timeout with Keep-Alive and the 10-second warning
             self.asked_levels = {call: (began + when, level) for call, (when, level) in station.asked.items()}  # what is now known of the level each station needs, back in wall-clock time for the next run (since 0.43)
+            save_asked_levels(asked_file(), self.asked_levels)  # and for the next start of Kestrel (since 0.44)
             with self.outbox_lock:  # the window may be queuing a message at this moment (since 0.40R3)
                 self.station = None  # the run is over; later messages wait for the next one
                 self.outbox = [(left, to or "") for left, to in zip(station.outbox, station.outbox_to)] + self.outbox  # anything it did not get to send is kept for the next run, with its address
@@ -4916,6 +5003,7 @@ class Panel:  # the control panel window
             except OSError:  # it is
                 where = "(could not be saved)"  # say so
             self.say(f"stopped by a problem: {problem!r} (details: {where})")  # what went wrong, and where the details are
+            why = f"{problem!r} (details: {where})"  # kept for the logbook's stop line (since 0.44)
             if self.signal_log is not None:  # a signal log was started
                 self.signal_log.note("stopped by a problem", problem=repr(problem))  # keep it there too
             self.mode = "off"  # nothing is running now
@@ -4945,7 +5033,11 @@ class Panel:  # the control panel window
             self.audio = None  # the scope has nothing to show any more
             if source is not None:  # recording was started
                 source.close()  # release the sound device
-            self.logbook.write("run", station=job["call"], text=f"{mode} stopped", dial_khz=job["entry"]["dial_khz"])  # the logbook
+            if why is not None:  # a problem ended it (since 0.44: before, the logbook said only "stopped", with no start line when the run failed while starting)
+                reason = ("could not start: " if not started else "stopped by a problem: ") + why  # which, and what
+            else:  # it ended normally
+                reason = "stopped by the operator" if self.stop.is_set() else "ended"  # who ended it
+            self.logbook.write("run", station=job["call"], text=f"{mode} {reason}", dial_khz=job["entry"]["dial_khz"])  # the logbook, with the reason
             self.say("stopped")  # closing line
 
     # ---- exporting and importing settings and themes (since 0.37) ----

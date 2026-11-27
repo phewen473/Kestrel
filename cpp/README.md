@@ -12,7 +12,11 @@ bit for bit for the blanker and the Viterbi decoder, and to the last rounding pl
 If the library is missing, or won't load, or offers a different interface version, the modem
 quietly runs in pure Python, as it always has.
 
-## What is in it so far (interface version 18)
+## What is in it so far (interface version 20)
+
+Interface 20 (0.44, signal version 0.44): the channel report carries its age and the reporting station's noise reading. `KesFields` gains `age_s` and `noise_db` (NaN = not said); a report is 26 bits, an answer 147 and an acknowledgment 56. The compiled station stamps every report with how long ago its measurement was made, puts in the noise reading set through `"noise_db"`, and never raises its sending level on a report 4 minutes old or more; it still gives the same transmissions as the Python reference.
+
+Interface 19 (0.43, signal version 0.43): acknowledgment bursts; a transmission description may hold a `"burst"` frame, and `"listen"` / `"listen_hz"` say what burst a frame awaits and where.
 
 Interface 18 (0.43, signal version 0.43): the signature pattern at both ends of every frame. `kes_encode_frame` writes pattern, header, body, pattern, header (the second header copy's check value marked); `kes_read_header` reads the header beside either pattern and answers 4, 5 or 6 for a frame found from the pattern at its end; `kes_pilot_fit` takes `backward` and `kes_decode_body` takes `from_end`, for a frame whose frequency was measured at its end; a `kes_listener_next` frame event gives the frame's start in `ev[8]` (the event array now holds 9 values). The compiled station has the new airtimes and limits and remembers the level each station last needed (`asked`).
 

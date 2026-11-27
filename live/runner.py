@@ -13,6 +13,7 @@ import numpy as np  # finite-number checks (since 0.43)
 from link.params import LONG_AFTER_CALLS, LONG_TRAFFIC_BELOW_DB, LONG_TRAFFIC_REPORT_S, TURNAROUND_S  # short calls before a long call, to a station heard only in long frames (since 0.41); pause between hearing a frame and replying
 from modem.levels import level_name  # L0 to L4, or LB
 from modem.powersteps import SECONDS as POWER_STEPS_S  # how long the power steps before a beacon last (since 0.38)
+from modem.params import PREAMBLE_TONES as ALL_PATTERN_TONES, SIGNAL_VERSION  # the signature pattern's tone count, and the signal version this program reads (for the near-miss line, since 0.44)
 from modem.params import CONTROL_BITS, FRAME_TYPE_ACK, FRAME_TYPE_ANSWER, FRAME_TYPE_LONG, LONG_LEVEL  # which frame types are control frames, the acknowledgment and answer frame types (since 0.43), and the long beacon's frame type and level number
 
 from .burstwatch import BurstWatch  # listening for an acknowledgment burst (since 0.43)
@@ -193,13 +194,35 @@ def short_calls_failing(station, notes, now):  # stop short calls early? (since 
 
 
 def their_report(station, result, own_call):  # the partner's report of this station, if `result` carries one (since 0.43)
-    """Return (SNR, level asked for) from an acknowledgment frame of this station's contact or an answer to this station; None for anything else (a burst carries no SNR)."""
+    """Return (SNR, level asked for, age in seconds) from an acknowledgment frame of this station's contact or an answer to this station; None for anything else (a burst carries no SNR). The age (since 0.44) is how long before the frame was sent the partner made its measurement, 0 when the report does not say."""
     fields = getattr(result, "fields", None) or {}  # a control frame's fields
     report = fields.get("report") if result.ok and not getattr(result, "burst", False) else None  # its full report
     if report is None or not np.isfinite(report.snr_db):  # none, or no reading
         return None  # nothing
     mine = (result.frame_type == FRAME_TYPE_ACK and station.partner and fields.get("link") == station.link) or (result.frame_type == FRAME_TYPE_ANSWER and fields.get("dest") == own_call)  # about this station
-    return (float(report.snr_db), int(report.want_level)) if mine else None  # the reading and the level asked for
+    age = float(getattr(report, "age_s", float("nan")))  # how old the measurement was when sent (since 0.44)
+    return (float(report.snr_db), int(report.want_level), age if np.isfinite(age) else 0.0) if mine else None  # the reading, the level asked for, and its age
+
+
+def s_meter_text(noise_db):  # an S-meter reading in words (since 0.44)
+    """Return an S-meter reading given in dB relative to S9 as S-units ("S7", "S9", "S9+10"), or "" when it is NaN (not measured). One S-unit is 6 dB."""
+    if noise_db is None or not np.isfinite(noise_db):  # not measured
+        return ""  # nothing to say
+    if noise_db >= 0.5:  # above S9
+        return f"S9+{noise_db:.0f}"  # S9 and the dB over it
+    return f"S{max(0, int(round(9 + noise_db / 6.0)))}"  # S0 to S9
+
+
+def report_extras(report):  # the age and noise a channel report carries, in words (since 0.44)
+    """Return ", 2 min old, their noise S7" style words for a channel report's age and the reporter's noise reading ("" for either that is not said)."""
+    words = ""  # nothing yet
+    age = getattr(report, "age_s", float("nan"))  # how old the measurement was
+    if age == age and age >= 60:  # said, and a minute or more
+        words += f", {age / 60:.0f}+ min old"  # at least that old (the code gives the start of its step)
+    noise = s_meter_text(getattr(report, "noise_db", float("nan")))  # the reporter's noise
+    if noise:  # measured
+        words += f", their noise {noise}"  # said
+    return words  # the words
 
 
 def traffic_too_weak(station, notes, report, now):  # short frames cannot carry the traffic: use long notes? (since 0.43)
@@ -234,11 +257,19 @@ NEAR_MERGE_S = 60.0  # near misses of the same signal within this many seconds a
 NEAR_MERGE_HZ = 5.0  # "the same signal": the same level, within this many hertz
 
 
+def strong_unreadable(result):  # a near miss whose whole signature pattern stood out (since 0.44)
+    """Return True when every one of a near miss's 12 pattern tones stood out: the signal is strong, so a header it cannot read more likely means a different Kestrel signal version than a weak or faded one."""
+    return getattr(result, "pattern_tones", -1) >= ALL_PATTERN_TONES  # the whole pattern
+
+
 def near_line(result):  # one line about a near miss
-    """Return a line saying a Kestrel signature was heard but could not be read."""
+    """Return a line saying a Kestrel signature was heard but could not be read; when its whole pattern stood out (since 0.44), say it may be from a different signal version, since a signal that strong is seldom too weak to read."""
     tones = getattr(result, "pattern_tones", -1)  # how much of its pattern stood out, if counted
     shown = f", {tones} of 12 pattern tones" if tones >= 0 else ""  # said when known
-    return f"possible Kestrel signature heard (looks like {level_name(result.seen_level)}, about {1500.0 + result.offset_hz:.0f} Hz{shown}) but too weak or faded to read (strength {result.sync_quality:.1f})"
+    head = f"possible Kestrel signature heard (looks like {level_name(result.seen_level)}, about {1500.0 + result.offset_hz:.0f} Hz{shown})"  # what was heard
+    if strong_unreadable(result):  # strong, yet unreadable (since 0.44: older decoders said "too weak" of strong frames from another signal version)
+        return head + f" but not readable although strong (strength {result.sync_quality:.1f}): possibly a station on a different Kestrel signal version (this one reads signal version {SIGNAL_VERSION})"  # the likelier cause
+    return head + f" but too weak or faded to read (strength {result.sync_quality:.1f})"  # the usual case
 
 
 class NearFilter:  # which near misses the operator is shown (since 0.31R2)
@@ -395,6 +426,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
             on_near(result)  # pass it on
 
     listener.on_near = near  # the listener reports near misses here
+    listener.on_doubt = lambda result: stamp(f"long beacon from {(result.fields or {}).get('origin', '?')} at {result.offset_hz:+.1f} Hz {result.reason} (most likely noise)")  # a long beacon read from added copies but not believed (since 0.44)
     told = 0  # how many lines of the station's own log have been passed on
     last_sent = [-1e9]  # when this station's last transmission ended (in a list so the inner function can change it)
     lost = 0  # how many times the sound card has reported losing audio, as of the last look
@@ -461,7 +493,7 @@ def run_station(station, source, sink, ptt, say=print, limit_s=None, stay_on=Fal
                 notes.saw((result.fields or {}).get("origin", ""), now())  # its sender is reachable with long frames
             got = their_report(station, result, station.call)  # the partner's report of this station, if the frame carries one (since 0.43)
             if got is not None:  # it does
-                reported[0] = (now(), got[0], got[1])  # the latest
+                reported[0] = (now() - got[2], got[0], got[1])  # the latest, dated when the partner made the measurement rather than when the frame arrived (since 0.44)
             if result.ok and bursts.waiting and (getattr(result, "link", -1) == station.link or (result.origin and result.origin == station.partner)):  # the partner's frame was read: the burst wait is over (since 0.43)
                 bursts.disarm()  # a burst found later would be stale
             reply = station.handle(result, now())  # what the link rules say to do

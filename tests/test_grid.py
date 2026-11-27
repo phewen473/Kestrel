@@ -11,7 +11,7 @@ def test_answer_carries_the_locator_and_none_when_unset():  # the field itself
     report = ChannelReport(-10.0, 0.25, 4.0, 2)  # any report
     for grid in ("EM93", "fn31", ""):  # a locator, one in small letters, and none
         bits = pack_answer("Q1AAAA", "Q2BB", report, (0, 1, 2), mail_check=True, directed=True, grid=grid)  # packed
-        assert len(bits) == CONTROL_BITS[FRAME_TYPE_ANSWER] == 139  # the 0.33 length
+        assert len(bits) == CONTROL_BITS[FRAME_TYPE_ANSWER] == 147  # the 0.44 length (139 from 0.33, before the report's age and noise reading)
         fields = unpack(FRAME_TYPE_ANSWER, bits)  # and back
         assert fields["grid"] == grid.upper() and fields["origin"] == "Q2BB" and fields["directed"] and fields["report"].want_level == 2  # everything survives
 

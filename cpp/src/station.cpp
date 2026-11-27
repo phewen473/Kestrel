@@ -56,7 +56,7 @@ const int kFrameTones = 2 * kPreambleTones + kHeaderTones;  /* tones in every fr
 const long kLongSamples = 714000;  /* a whole long beacon, in samples (51 tones of 14000; modem/longbeacon.py) */
 const int kLongLevel = 7;  /* the long beacon's level number (LONG_LEVEL) */
 const int kTypeLink = 0, kTypeAddressed = 1, kTypeBeacon = 2, kTypeAnswer = 3, kTypeAck = 4, kTypeIdent = 5, kTypeNotice = 7;  /* frame types */
-const int kControlBits[8] = {0, 0, 101, 139, 48, 61, 0, 192};  /* control frame bodies (CONTROL_BITS; the answer grew by its sender's locator in 0.33, the beacon by the rig type and watts in 0.40) */
+const int kControlBits[8] = {0, 0, 101, 147, 56, 61, 0, 192};  /* control frame bodies (CONTROL_BITS; the answer grew by its sender's locator in 0.33, the beacon by the rig type and watts in 0.40, the answer and the acknowledgment by the report's age and noise reading in 0.44) */
 const int kAddressBits[2] = {28, 120};  /* address blocks (ADDRESS_BITS) */
 const int kAckOk = 0, kAckResend = 1, kAckHaveIt = 2, kAckLink = 3;  /* acknowledgment verdicts (control.py) */
 const double kSnrFloor = -30.0;  /* SNR_FLOOR_DB */
@@ -71,6 +71,7 @@ const int kCallupLevel = 2;  /* CALLUP_LEVEL */
 const double kExpect = 300.0;  /* EXPECT_S */
 const double kHeardForCall = 600.0;  /* HEARD_FOR_CALL_S */
 const double kReportEvery = 300.0;  /* REPORT_EVERY_S: a message frame is acknowledged with a burst while the last full report sent is younger than this (since 0.43) */
+const double kStaleReport = 240.0;  /* STALE_REPORT_S: a report whose measurement is at least this old never raises the sending level (since 0.44) */
 const long kBurstSamples = 24 * 4800;  /* an acknowledgment burst: 24 L0 tones (modem/burst.py BURST_TONES, since 0.43) */
 const double kAskedKeep = 7200.0;  /* ASKED_KEEP_S: how long the level a station asked for is remembered (since 0.43) */
 const int kWideSlots = 4;  /* WIDE_SLOTS */
@@ -521,14 +522,25 @@ bool contains(const std::vector<std::string> &v, const std::string &s) {  /* s i
     return std::find(v.begin(), v.end(), s) != v.end();  /* found? */
 }  /* end of contains */
 
-Json report(double snr, double fade, double offset, long want) {  /* a ChannelReport */
-    Json j = Json::object();  /* the four readings */
+Json report(double snr, double fade, double offset, long want, double age = std::nan(""), double noise = std::nan("")) {  /* a ChannelReport */
+    Json j = Json::object();  /* the six readings */
     j["snr_db"] = snr;  /* SNR */
     j["fade_index"] = fade;  /* fading */
     j["offset_hz"] = offset;  /* offset */
     j["want_level"] = want;  /* level asked for */
+    j["age_s"] = age;  /* how old the measurement is, NaN = not said (since 0.44) */
+    j["noise_db"] = noise;  /* the reporter's own noise, NaN = not measured (since 0.44) */
     return j;  /* the report */
 }  /* end of report */
+
+long trusted_want(const Json &rep, long current) {  /* the level a received report may set (since 0.44) */
+    long want = static_cast<long>(rep.at("want_level").as_int());  /* the level asked for */
+    double seconds = real(rep, "age_s");  /* its age in seconds, NaN when not carried or not said */
+    if (std::isfinite(seconds) && seconds >= kStaleReport && want > current) {  /* an old measurement asking for more speed */
+        return current;  /* not trusted to raise the level */
+    }  /* end of the test */
+    return want;  /* as asked */
+}  /* end of trusted_want */
 
 }  /* end of the private helpers */
 
@@ -635,6 +647,9 @@ struct KesStation {  /* its state and rules */
     std::string reply;  /* the last reply, until collected */
     bool bursts = true;  /* acknowledge with bursts where the rules allow (since 0.43) */
     double report_at = -1e9;  /* when a full channel report last went to the partner (since 0.43) */
+    double heard_time = -1e9;  /* when last_result was heard, for the age its report carries (since 0.44) */
+    double clock_now = 0.0;  /* the time of the frame being handled (since 0.44) */
+    double noise_db = std::nan("");  /* this station's own band noise, its S-meter reading in dB relative to S9, set by whoever runs it; NaN = not measured (since 0.44) */
 
     bool locked() const { return state == "LOCKED" || state == "DEGRADED" || state == "REACQUIRE"; }  /* LOCKED_STATES */
 
@@ -897,17 +912,19 @@ struct KesStation {  /* its state and rules */
         double snr = real(r, "snr_db");  /* its SNR */
         bool ok = std::isfinite(snr);  /* measured? */
         long level = ok ? supported_level(History{{snr, real(r, "fade_index"), real(r, "spread_hz")}}, levels) : 0;  /* the level it supports */
-        return report(ok ? snr : kSnrFloor, real(r, "fade_index"), real(r, "offset_hz"), level);  /* the report */
+        return report(ok ? snr : kSnrFloor, real(r, "fade_index"), real(r, "offset_hz"), level, 0.0, noise_db);  /* the report: just heard, with this station's noise (since 0.44) */
     }  /* end of report_of */
 
-    Json my_report() {  /* the report to send back */
+    Json my_report(double now) {  /* the report to send back */
         bool have = !last_result.is_null();  /* a frame heard? */
         double snr = have ? real(last_result, "snr_db") : std::nan("");  /* its SNR */
-        return report(have && std::isfinite(snr) ? snr : -30.0, have ? real(last_result, "fade_index") : std::nan(""), have ? real(last_result, "offset_hz") : 0.0, want);  /* readings and the level wanted */
+        double age = have ? std::max(now - heard_time, 0.0) : std::nan("");  /* how long ago it was heard, or not said (since 0.44) */
+        return report(have && std::isfinite(snr) ? snr : -30.0, have ? real(last_result, "fade_index") : std::nan(""), have ? real(last_result, "offset_hz") : 0.0, want, age, noise_db);  /* readings, the level wanted, the age and this station's noise */
     }  /* end of my_report */
 
     void note(const Json &r, bool failed) {  /* take in a frame's measurements */
         last_result = r;  /* for the next report */
+        heard_time = clock_now;  /* heard now (since 0.44) */
         double snr = real(r, "snr_db");  /* SNR */
         if (std::isfinite(snr)) {  /* usable */
             history.emplace_back(snr, real(r, "fade_index"), real(r, "spread_hz"));  /* added */
@@ -938,6 +955,7 @@ struct KesStation {  /* its state and rules */
             history.emplace_back(snr, real(r, "fade_index"), real(r, "spread_hz"));  /* this one */
         }  /* end of the reading */
         last_result = r;  /* for the next report */
+        heard_time = clock_now;  /* heard now (since 0.44) */
         clean_run = good_run = 0;  /* new runs */
         want = !history.empty() ? supported_level(history, allowed) : *std::min_element(allowed.begin(), allowed.end());  /* what it supports */
     }  /* end of fresh_start */
@@ -1031,7 +1049,7 @@ struct KesStation {  /* its state and rules */
         f["msg_id"] = msg_id;  /* message number */
         f["part"] = part;  /* part */
         f["status"] = status;  /* verdict */
-        f["report"] = my_report();  /* report */
+        f["report"] = my_report(now);  /* report, with its age (since 0.44) */
         f["level"] = tx_level;  /* at the level asked for */
         return send(now, f, kind, tx_level, expects, reply_s, "wants L" + std::to_string(want));  /* sent */
     }  /* end of ack */
@@ -1182,6 +1200,7 @@ struct KesStation {  /* its state and rules */
         notice_sent = false;  /* no notice just sent */
         history.clear();  /* no measurements */
         last_result = Json();  /* none */
+        heard_time = -1e9;  /* nothing heard in the next contact yet (since 0.44) */
         report_at = -1e9;  /* no report sent in the next contact yet (since 0.43) */
         clean_run = good_run = 0;  /* no runs */
         plan = Json::list();  /* nothing under way */
@@ -1267,6 +1286,7 @@ struct KesStation {  /* its state and rules */
     /* ---- acting on what was heard ---- */
 
     Json handle(const Json &r, double now) {  /* react to a frame just heard */
+        clock_now = now;  /* the time measurements taken from this frame are stamped with (since 0.44) */
         if (state == "RELEASED") {  /* over */
             return Json();  /* silent */
         }  /* end of the check */
@@ -1337,7 +1357,7 @@ struct KesStation {  /* its state and rules */
         f["dest"] = partner;  /* to the caller */
         f["origin"] = call;  /* from here */
         f["grid"] = grid;  /* this station's locator (since 0.33) */
-        f["report"] = my_report();  /* report */
+        f["report"] = my_report(now);  /* report, with its age (since 0.44) */
         f["levels"] = long_list(levels);  /* levels */
         f["mail_check"] = false;  /* default */
         f["directed"] = false;  /* a reply, not a call */
@@ -1537,7 +1557,7 @@ struct KesStation {  /* its state and rules */
         partner = text(r, "origin");  /* who */
         link = link_id(call, partner);  /* beaconing station first */
         allowed = common_levels(levels, longs(field(r, "levels")));  /* shared levels */
-        tx_level = cap_level(static_cast<long>(field(r, "report").at("want_level").as_int()), allowed);  /* the level it asked for */
+        tx_level = cap_level(trusted_want(field(r, "report"), tx_level), allowed);  /* the level it asked for (never raised by an old report, since 0.44) */
         note_asked(now);  /* remembered for the next call to that station (since 0.43) */
         fresh_start(r);  /* first measurement */
         state = "LOCKED";  /* locked */
@@ -1556,7 +1576,7 @@ struct KesStation {  /* its state and rules */
             release(now, partner + " is not available");  /* stop calling */
             return Json();  /* nothing */
         }  /* end of the refusal */
-        tx_level = cap_level(static_cast<long>(fields.at("report").at("want_level").as_int()), allowed);  /* the level asked for */
+        tx_level = cap_level(trusted_want(fields.at("report"), tx_level), allowed);  /* the level asked for (never raised by an old report, since 0.44) */
         note_asked(now);  /* remembered for the next call to that station (since 0.43) */
         if (state == "IDLE") {  /* waiting for this */
             fresh_start(r);  /* first frame since the lock */
@@ -1985,8 +2005,10 @@ struct KesStation {  /* its state and rules */
         auto *heard = heard_at.find(target);  /* the last reading of that station */
         if (heard != nullptr && now - heard->first <= kHeardForCall) {  /* recent */
             rep = heard->second;  /* with the call */
+            rep["age_s"] = std::max(now - heard->first, 0.0);  /* how long ago it was heard (since 0.44) */
+            rep["noise_db"] = noise_db;  /* and this station's noise */
         } else {  /* none */
-            rep = report(kSnrFloor, std::nan(""), 0.0, 0);  /* no measurement, L0 */
+            rep = report(kSnrFloor, std::nan(""), 0.0, 0, std::nan(""), noise_db);  /* no measurement, L0 (the noise is still said, since 0.44) */
         }  /* end of the report */
         Json f = Json::object();  /* a directed call */
         f["type"] = "answer";  /* an answer frame */
@@ -2276,6 +2298,9 @@ struct KesStation {  /* its state and rules */
         if (name == "answer_calls") return Json(answer_calls);  /* answers calls */
         if (name == "bursts") return Json(bursts);  /* acknowledges with bursts (since 0.43) */
         if (name == "report_at") return Json(report_at);  /* when a full report last went (since 0.43) */
+        if (name == "heard_time") return Json(heard_time);  /* when the last frame from the partner was heard (since 0.44) */
+        if (name == "clock_now") return Json(clock_now);  /* the time of the frame last handled (since 0.44) */
+        if (name == "noise_db") return Json(noise_db);  /* this station's own noise reading (since 0.44) */
         if (name == "last_beacon_t") return Json(last_beacon_t);  /* last beacon */
         if (name == "called_t") {  /* calls made */
             Json o = Json::object();  /* the dict */
@@ -2366,6 +2391,9 @@ struct KesStation {  /* its state and rules */
         if (name == "answer_calls") { answer_calls = truthy(v); return; }  /* answers calls */
         if (name == "bursts") { bursts = truthy(v); return; }  /* acknowledges with bursts (since 0.43) */
         if (name == "report_at") { report_at = v.as_real(); return; }  /* when a full report last went (since 0.43) */
+        if (name == "heard_time") { heard_time = v.as_real(); return; }  /* when the last frame from the partner was heard (since 0.44) */
+        if (name == "clock_now") { clock_now = v.as_real(); return; }  /* the time of the frame last handled (since 0.44) */
+        if (name == "noise_db") { noise_db = (v.is_null() || !v.is_number()) ? std::nan("") : v.as_real(); return; }  /* this station's own noise reading; None or NaN = not measured (since 0.44) */
         if (name == "carries") { carries = truthy(v); return; }  /* carries mail */
         if (name == "callup") { callup = static_cast<long>(v.as_int()); return; }  /* call-up level */
         if (name == "asked") {  /* the levels stations asked for, carried over from an earlier run (since 0.43) */

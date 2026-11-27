@@ -1,6 +1,6 @@
 # Kestrel Technical Description
 
-**Version 0.43 (draft), November 26, 2026.** In first on-air tests since November 18, 2026. Version 0.43 changes the signal: every frame now carries its signature pattern twice, once at the start and once after the body, and the second header copy's check value is marked, so a frame whose start has faded away is found from its end (Sections 5.1 and 5.4). **Signal version 0.43: stations running 0.42 or earlier cannot read 0.43 frames, nor 0.43 stations theirs; both stations of a contact must run 0.43.** The long beacon, long notes and the long call-up are unchanged and still work between 0.41, 0.42 and 0.43 stations.
+**Version 0.44 (draft), November 26, 2026.** In first on-air tests since November 18, 2026. Version 0.44 changes the signal: the channel report carried by answers and acknowledgment frames now also says how old its measurement is and gives the reporting station's own band noise, its S-meter reading (Section 5.8), so a station can tell a fresh report from one repeated because nothing newer was heard, and "you are weak" from "I am noisy". The answer frame grows from 139 to 147 bits and the acknowledgment frame from 48 to 56. **Signal version 0.44: stations running 0.43 or earlier cannot read 0.44 answers and acknowledgment frames, nor 0.44 stations theirs; both stations of a contact must run 0.44.** Beacons, message frames, acknowledgment bursts, the long beacon, long notes and the long call-up are unchanged. Version 0.43 sent every frame's signature pattern twice, once at the start and once after the body, with the second header copy's check value marked, so a frame whose start has faded away is found from its end (Sections 5.1 and 5.4).
 
 This document is the public technical description of the Kestrel digital mode under FCC rule 97.309(a)(4). It will be updated, with a new version number, whenever the transmitted signal changes.
 
@@ -247,20 +247,20 @@ Beacons, answers, acknowledgments, identifications and mail notices are short fr
 | Frame | Field bits | Bits sent after coding and padding | Body tones | Interleaver step |
 |---|---|---|---|---|
 | Beacon | 101 | 250 | 54 | 157 |
-| Answer | 139 | 325 | 70 | 201 |
-| Acknowledgment | 48 | 140 | 30 | 87 |
+| Answer | 147 (139 before 0.44) | 340 | 73 | 211 |
+| Acknowledgment | 56 (48 before 0.44) | 160 | 35 | 99 |
 | Identification | 61 | 170 | 37 | 107 |
 | Mail notice | 192 | 430 | 92 | 267 |
 
-Airtime of a whole control frame:
+Airtime of a whole control frame (since 0.43 each frame carries its pattern and a header copy at both ends; the answer and the acknowledgment grew in 0.44):
 
 | Frame | L0 | L1 | L2 | L3 | L4 |
 |---|---|---|---|---|---|
-| Beacon | 36 s | 12 s | 8.1 s | 4.0 s | 2.0 s |
-| Answer | 42 s | 14 s | 9.5 s | 4.8 s | 2.4 s |
-| Acknowledgment | 26 s | 8.9 s | 5.9 s | 3.0 s | 1.5 s |
-| Identification | 29 s | 9.9 s | 6.6 s | 3.3 s | 1.6 s |
-| Mail notice | 51 s | 17 s | 11.5 s | 5.8 s | 2.9 s |
+| Beacon | 40.8 s | 13.8 s | 9.2 s | 4.6 s | 2.3 s |
+| Answer | 48.4 s | 16.3 s | 10.9 s | 5.4 s | 2.7 s |
+| Acknowledgment | 33.2 s | 11.2 s | 7.5 s | 3.7 s | 1.9 s |
+| Identification | 34.0 s | 11.5 s | 7.6 s | 3.8 s | 1.9 s |
+| Mail notice | 56.0 s | 18.9 s | 12.6 s | 6.3 s | 3.1 s |
 
 **Beacon (type 2), 101 bits** (75 before 0.40)
 
@@ -276,19 +276,19 @@ Airtime of a whole control frame:
 | Rig type | 16 | The station's radio as its Hamlib model number (for example 1035 for the Yaesu FT-991); 0 when not said (since 0.40) |
 | Power | 10 | The station's transmit power in whole watts, 1 to 1023; 0 when not said (since 0.40) |
 
-**Answer (type 3), 139 bits**
+**Answer (type 3), 147 bits** (139 before 0.44)
 
 | Field | Bits | Meaning |
 |---|---|---|
 | Destination | 48 | Callsign of the beaconing station being answered |
 | Origin | 48 | Callsign of the answering station |
 | Locator | 15 | Four-character Maidenhead grid locator of the origin, coded as in the beacon (since 0.33); all ones (32767) when the origin has no locator set. Any other value above 32399 makes the frame invalid. Answers and directed calls carry it so that every station heard in a call-up has a known location for propagation predictions (Section 6.15) |
-| Channel report | 18 | How the beacon was received (see below) |
+| Channel report | 26 | How the beacon was received (see below); in a directed call, how the called station was last heard, if lately |
 | Levels | 8 | Speed levels the answering station can use |
 | Mail check | 1 | 1 asks the beaconing station to deliver any mail it holds for the origin |
 | Directed call | 1 | 1 marks a directed call (Section 6.11) rather than a reply to a beacon |
 
-**Acknowledgment (type 4), 48 bits**
+**Acknowledgment (type 4), 56 bits** (48 before 0.44)
 
 | Field | Bits | Meaning |
 |---|---|---|
@@ -296,7 +296,7 @@ Airtime of a whole control frame:
 | Message number | 16 | The message being acknowledged |
 | Part number | 3 | The part being acknowledged. With status 3: 0 = a plain reply; 1 = "I have nothing to send, the turn is yours"; 2 = "are you still there?" (Section 6.5); 3 = "move to the working frequency given in the message number" (Section 6.10); 4 = "not available": the operator of the station called is away (Section 6.11); 5 = "does not carry mail": the station will not hold the message named in the message number for another station (Section 8) |
 | Status | 2 | 0 = received correctly; 1 = failed its check, send again (the message number is not significant); 2 = the whole message is already held or delivered here, stop sending it; 3 = no message referred to (lock business; the message number is 0, except with part number 3, where it carries a frequency offset, Section 6.10) |
-| Channel report | 18 | How the frame being acknowledged was received |
+| Channel report | 26 | How the frame being acknowledged (or, with status 3, the partner's last frame) was received |
 
 **Identification (type 5), 61 bits**
 
@@ -318,7 +318,7 @@ Airtime of a whole control frame:
 
 **Short codes.** A station's code is the CRC-16 of Section 4 over its 48 address bits (Section 4.2); a message's code is the CRC-16 over the origin's 48 address bits followed by the 16-bit message number. A result of 0 is sent as 1, because 0 marks an unused entry. Codes are short so that a notice stays small; two callsigns may share a code (about one chance in 65,000), which at worst makes a station ask for mail it does not have or drop a copy of mail that was not delivered (the origin keeps its own copy, Section 8).
 
-**Channel report, 18 bits**
+**Channel report, 26 bits** (18 before 0.44, without the age and the noise reading)
 
 | Field | Bits | Coding |
 |---|---|---|
@@ -326,6 +326,10 @@ Airtime of a whole control frame:
 | Fading index | 3 | The fading index of Section 5.7 times 4, rounded; held to 0 to 7. A missing reading is sent as 7 |
 | Frequency offset | 6 | Offset in Hz divided by 2, rounded, as a signed (two's complement) number; held to -32 to 31 (-64 to +62 Hz) |
 | Wanted level | 3 | The speed level the reporting station asks the other station to use for its next frames |
+| Age | 3 | How long before this frame was sent the reported frame was received (since 0.44): 0 = under 1 minute, 1 = 1 to 2 minutes, 2 = 2 to 4, 3 = 4 to 8, 4 = 8 to 16, 5 = 16 to 32, 6 = 32 minutes or more, 7 = not said (no frame from the other station heard yet in this contact). A receiver reads each code as the start of its step |
+| Noise | 5 | The reporting station's own band noise, its receiver's S-meter reading in dB relative to S9 (S9 = 0, S0 = -54; 6 dB to an S-unit), plus 60, divided by 3, rounded; held to 0 to 30 (-60 to +30 dB relative to S9). 31 = not measured (since 0.44). The reference program reads the S-meter through rig control every 5 seconds while receiving, at least 3 seconds after its own transmissions, and sends the median of the last 5 minutes once it has 6 readings |
+
+**Using the age and the noise (since 0.44).** A report repeated because nothing newer was heard says so by its age. A station never raises the level it sends at on a report whose age code is 3 or more (4 minutes or older); it may still lower it. The noise reading is shown to the operator beside the SNR the other station reports, so that a weak report from a station with a high noise reading points to noise at that end rather than to a weak signal (on the air in November 2026 one station heard the other at about -2 dB while being heard at -17 to -30 dB, with more power). It is not used by the link rules.
 
 **Locator coding.** The two letters (A to R) count 0 to 17 and the two digits 0 to 9. The locator is the number ((first letter x 18 + second letter) x 10 + first digit) x 10 + second digit, sent as 15 bits, most significant bit first.
 
@@ -476,7 +480,7 @@ A single bad frame never drops the lock.
 
 The numbers in this section are starting values from simulation, to be tuned on the air.
 
-- Every message frame is answered with an acknowledgment carrying the level the receiver wants next. Since 0.43 it is a burst (Section 5.11) while the full channel report this station last sent its partner (in an acknowledgment frame or an answer) is less than 5 minutes old, and otherwise an acknowledgment frame (Section 5.8), which carries the full report and restarts the 5 minutes. The station that sent the message frame accepts either: it searches for the burst once 17.1 s of audio have come in after its frame, and still waits for a frame as long as before. A burst rather than the 31-second L0 frame takes about 6 dB further and saves 21.6 s of every exchange at L0.
+- Every message frame is answered with an acknowledgment carrying the level the receiver wants next. Since 0.43 it is a burst (Section 5.11) while the full channel report this station last sent its partner (in an acknowledgment frame or an answer) is less than 5 minutes old, and otherwise an acknowledgment frame (Section 5.8), which carries the full report and restarts the 5 minutes. The station that sent the message frame accepts either: it searches for the burst once 17.1 s of audio have come in after its frame, and still waits for a frame as long as before. A burst rather than the L0 acknowledgment frame (33.2 s since 0.44; 31.2 s before) takes about 6 dB further and saves 23.6 s of every exchange at L0.
 - **Asking for a slower level.** When its measurements support less than the current level, the receiver asks for the slower level at once. After a frame that fails its check it asks for one level slower still, and for the frame to be sent again; it combines the copies (Section 5.6).
 - **Asking for a faster level.** After 2 frames in a row received correctly, the receiver asks for a faster level, moving up at most 2 levels at a time.
 - **Fast fading (since 0.35).** When the recent frames are all fading and every one of them has a measured Doppler spread from 0.5 to 2.5 Hz (Section 5.7), the receiver judges levels by a fast-fading table (since 0.43 the "fast fading" row of the choice table in Section 5.2; the figures in the rest of this paragraph are the decode limits it used until then): L0 -16, L1 -14, L2 -12, L3 -5, L4 -4 dB, against -16, -10, -10, -5 and -4 dB for fading in general (both re-measured for 0.43; -14, -8, -10, -1, 0 against -8, -2, -8, -1, 0 before). Fading that fast averages out within a frame, so the middle levels suffer less than in slow, deep fading, which is the worst case and keeps the general table. Measured in simulation (tools/level_spread_study.py, two paths 1 ms apart, 40 frames a point, nine in ten decoded and every stronger point too): at 0.1, 0.5 and 2 Hz of spread, L0 -16, -16, -16 dB (the sweep's lowest point, so L0 keeps the general figure); L1 -12, -14, -14; L2 -10, -12, -12; L3 -6, -8, -8; L4 -2, -4, -4. L3 and L4 keep the general figures: their frames are short beside a slow fade, and the two tools use different frame sizes. In practice a receiver in fast fading asks for L1 and L2 from 4 and 2 dB weaker signals than in slow fading. One slow or unmeasured frame among the recent ones returns to the general table.
@@ -720,8 +724,7 @@ Kestrel assumes no station is always on the air and no infrastructure exists. St
 
 - Speed level L5 (a faster waveform) and any further levels.
 - Measurement of delay spread; level limits confirmed by on-air tests.
-- Channel reports that say how old they are, or how many of the partner's frames went unheard since (from the on-air tests of November 24 to 26). Not done in 0.43: it changes the acknowledgment and answer frames. Bursts make the question smaller, since each one is sent straight after the frame it answers and carries the level asked for then, and a full report goes at least every 5 minutes of traffic.
-- Each station's own noise level in its reports, so the other side can tell "you are weak" from "I am noisy".
+- (Done in 0.44: channel reports say how old they are and carry the reporting station's own noise reading, Section 5.8.) Whether the noise reading should also steer the link rules, for example by choosing long notes sooner when the partner reports a high noise level, is left for on-air experience.
 - Store-and-forward settings to be confirmed on the air: hop limit (4), message lifetime (62 hours), how long receipts are listed (12 hours), how many carriers per message (3 by the origin, 2 by a carrier), holder storage (50 messages, 10 per origin).
 - Band starting profiles.
 - Net slot timing rules; heartbeat miss count.

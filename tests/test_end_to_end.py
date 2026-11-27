@@ -210,11 +210,11 @@ def test_acknowledgment_and_identification_at_every_level():  # the frames that 
     for spec in LEVELS:  # each speed level in turn
         rng = np.random.default_rng(1100 + spec.number)  # repeatable random source
         snr_db = MIN_SNR_DB[spec.number] + 3.0  # a little above the level's limit
-        report = ChannelReport(-5.0, 0.25, 4.0, spec.number)  # an arbitrary report
+        report = ChannelReport(-5.0, 0.25, 4.0, spec.number, 120.0, -36.0)  # an arbitrary report, with an age and a noise reading that survive the coding exactly (since 0.44)
         ack = receive(run_channel(build_ack(link, 4242, 3, ACK_HAVE_IT, report, level=spec.number), snr_db, rng, offset_hz=5.0))  # send an acknowledgment
         assert ack.ok and ack.frame_type == 4 and ack.level == spec.number  # it decodes at its own level
         assert (ack.link, ack.msg_id, ack.part, ack.fields["status"]) == (link, 4242, 3, ACK_HAVE_IT)  # which frame it is about, and the verdict
         assert ack.fields["report"] == report  # the channel report arrives intact
         ident = receive(run_channel(build_ident("Q1AAAA/P", link, final=True, level=spec.number), snr_db, rng, offset_hz=-5.0))  # send an identification
         assert ident.ok and ident.frame_type == 5 and (ident.origin, ident.link, ident.fields["final"]) == ("Q1AAAA/P", link, True)  # callsign, link and end-of-contact flag
-    assert control_seconds(4, 4) < 4 and control_seconds(4, 0) < 32  # an acknowledgment is quick: under 4 s at the fastest level, about 31 s at the slowest
+    assert control_seconds(4, 4) < 4 and control_seconds(4, 0) < 34  # an acknowledgment is quick: under 4 s at the fastest level, 33.2 s at the slowest (31.2 s before 0.44 added the report's age and noise reading)

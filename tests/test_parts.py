@@ -145,7 +145,28 @@ def test_channel_report_and_locator_coding():  # the small fields inside control
     assert (back.snr_db, back.fade_index, back.offset_hz, back.want_level) == (-7.0, 0.5, -12.0, 3)  # rounded to 1 dB, a quarter, and 2 Hz
     wild = control.unpack_report(control.pack_report(control.ChannelReport(99.0, float("nan"), 500.0, 0)))  # readings far outside the fields
     assert (wild.snr_db, wild.fade_index, wild.offset_hz) == (33.0, 1.75, 62.0)  # each is held to the end of its range; a missing fading reading reads as fading
-    assert len(control.pack_report(report)) == 18  # a report is 18 bits
+    assert len(control.pack_report(report)) == 26  # a report is 26 bits (18 before 0.44)
+    assert np.isnan(back.age_s) and np.isnan(back.noise_db)  # age and noise not said come back as not said (since 0.44)
+
+
+def test_channel_report_age_and_noise():  # the two fields added in 0.44
+    from modem import control  # the control-frame field packer
+    for age, code, start in ((0.0, 0, 0.0), (59.9, 0, 0.0), (60.0, 1, 60.0), (150.0, 2, 120.0), (300.0, 3, 240.0), (600.0, 4, 480.0), (1000.0, 5, 960.0), (5000.0, 6, 1920.0), (float("inf"), 6, 1920.0)):  # every step, and its edges
+        assert control.age_code(age) == code  # the step reached
+        back = control.unpack_report(control.pack_report(control.ChannelReport(-10.0, 0.25, 2.0, 1, age, -30.0)))  # through the bits
+        assert back.age_s == start  # read as the start of its step
+    assert control.age_code(float("nan")) == 7 and control.age_code(-5.0) == 7  # not said, or nonsense
+    for noise, expect in ((-30.0, -30.0), (-54.0, -54.0), (-31.0, -30.0), (0.0, 0.0), (12.5, 12.0), (-99.0, -60.0), (99.0, 30.0)):  # S-meter readings, rounded to 3 dB and held to -60..+30
+        back = control.unpack_report(control.pack_report(control.ChannelReport(-10.0, 0.25, 2.0, 1, 30.0, noise)))  # through the bits
+        assert back.noise_db == expect  # as expected
+    assert control.noise_code(float("nan")) == 31 and control.noise_code(float("inf")) == 31  # not measured
+    bits = control.pack_report(control.ChannelReport(-10.0, 0.25, 2.0, 5, 70.0, -36.0))  # a known report
+    assert list(bits[18:]) == [0, 0, 1] + [0, 1, 0, 0, 0]  # age code 1, then noise code 8 ((-36 + 60) / 3), after the 18 bits of 0.43
+    assert control.unpack_report(bits).want_level == 5  # the level is still read from its own place (it was read from the end before 0.44)
+
+
+def test_locator_and_level_list_coding():  # the other small fields inside control frames
+    from modem import control  # the control-frame field packer
     for grid in ("EM92", "AA00", "RR99", "fn31"):  # corners of the locator range, and lower case
         assert control.bits_to_grid(control.grid_to_bits(grid)) == grid.upper()  # it comes back in capitals
     for bad in ("EM9", "SM92", "EMX2", "EM92AB"):  # too short, a letter past R, a letter for a digit, too long

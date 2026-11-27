@@ -19,7 +19,7 @@ import sys  # which platform this is
 
 import numpy as np  # numerical arrays
 
-ABI_VERSION = 19  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h)
+ABI_VERSION = 20  # the library interface this file was written for (KES_ABI_VERSION in cpp/include/kestrel.h; 20: the channel report's age and noise reading, signal version 0.44)
 from .params import RAMP_S  # how long each transmission fades in and out (passed to the compiled transmitter)  # noqa: E402
 
 _DOUBLE_P = ctypes.POINTER(ctypes.c_double)  # a pointer to doubles
@@ -37,7 +37,8 @@ class _Fields(ctypes.Structure):  # KesFields in kestrel.h: the named fields of 
                 ("snr_db", ctypes.c_double), ("fade_index", ctypes.c_double), ("offset_hz", ctypes.c_double), ("want_level", ctypes.c_int),  # a channel report
                 ("held", ctypes.c_long * 3), ("receipts", ctypes.c_long * 3), ("heard", ctypes.c_long * 3),  # a mail notice's three lists
                 ("nheld", ctypes.c_int), ("nreceipts", ctypes.c_int), ("nheard", ctypes.c_int),  # and their lengths
-                ("rig_model", ctypes.c_long), ("watts", ctypes.c_long)]  # a beacon's rig type and power (since interface 17)
+                ("rig_model", ctypes.c_long), ("watts", ctypes.c_long),  # a beacon's rig type and power (since interface 17)
+                ("age_s", ctypes.c_double), ("noise_db", ctypes.c_double)]  # a channel report's age and the reporter's noise reading (since interface 20, signal version 0.44)
 
 
 _FIELDS_P = ctypes.POINTER(_Fields)  # a pointer to the fields
@@ -774,6 +775,7 @@ def pack_control(frame_type, **values):  # control.py pack_beacon, pack_answer, 
         elif name == "report":  # a channel report
             try:  # its readings must be numbers
                 fields.snr_db, fields.fade_index, fields.offset_hz = float(value.snr_db), float(value.fade_index), float(value.offset_hz)  # stored
+                fields.age_s, fields.noise_db = float(getattr(value, "age_s", float("nan"))), float(getattr(value, "noise_db", float("nan")))  # its age and the reporter's noise, NaN when not said (since 0.44)
             except (TypeError, ValueError, OverflowError, AttributeError):  # they are not
                 return None  # Python
             if not _whole(value.want_level):  # the level must be whole

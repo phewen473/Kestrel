@@ -329,8 +329,13 @@ def _outcome(work, *args, **kwargs):  # what a call gives: its answer, or the ki
     if isinstance(got, np.ndarray):  # an array of bits
         return ("ok", got.astype(int).tolist())  # as a plain list
     if isinstance(got, dict):  # unpacked fields
-        return ("ok", {k: (vars(v) if hasattr(v, "__dataclass_fields__") else v) for k, v in got.items()})  # reports as plain dicts
+        return ("ok", {k: (_plain_report(v) if hasattr(v, "__dataclass_fields__") else v) for k, v in got.items()})  # reports as plain dicts
     return ("ok", got)  # anything else as it is
+
+
+def _plain_report(report):  # a channel report as a dict that compares equal when both sides say "not said"
+    """Return the report's fields as a dict, with NaN (an age or noise reading not said, since 0.44) written as the text "nan" so two of them compare equal."""
+    return {k: ("nan" if isinstance(v, float) and v != v else v) for k, v in vars(report).items()}  # NaN made comparable
 
 
 def _same(python_only, work, *args, **kwargs):  # the library and Python agree on one call
@@ -412,6 +417,8 @@ def test_frame_fields_match_python(python_only):  # header, address block and co
             return (result.link, result.want_level, result.msg_id, result.dest, result.origin, result.hops, result.life_hours)  # the fields
         _same(python_only, read_good)  # the same
     reports = [ChannelReport(-3, 0.2, 1, 2), ChannelReport(-30.5, 0.125, 3.0, 0), ChannelReport(2.5, float("nan"), -70, 7), ChannelReport(40, 9, 100, 1),  # ordinary, rounding, missing, clipped
+               ChannelReport(-3, 0.2, 1, 2, 250.0, -33.0), ChannelReport(-3, 0.2, 1, 2, 59.999, -55.5), ChannelReport(-3, 0.2, 1, 2, float("inf"), 100.0), ChannelReport(-3, 0.2, 1, 2, -1.0, float("-inf")),  # age and noise (since 0.44): ordinary, edges and halves, clipped, nonsense
+               ChannelReport(-3, 0.2, 1, 2, 1920.0, -61.5), ChannelReport(-3, 0.2, 1, 2, 240.0, -52.5),  # (continued: the top step, and halves rounded to even)
                ChannelReport(-28.5, 0.375, -5.0, 3), ChannelReport(float("nan"), 0, 0, 0), ChannelReport(0, float("inf"), 0, 0), ChannelReport(0, 0, 0, 8)]  # errors
     for report in reports:  # each report
         _same(python_only, control.pack_answer, "Q1AAAA", "Q2BB", report, (0, 1, 2), mail_check=True)  # in an answer

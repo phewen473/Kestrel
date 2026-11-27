@@ -29,7 +29,7 @@ to everyone, which nobody acknowledges (broadcast()).
 """
 
 import zlib  # gives each station its own repeatable random numbers, from its callsign
-from dataclasses import dataclass  # simple record type for a transmission
+from dataclasses import dataclass, replace  # simple record type for a transmission; a copy of a report with some fields changed (since 0.44)
 
 import numpy as np  # numerical arrays
 
@@ -53,7 +53,7 @@ from .mail import CompiledMailroom, Mailroom  # the mail kept between contacts (
 from .params import (  # timing and retry settings
     BEACON_TRIES, BROADCAST_LEVEL, BROADCAST_LIFE_HOURS, CALL_TRIES, FINAL_TRIES, HISTORY, IDENT_EVERY_S, KEEPALIVE_S, LOCK_TIMEOUT_S, MAX_RESENDS, MISS_LIMIT, OFFER_PROBE, OFFER_REPLY,  # (continued)
     MOVE_SETTLE_S, MOVE_STEP_HZ, MOVE_TRIES, MOVE_WAIT_S, OFFER_MOVE, OFFER_TURN, OFFER_UNAVAILABLE, REPLY_SLOT_GAP_S, WIDE_SLOTS, CALLUP_LEVEL, HEARD_FOR_CALL_S, EXPECT_S,  # (continued)
-    ASKED_KEEP_S, REPORT_EVERY_S,  # (continued: how long the level a station asked for is remembered, since 0.43; how long a channel report stays fresh enough for bursts, since 0.43)
+    ASKED_KEEP_S, REPORT_EVERY_S, STALE_REPORT_S,  # (continued: how long the level a station asked for is remembered, since 0.43; how long a channel report stays fresh enough for bursts, since 0.43; the age at which a received report no longer raises the level, since 0.44)
     HOLD_TELL_S, HOP_LIMIT, MAIL_TIDY_S, NOTICE_L0_EVERY_S, OFFER_NO_MAIL, REACH_S, REACQUIRE_TRIES, REPLY_MARGIN_S, STEP_UP_CLEAN, TURNAROUND_S, WORKING_IDLE_S, WORKING_WARN_S,  # (continued)
 )  # end of the import list
 
@@ -186,6 +186,9 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.answer_calls = True  # a listening station answers directed calls by itself; when False only calls it is expecting are answered, and the operator chooses for the rest
         self.bursts = True  # acknowledge with bursts where the rules allow (since 0.43; tests may turn it off)
         self.report_at = -1e9  # when this station last sent its partner a full channel report (an acknowledgment frame or an answer), since 0.43
+        self.heard_time = -1e9  # when last_result was heard, for the age its report carries (since 0.44)
+        self.clock_now = 0.0  # the time of the frame being handled (since 0.44)
+        self.noise_db = float("nan")  # this station's own band noise, its S-meter reading in dB relative to S9, set by whoever runs it; NaN = not measured (since 0.44)
         self.last_beacon_t = -1e9  # when this station last beaconed (directed calls from anyone are expected for a while afterwards)
         self.called_t = {}  # callsign -> when this station last called it (a call back from it is expected for a while afterwards)
         self.unavailable_from = ""  # the last station that replied "not available" to this station's call
@@ -388,17 +391,26 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.log.append(f"{now:7.1f}s {self.call}: {text}")  # time, who, what
 
     def _report_of(self, result):  # a channel report on one frame, outside any contact
-        return ChannelReport(result.snr_db if np.isfinite(result.snr_db) else float(SNR_FLOOR_DB), result.fade_index, result.offset_hz, supported_level([_reading(result)], self.levels) if np.isfinite(result.snr_db) else 0)  # how it was heard, and the level it supports
+        return ChannelReport(result.snr_db if np.isfinite(result.snr_db) else float(SNR_FLOOR_DB), result.fade_index, result.offset_hz, supported_level([_reading(result)], self.levels) if np.isfinite(result.snr_db) else 0, 0.0, self.noise_db)  # how it was heard (just now), the level it supports, and this station's noise (since 0.44)
 
-    def _report(self):  # the channel report to send back
+    def _report(self, now):  # the channel report to send back
         result = self.last_result  # the frame heard most recently
         snr_db = result.snr_db if result is not None and np.isfinite(result.snr_db) else -30.0  # its SNR, or the bottom of the scale when unknown
         fade = result.fade_index if result is not None else float("nan")  # its fading index
         offset = result.offset_hz if result is not None else 0.0  # its frequency offset
-        return ChannelReport(snr_db, fade, offset, self.want)  # the measurements, and the level this station asks for
+        age = max(now - self.heard_time, 0.0) if result is not None else float("nan")  # how long ago it was heard, or not said (since 0.44)
+        return ChannelReport(snr_db, fade, offset, self.want, age, self.noise_db)  # the measurements, the level this station asks for, their age and this station's noise
+
+    def _trusted_want(self, report):  # the level a received report may set (since 0.44)
+        """Return the level `report` asks for, except that a report whose measurement is STALE_REPORT_S or more old never raises the sending level above tx_level."""
+        age = getattr(report, "age_s", float("nan"))  # how old its measurement is (NaN: not said)
+        if age == age and age >= STALE_REPORT_S and report.want_level > self.tx_level:  # an old measurement asking for more speed
+            return self.tx_level  # not trusted to raise the level
+        return report.want_level  # as asked
 
     def _note(self, result, failed):  # take in the measurements of a frame from the partner
         self.last_result = result  # keep it for the next report
+        self.heard_time = self.clock_now  # heard now (since 0.44)
         if np.isfinite(result.snr_db):  # a usable SNR reading
             self.history = (self.history + [_reading(result)])[-HISTORY:]  # add it, keep only the recent ones
         self.clean_run = 0 if failed else self.clean_run + 1  # count clean frames since the last change of level
@@ -420,6 +432,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
     def _fresh_start(self, result):  # restart the measurements from one new frame
         self.history = [_reading(result)] if np.isfinite(result.snr_db) else []  # forget older readings
         self.last_result = result  # keep it for the next report
+        self.heard_time = self.clock_now  # heard now (since 0.44)
         self.clean_run = self.good_run = 0  # new runs
         self.want = supported_level(self.history, self.allowed) if self.history else min(self.allowed)  # ask for what this one reading supports
 
@@ -438,7 +451,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             audio = build_burst(BurstSays(self.link, msg_id, part, status, self.want))  # 24 L0 tones fixed by everything it says
             return self._send(now, audio, kind, 0, expects, reply_s, f"burst, wants L{self.want}")  # at L0, like every burst
         self.report_at = now  # a full report goes out
-        audio = build_ack(self.link, msg_id, part, status, self._report(), level=self.tx_level)  # at the level the partner asked for
+        audio = build_ack(self.link, msg_id, part, status, self._report(now), level=self.tx_level)  # at the level the partner asked for (the report with its age, since 0.44)
         return self._send(now, audio, kind, self.tx_level, expects, reply_s, f"wants L{self.want}")  # note the level being asked for
 
     def _partner_offset(self):  # where the partner's signals arrive (since 0.43)
@@ -551,6 +564,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.job, self.mail_parts, self.notice_sent = None, {}, False  # no mail under way or half-received, no notice just sent
         self.history, self.last_result, self.clean_run, self.good_run = [], None, 0, 0  # no measurements
         self.report_at = -1e9  # no report sent in the next contact yet (since 0.43)
+        self.heard_time = -1e9  # nothing heard in the next contact yet (since 0.44)
         self.plan, self.part_index, self.misses, self.resends, self.probes, self.finals, self.beacons = [], 0, 0, 0, 0, 0, 0  # nothing under way, no counts
         self.my_turn = self.peer_empty = self.sent_final = False  # no turn, no goodbyes
         self.partial, self.done_ids, self.stored, self.candidates = {}, set(), None, []  # nothing half-received
@@ -577,6 +591,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
 
     def handle(self, result, now):  # react to a frame (or a failed frame) just heard
         """Return the Transmission to send in reply to `result`, or None."""
+        self.clock_now = now  # the time measurements taken from this frame are stamped with (since 0.44)
         if self.state == "RELEASED":  # the contact is over
             return None  # stay silent
         if not result.ok:  # the frame did not decode
@@ -629,7 +644,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.tx_level = result.level if result.level in self.allowed else min(self.allowed)  # answer at the beacon's own level: hearing it shows the path carries that level
         self.last_ident = now  # the answer carries this station's callsign
         self._say(now, f"heard {self.partner} at {result.snr_db:+.0f} dB; answering, asking for L{self.want}")  # explain
-        audio = build_answer(self.partner, self.call, self._report(), self.levels, level=self.tx_level, grid=self.grid)  # the answer frame, with this station's locator (since 0.33)
+        audio = build_answer(self.partner, self.call, self._report(now), self.levels, level=self.tx_level, grid=self.grid)  # the answer frame, with this station's locator (since 0.33) and a report with its age (since 0.44)
         wait = slot * slot_s + slots_left * slot_s + control_seconds(FRAME_TYPE_ACK, 0)  # its own slot's start, the rest of the window, then the confirmation at its slowest
         self.report_at = now  # the answer carries a full report
         tx = self._send(now, audio, "answer", self.tx_level, "confirm", wait, f"slot {slot}, wants L{self.want}", None if result.fields["wide"] else self._listen_confirm(OFFER_REPLY))  # wait for the lock to be confirmed (by a burst, after a single-slot beacon)
@@ -739,7 +754,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
         self.partner = result.origin  # the answering station
         self.link = link_id(self.call, self.partner)  # link number: the beaconing station first
         self.allowed = common_levels(self.levels, result.fields["levels"])  # the levels both can use
-        self.tx_level = cap_level(result.fields["report"].want_level, self.allowed)  # send at the level the partner asked for
+        self.tx_level = cap_level(self._trusted_want(result.fields["report"]), self.allowed)  # send at the level the partner asked for (never raised by an old report, since 0.44)
         self._asked(now)  # and remember it for the next call to that station (since 0.43)
         self._fresh_start(result)  # the first measurement of the partner
         self.state = "LOCKED"  # the lock is made
@@ -754,7 +769,7 @@ class PythonStation:  # the link rules for one station, in Python (the reference
             self.unavailable_from = self.partner  # remember who, for whoever runs the station
             self._release(now, f"{self.partner} is not available")  # stop calling at once
             return None  # nothing to send
-        self.tx_level = cap_level(fields["report"].want_level, self.allowed)  # from now on, send at the level the partner asks for
+        self.tx_level = cap_level(self._trusted_want(fields["report"]), self.allowed)  # from now on, send at the level the partner asks for (never raised by an old report, since 0.44)
         self._asked(now)  # and remember it for the next call to that station (since 0.43)
         if self.state == "IDLE":  # the answering (or calling) station was waiting for this
             self._fresh_start(result)  # the first frame from the partner since the lock: ask straight away for the level it supports, rather than climbing from L0
@@ -1078,9 +1093,9 @@ class PythonStation:  # the link rules for one station, in Python (the reference
                 self._say(now, f"{self.target} last needed L{first}; calling at that level")  # say why
         heard = self.heard_at.get(self.target)  # the last reading of the called station, if it was heard lately
         if heard is not None and now - heard[0] <= HEARD_FOR_CALL_S:  # recent enough to be useful
-            report = heard[1]  # it goes with the call, so the called station can start at the right level
+            report = replace(heard[1], age_s=max(now - heard[0], 0.0), noise_db=self.noise_db)  # it goes with the call, so the called station can start at the right level, with how old it is and this station's noise (since 0.44)
         else:  # never heard, or long ago
-            report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0)  # no measurement, asking for L0
+            report = ChannelReport(float(SNR_FLOOR_DB), float("nan"), 0.0, 0, float("nan"), self.noise_db)  # no measurement, asking for L0 (the noise is still said, since 0.44)
         audio = build_answer(self.partner, self.call, report, self.levels, mail_check=True, level=self.tx_level, directed=True, grid=self.grid)  # an answer frame marked as a directed call, asking for any mail the called station holds for this one
         self.report_at = now  # the call carries a report
         return self._send(now, audio, "call", self.tx_level, "confirm", control_seconds(FRAME_TYPE_ACK, 0), f"to {self.target}", self._listen_confirm(OFFER_TURN))  # wait for the called station to confirm the lock (by a burst, or a frame)

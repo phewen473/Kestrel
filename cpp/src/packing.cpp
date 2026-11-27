@@ -47,7 +47,13 @@ const int kFadeBits = 3;  /* report fading index (FADE_BITS) */
 const int kFadeSteps = 4;  /* fading index sent in quarters (FADE_STEPS_PER_UNIT) */
 const int kOffsetBits = 6;  /* report offset (OFFSET_BITS) */
 const int kOffsetStep = 2;  /* offset sent in 2 Hz steps (OFFSET_STEP_HZ) */
-const int kReportBits = kSnrBits + kFadeBits + kOffsetBits + kLevelBits;  /* a whole report: 18 bits (REPORT_BITS) */
+const int kAgeBits = 3;  /* report age (AGE_BITS, since interface 20, signal version 0.44) */
+const double kAgeSteps[7] = {0.0, 60.0, 120.0, 240.0, 480.0, 960.0, 1920.0};  /* age codes 0..6: at least this many seconds old; 7 = not said (AGE_STEPS_S) */
+const int kNoiseBits = 5;  /* the reporter's noise reading (NOISE_BITS, since interface 20) */
+const int kNoiseFloor = -60;  /* the noise reading sent as 0, dB relative to S9 (NOISE_FLOOR_DB) */
+const int kNoiseStep = 3;  /* noise reading sent in 3 dB steps (NOISE_STEP_DB) */
+const int kNoiseUnknown = (1 << kNoiseBits) - 1;  /* "not measured" (NOISE_UNKNOWN, 31) */
+const int kReportBits = kSnrBits + kFadeBits + kOffsetBits + kLevelBits + kAgeBits + kNoiseBits;  /* a whole report: 26 bits (REPORT_BITS; 18 before interface 20) */
 const int kHashBits = 16;  /* a mail notice code (HASH_BITS) */
 const int kSlots = 3;  /* entries per mail notice list (NOTICE_SLOTS) */
 const int kCharBits = 7;  /* bits per plain character (CHAR_BITS) */
@@ -55,8 +61,8 @@ const int kLengthBits = 8;  /* the character count (LENGTH_BITS) */
 const size_t kMaxChars = 200;  /* longest message (MAX_CHARS) */
 const int kSizes[4] = {50, 100, 150, 200};  /* the four size classes, in plain characters (SIZE_CLASSES) */
 const int kAddressBits[2] = {kLinkBits + kLevelBits + kMsgBits, 2 * kCallBits + kMsgBits + kHopBits + kLifeBits};  /* address block of a link frame (28) and an addressed frame (120) (ADDRESS_BITS) */
-const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4 + kRigBits + kWattBits, 2 * kCallBits + kGridBits + kReportBits + kMaskBits + 2,  /* beacon 101 (75 before interface 17), answer 139 (with its sender's locator since 0.33) (CONTROL_BITS)... */
-                             kLinkBits + kMsgBits + kPartBits + kStatusBits + kReportBits, kCallBits + kLinkBits + 4, 0, kCallBits + 3 * kSlots * kHashBits};  /* ...ack 48, ident 61, notice 192 (types 0, 1 and 6 have none) */
+const int kControlBits[8] = {0, 0, kCallBits + kGridBits + kMaskBits + 4 + kRigBits + kWattBits, 2 * kCallBits + kGridBits + kReportBits + kMaskBits + 2,  /* beacon 101 (75 before interface 17), answer 147 (with its sender's locator since 0.33; 139 before interface 20) (CONTROL_BITS)... */
+                             kLinkBits + kMsgBits + kPartBits + kStatusBits + kReportBits, kCallBits + kLinkBits + 4, 0, kCallBits + 3 * kSlots * kHashBits};  /* ...ack 56 (48 before interface 20), ident 61, notice 192 (types 0, 1 and 6 have none) */
 const char kFields[] = "ABCDEFGHIJKLMNOPQR";  /* grid locator field letters (control.py FIELDS) */
 const unsigned long long kNoGrid = (1ULL << kGridBits) - 1;  /* an answer's "no locator set" (NO_GRID: all ones; real locators run 0 to 32399) */
 
@@ -223,8 +229,31 @@ int class_for(long nbits, int frame_type) {  /* the class */
     return -1;  /* too big */
 }  /* end of class_for */
 
-/* control.py pack_report: the 18 bits of a channel report; false where Python would raise. */
-bool report_bits(double snr_db, double fade_index, double offset_hz, int want_level, std::vector<uint8_t> &v) {  /* appended to v */
+/* control.py age_code: a report's age in seconds -> 0..6 (the last step reached), 7 when not said (NaN or negative; since interface 20). */
+int age_code(double age_s) {  /* the 3-bit code */
+    if (std::isnan(age_s) || age_s < 0.0) {  /* not a number, or nonsense */
+        return (1 << kAgeBits) - 1;  /* 7: not said */
+    }  /* end of the check */
+    int code = 0;  /* the step reached so far */
+    for (int i = 0; i < 7; ++i) {  /* each step, in order */
+        if (age_s >= kAgeSteps[i]) {  /* reached */
+            code = i;  /* this one */
+        }  /* end of the test */
+    }  /* end of the steps */
+    return code;  /* the last step reached */
+}  /* end of age_code */
+
+/* control.py noise_code: an S-meter reading in dB relative to S9 -> 0..30 in 3 dB steps from -60, 31 when not measured (since interface 20). */
+int noise_code(double noise_db) {  /* the 5-bit code */
+    if (!std::isfinite(noise_db)) {  /* NaN or infinite */
+        return kNoiseUnknown;  /* 31: not measured */
+    }  /* end of the check */
+    double code = std::nearbyint((noise_db - kNoiseFloor) / kNoiseStep);  /* half S-units above -60 dB (round half to even, as Python's round) */
+    return static_cast<int>(std::min(std::max(code, 0.0), static_cast<double>(kNoiseUnknown - 1)));  /* held to 0..30 */
+}  /* end of noise_code */
+
+/* control.py pack_report: the 26 bits of a channel report (18 before interface 20); false where Python would raise. */
+bool report_bits(double snr_db, double fade_index, double offset_hz, int want_level, double age_s, double noise_db, std::vector<uint8_t> &v) {  /* appended to v */
     if (!std::isfinite(snr_db) || !std::isfinite(offset_hz) || std::isinf(fade_index) || want_level < 0 || want_level >= (1 << kLevelBits)) {  /* round() would fail, or the level does not fit */
         return false;  /* refuse */
     }  /* end of the check */
@@ -238,11 +267,13 @@ bool report_bits(double snr_db, double fade_index, double offset_hz, int want_le
     put(v, static_cast<unsigned long long>(fade), kFadeBits);  /* fading */
     put(v, static_cast<unsigned long long>(static_cast<long long>(offset)) & ((1ULL << kOffsetBits) - 1), kOffsetBits);  /* offset, two's complement */
     put(v, static_cast<unsigned long long>(want_level), kLevelBits);  /* the level asked for */
+    put(v, static_cast<unsigned long long>(age_code(age_s)), kAgeBits);  /* how old the measurement is (since interface 20) */
+    put(v, static_cast<unsigned long long>(noise_code(noise_db)), kNoiseBits);  /* the reporter's own noise (since interface 20) */
     return true;  /* done */
 }  /* end of report_bits */
 
-/* control.py unpack_report: the report carried by 18 bits, into f. */
-void read_report(const uint8_t *b, KesFields *f) {  /* the four readings */
+/* control.py unpack_report: the report carried by 26 bits, into f. */
+void read_report(const uint8_t *b, KesFields *f) {  /* the six readings */
     f->snr_db = static_cast<double>(get(b, kSnrBits)) + kSnrFloor;  /* back to dB */
     f->fade_index = static_cast<double>(get(b + kSnrBits, kFadeBits)) / kFadeSteps;  /* back to an index */
     long raw = static_cast<long>(get(b + kSnrBits + kFadeBits, kOffsetBits));  /* the offset, unsigned */
@@ -250,7 +281,14 @@ void read_report(const uint8_t *b, KesFields *f) {  /* the four readings */
         raw -= 1L << kOffsetBits;  /* negative */
     }  /* end of the sign */
     f->offset_hz = static_cast<double>(raw * kOffsetStep);  /* back to hertz */
-    f->want_level = static_cast<int>(get(b + kReportBits - kLevelBits, kLevelBits));  /* the level asked for */
+    int at = kSnrBits + kFadeBits + kOffsetBits;  /* where the level asked for starts */
+    f->want_level = static_cast<int>(get(b + at, kLevelBits));  /* the level asked for */
+    at += kLevelBits;  /* where the age starts (since interface 20) */
+    int age = static_cast<int>(get(b + at, kAgeBits));  /* the age code */
+    f->age_s = age < 7 ? kAgeSteps[age] : std::nan("");  /* the start of its step, or not said */
+    at += kAgeBits;  /* where the noise reading starts */
+    int noise = static_cast<int>(get(b + at, kNoiseBits));  /* the noise code */
+    f->noise_db = noise != kNoiseUnknown ? static_cast<double>(kNoiseFloor + noise * kNoiseStep) : std::nan("");  /* dB relative to S9, or not measured */
 }  /* end of read_report */
 
 /* control.py grid_to_bits: false unless two letters A to R and two digits. */
@@ -579,7 +617,7 @@ KES_API long kes_pack_control(int frame_type, const KesFields *f, uint8_t *out) 
         } else if (!grid_bits(f->grid, v)) {  /* not a locator */
             return -1;  /* refuse */
         }  /* end of the locator */
-        if (!report_bits(f->snr_db, f->fade_index, f->offset_hz, f->want_level, v) || f->levels < 0 || f->levels > 255) {  /* a bad report or level list */
+        if (!report_bits(f->snr_db, f->fade_index, f->offset_hz, f->want_level, f->age_s, f->noise_db, v) || f->levels < 0 || f->levels > 255) {  /* a bad report or level list */
             return -1;  /* refuse */
         }  /* end of the check */
         put(v, static_cast<unsigned long long>(f->levels), kMaskBits);  /* the levels */
@@ -596,7 +634,7 @@ KES_API long kes_pack_control(int frame_type, const KesFields *f, uint8_t *out) 
         put(v, static_cast<unsigned long long>(f->msg_id), kMsgBits);  /* message */
         put(v, static_cast<unsigned long long>(f->part), kPartBits);  /* part */
         put(v, static_cast<unsigned long long>(f->status), kStatusBits);  /* verdict */
-        if (!report_bits(f->snr_db, f->fade_index, f->offset_hz, f->want_level, v)) {  /* a bad report */
+        if (!report_bits(f->snr_db, f->fade_index, f->offset_hz, f->want_level, f->age_s, f->noise_db, v)) {  /* a bad report */
             return -1;  /* refuse */
         }  /* end of the check */
         break;  /* done */

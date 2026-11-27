@@ -53,6 +53,9 @@ PRIOR_MOST = 16  # and at most this many of them
 CONTEXT_S = 4.0  # incremental search: audio searched before the newest, beyond what one pattern needs, so the background is measured fairly
 HOW_NAMES = {1: "first", 2: "both", 3: "second", 4: "end", 5: "end both", 6: "end first"}  # which header copy gave a header, as the compiled listener numbers them (the frame strip, since 0.37; 4 to 6, a frame found from the pattern at its end, since 0.43)
 OUTCOMES_MOST = 20  # finished frames kept for the frame strip until it asks (since 0.37)
+KNOWN_OFFSET_KEEP_S = 7200.0  # frames read on their own in the last two hours say where real stations' signals arrive (since 0.44)
+DOUBT_OFFSET_HZ = 8.0  # a long beacon read only by adding copies, whose newest copy showed no pattern, is refused when it is further than this from all of them and its sender is not expected (since 0.44; on the air real stations' frames all arrived within about 2 Hz of each other, the false one 22 Hz away)
+DOUBT_QUALITY = 0.0  # "showed no pattern": the newest copy's sync quality at or below this (since 0.44)
 GATE = (0.002, 0.002, 0.003, 0.010, 0.012)  # incremental search: a pattern scoring below this (by level) is not followed up. Measured on simulated noise and frames, the strongest chance match scored 0.001, 0.001, 0.002, 0.005 and 0.008, and real frames 1 dB below each level's decoding limit (steady and fading) at least 0.004, 0.006, 0.005, 0.028 and 0.032 (one L4 frame in 40 was not found at all). The long beacon has no gate: copies too weak to read alone are kept for adding together
 
 
@@ -151,6 +154,9 @@ class Listener:  # the continuous receiver
         self._clarity = {}  # stream sample -> clarity of each body tone received so far, in dB (the frame strip)
         self._seen = {}  # stream sample -> how many of its pattern's tones stood out (the frame strip)
         self.failed = []  # (level, stream sample where the frame begins) of frames handed over after failing their check, so the same transmission, found again from its other pattern, is not handed over twice (since 0.43)
+        self.known_offsets = []  # (stream sample, frequency offset) of frames read on their own lately: where real stations' signals arrive (since 0.44)
+        self.doubtful = []  # long beacons read by adding copies together but not accepted (see _doubtful), for tests and the curious (since 0.44)
+        self.on_doubt = None  # if set, called with the receiver's report of each such long beacon (since 0.44)
 
     def clear(self):  # forget everything heard so far
         """Empty the store (used after transmitting, so the station does not decode itself)."""
@@ -180,6 +186,7 @@ class Listener:  # the continuous receiver
                 if heard is None:  # none left
                     break  # done
                 found.append(heard)  # keep it
+            self._remember_offsets(found)  # where these frames arrived, before any combined beacon joins them (since 0.44)
             found, self.combined = found + self.combined, []  # and any long beacon that decoded by adding copies together
             self._report_progress()  # the frame strip, if anyone shows one
             return found  # everything that completed
@@ -199,9 +206,50 @@ class Listener:  # the continuous receiver
             if heard is None:  # none left
                 break  # done
             found.append(heard)  # keep it
+        self._remember_offsets(found)  # where these frames arrived, before any combined beacon joins them (since 0.44)
         found, self.combined = found + self.combined, []  # and any long beacon that decoded by adding copies together
         self._report_progress()  # the frame strip, if anyone shows one
         return found  # everything that completed
+
+    # ---- where real stations' signals arrive, to judge long beacons read from added copies (since 0.44) ----
+
+    def _remember_offsets(self, found):  # frames read on their own
+        """Keep the frequency offset of every frame in `found` that decoded on its own (not by adding copies), and forget those older than KNOWN_OFFSET_KEEP_S."""
+        for heard in found:  # each frame
+            result = heard.result  # its report
+            if result.ok and (result.fields or {}).get("copies", 1) <= 1 and np.isfinite(result.offset_hz):  # read on its own, with an offset
+                self.known_offsets.append((int(result.sample), float(result.offset_hz)))  # remembered
+        oldest = self.total - int(KNOWN_OFFSET_KEEP_S * FS)  # the oldest worth keeping
+        self.known_offsets = [item for item in self.known_offsets if item[0] >= oldest]  # recent ones only
+
+    def _doubtful(self, result, copies, quality):  # a long beacon read from added copies: believe it?
+        """Return a reason (text) for not accepting a long beacon decoded by adding `copies` copies together, or "" to accept it.
+
+        On the air (November 2026) a "long beacon" from a callsign nobody had
+        heard was read by adding four copies of noise together: its pattern
+        was not found in the newest copy (sync quality 0) and it was 22 Hz from
+        where every real station's signals arrived, which all lay within 2 Hz
+        of each other. Such a decode is refused when all of these hold: it
+        took more than one copy, the newest copy's pattern was not found, its
+        sender is not a station this one expects, at least one station has
+        been read on its own lately, and it is more than DOUBT_OFFSET_HZ from
+        all of them. A new station far off frequency is still accepted as
+        soon as one of its copies shows its pattern.
+        """
+        if copies <= 1 or quality > DOUBT_QUALITY or not self.known_offsets:  # one copy, a pattern that stood out, or nothing known to compare with
+            return ""  # accepted
+        origin = str((result.fields or {}).get("origin", "")).upper()  # who it says it is from
+        if self.expect is not None:  # this station's callsign and those it expects
+            try:  # the caller's code
+                own, calls = self.expect()  # who
+            except Exception:  # noqa: BLE001 - a fault in the caller's code must not stop the receiver
+                own, calls = "", ()  # nobody
+            if origin and origin in {str(call).upper() for call in [own, *list(calls or ())]}:  # expected
+                return ""  # accepted
+        nearest = min(abs(result.offset_hz - offset) for _sample, offset in self.known_offsets)  # how far from the nearest real station
+        if nearest <= DOUBT_OFFSET_HZ:  # where real signals arrive
+            return ""  # accepted
+        return f"read only by adding {copies} copies, its pattern not found in the newest copy, and {nearest:.0f} Hz from every station read lately"  # refused, and why
 
     # ---- the frame strip: frames as they arrive (since 0.37) ----
 
@@ -633,6 +681,13 @@ class Listener:  # the continuous receiver
         fields, margin, copies = out  # the beacon, how clearly it stood out, and how many copies it took
         result = RxResult(start=float(start), sync_quality=soft.quality, offset_hz=soft.offset_hz, drift_hz_s=soft.drift_hz_s, level=LONG_LEVEL, frame_type=FRAME_TYPE_LONG, header_copy="none (long beacon)", sample=soft.sample)  # a report for it, placed at the newest copy
         longbeacon._fill(result, fields, margin, copies, soft=soft)  # the fields and the signal reading (per copy; the spread from the newest copy, when strong enough)
+        why = self._doubtful(result, copies, soft.quality)  # believable? (since 0.44)
+        if why:  # not
+            result.reason = f"not accepted: {why}"  # say why
+            self.doubtful.append(result)  # kept for whoever asks
+            if self.on_doubt is not None:  # someone wants to know
+                self.on_doubt(result)  # tell them
+            return  # not handed over
         self.combined.append(Heard(result, self._slice(start, start + longbeacon.SAMPLES), self._number(max(start, 0))))  # hand it over with the newest copy's audio
 
     def _number(self, position):  # a place in the store, as a number in the stream
